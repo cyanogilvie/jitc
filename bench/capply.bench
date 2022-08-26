@@ -1,0 +1,36 @@
+if {"bench" ni [info commands bench]} {
+	package require bench
+	namespace import bench::*
+}
+
+package require tinycc
+
+proc main {} {
+	bench capply-1.1 {hello world} -batch auto -setup { #<<<
+		set cdef	[list code {
+			int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+			{
+				if (objc != 2) {
+					Tcl_WrongNumArgs(interp, 1, objv, "noun");
+					return TCL_ERROR;
+				}
+				Tcl_SetObjResult(interp, Tcl_ObjPrintf("hello, %s", Tcl_GetString(objv[1])));
+				return TCL_OK;
+			}
+		}]
+	} -compare {
+		reuse {
+			tinycc::capply $cdef hello tinycc
+		}
+		recompile {
+			tinycc::capply [lrange [list foo {*}$cdef] 1 end] hello tinycc
+		}
+	} -cleanup {
+		unset -nocomplain cdef
+	} -result {hello, tinycc}
+	#>>>
+}
+
+main
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

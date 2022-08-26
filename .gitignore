@@ -1,0 +1,15 @@
+Makefile
+configure
+pkgIndex.tcl
+tclconfig
+tinyccConfig.sh
+generic/tinycc.h
+autom4te.cache
+config.log
+config.status
+tags
+*.so
+*.o
+*.a
+*.swp
+*~

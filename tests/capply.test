@@ -1,0 +1,42 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+package require tinycc
+
+test capply-1.1 {hello, world} -body { #<<<
+	tinycc::capply {
+		code { //@begin=c@
+			int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+			{
+				int			code = TCL_OK;
+
+				if (objc != 3) {
+					Tcl_WrongNumArgs(interp, 1, objv, "a b");
+					code = TCL_ERROR;
+					goto finally;
+				}
+
+				Tcl_SetObjResult(interp, Tcl_ObjPrintf("hello, %s and %s",
+					Tcl_GetString(objv[1]),
+					Tcl_GetString(objv[2])));
+
+			finally:
+				return code;
+			}
+			//@end=c@
+		} options {
+			-b
+		}
+	} hello foo bar
+} -result {hello, foo and bar}
+#>>>
+
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

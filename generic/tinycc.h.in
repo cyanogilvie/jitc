@@ -1,0 +1,27 @@
+#include <tcl.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef BUILD_tinycc
+#undef TCL_STORAGE_CLASS
+#define TCL_STORAGE_CLASS DLLEXPORT
+#endif
+
+/* Stubs exported API */
+
+#ifdef USE_TINYCC_STUBS
+extern const char* TinyccInitializeStubs(Tcl_Interp* interp);
+#define Tinycc_InitStubs(interp)	TinyccInitializeStubs((interp))
+#else
+#define Tinycc_InitStubs(interp)	Tcl_PkgRequire((interp), "@PACKAGE_NAME@", "@PACKAGE_VERSION@", 0)
+#endif
+
+#include "tinyccDecls.h"
+
+EXTERN int Tinycc_Init _ANSI_ARGS_((Tcl_Interp * interp));
+
+#ifdef __cplusplus
+}
+#endif
