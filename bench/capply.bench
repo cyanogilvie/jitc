@@ -7,15 +7,24 @@ package require tinycc
 
 proc main {} {
 	bench capply-1.1 {hello world} -batch auto -setup { #<<<
-		set cdef	[list code {
-			int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
-			{
-				if (objc != 2) {
-					Tcl_WrongNumArgs(interp, 1, objv, "noun");
-					return TCL_ERROR;
+		set cdef	[string trim {
+			include_path local/lib/tcc/include
+			include_path /home/cyan/local8.7_valgrind/include
+			library_path local/lib/tcc
+			library_path /home/cyan/local8.7_valgrind/lib
+
+			code {
+				#include <tcl.h>
+
+				int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+				{
+					if (objc != 2) {
+						Tcl_WrongNumArgs(interp, 1, objv, "noun");
+						return TCL_ERROR;
+					}
+					Tcl_SetObjResult(interp, Tcl_ObjPrintf("hello, %s", Tcl_GetString(objv[1])));
+					return TCL_OK;
 				}
-				Tcl_SetObjResult(interp, Tcl_ObjPrintf("hello, %s", Tcl_GetString(objv[1])));
-				return TCL_OK;
 			}
 		}]
 	} -compare {

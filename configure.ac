@@ -77,8 +77,9 @@ TEA_SETUP_COMPILER
 
 TEA_ADD_SOURCES([tinycc.c tinyccStubInit.c])
 TEA_ADD_HEADERS([generic/tinycc.h generic/tinyccDecls.h])
-TEA_ADD_INCLUDES([-Itinycc])
-TEA_ADD_LIBS([tinycc/libtcc.a])
+TEA_ADD_INCLUDES([-Ilocal/include])
+TEA_ADD_LIBS([-Llocal/lib -l:libtcc.a])
+#TEA_ADD_LIBS([tinycc/libtcc.a])
 TEA_ADD_CFLAGS([])
 TEA_ADD_STUB_SOURCES([tinyccStubLib.c])
 TEA_ADD_TCL_SOURCES([])

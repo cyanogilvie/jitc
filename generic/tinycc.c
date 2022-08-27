@@ -1,5 +1,6 @@
 #include "tinyccInt.h"
 #include "tip445.h"
+#include <sys/stat.h>
 
 Tcl_Mutex g_tcc_mutex = NULL;
 
@@ -16,7 +17,7 @@ Tcl_ObjType tinycc_objtype = {
 
 static void free_tinycc_internal_rep(Tcl_Obj* obj) //{{{
 {
-	Tcl_ObjIntRep*			ir = Tcl_FetchIntRep(src, &tinycc_objtype);
+	Tcl_ObjIntRep*			ir = Tcl_FetchIntRep(obj, &tinycc_objtype);
 	struct tinycc_intrep*	r = ir->twoPtrValue.ptr1;
 
 	// TODO: if "release" symbol is defined, call it as "void release(Tcl_Interp*)", propagating any exception thrown
@@ -34,12 +35,15 @@ static void free_tinycc_internal_rep(Tcl_Obj* obj) //{{{
 		r->values = NULL;
 	}
 	if (r->s) {
+		// TODO: lock mutex
+		Tcl_MutexLock(&g_tcc_mutex);
 		tcc_delete(r->s);
 		r->s = NULL;
+		Tcl_MutexUnlock(&g_tcc_mutex);
 	}
-	replace_tclobj(r->cdef, NULL);
+	replace_tclobj(&r->cdef, NULL);
 	if (r->debugfiles) {
-		Tcl_Obj*	fv[];
+		Tcl_Obj**	fv;
 		int			fc;
 
 		if (TCL_OK == Tcl_ListObjGetElements(NULL, r->debugfiles, &fc, &fv)) {
@@ -50,7 +54,8 @@ static void free_tinycc_internal_rep(Tcl_Obj* obj) //{{{
 			}
 		}
 	}
-	replace_tclobj(r->debugfiles, NULL);
+	replace_tclobj(&r->debugfiles, NULL);
+	replace_tclobj((Tcl_Obj**)&ir->twoPtrValue.ptr2, NULL);
 
 	ckfree(r);
 	r = NULL;
@@ -60,19 +65,12 @@ static void free_tinycc_internal_rep(Tcl_Obj* obj) //{{{
 static void dup_tinycc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup) //{{{
 {
 	Tcl_ObjIntRep*			ir = Tcl_FetchIntRep(src, &tinycc_objtype);
-	TCl_ObjIntRep*			newir = {0};
 	struct tinycc_intrep*	r = ir->twoPtrValue.ptr1;
-	struct tinycc_intrep*	newr = NULL;
-	Tcl_Obj*				intdup = NULL;
+	Tcl_ObjIntRep			newir = {0};
 
 	// Shouldn't ever need to happen, but if it does we have to recompile from source.
 	// Set the dup's intrep to a dup of the cdef list instead
-	newr = ckalloc(sizeof *newr);
-	newr = {
-		.cdef = r->cdef;
-	};
-	Tcl_IncrRefCount(newr.cdef);
-	newir.twoPtrValue = {.ptr1 = newr};
+	replace_tclobj((Tcl_Obj**)&newir.twoPtrValue.ptr2, r->cdef);
 
 	Tcl_StoreIntRep(dup, &tinycc_objtype, &newir);
 }
@@ -96,10 +94,12 @@ static void list_symbols(void* ctx, const char* name, const void* val) //{{{
 	Tcl_Obj*	symbols = ctx;
 	Tcl_Obj*	nameobj = NULL;
 	Tcl_Obj*	valobj = NULL;
-	Tcl_WideInt	w = val;
+	Tcl_WideInt	w = (Tcl_WideInt)val;
 	int			failed = 1;
 
-	replace_tclobj(&nameobj, Tcl_NewStringObj(name));
+	//fprintf(stderr, "list_symbols, name: (%s), val: %p, symbols: %p: \"%s\"\n", name, val, symbols, Tcl_GetString(symbols));
+
+	replace_tclobj(&nameobj, Tcl_NewStringObj(name, -1));
 	replace_tclobj(&valobj,  Tcl_NewWideIntObj(w));
 	if (TCL_OK != Tcl_ListObjAppendElement(NULL, symbols, nameobj)) goto finally;
 	if (TCL_OK != Tcl_ListObjAppendElement(NULL, symbols, valobj))  goto finally;
@@ -146,7 +146,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 		PART_DEFINE,
 		PART_UNDEFINE
 	};
-	Tcl_Obj*				ov[];
+	Tcl_Obj**				ov;
 	int						oc;
 	int						i;
 	Tcl_Obj*				debugpath = NULL;
@@ -177,12 +177,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 	if (debugpath) {
 		stat = Tcl_AllocStatBuf();
 		if (
-				-1 == Tcl_FSStat(debugpath, &stat) ||	// Doesn't exist
+				-1 == Tcl_FSStat(debugpath, stat) ||	// Doesn't exist
 				Tcl_GetModeFromStat(stat) != S_IFDIR	// Not a directory
 		) THROW_ERROR_LABEL(finally, code, "debugpath \"", Tcl_GetString(debugpath), "\" doesn't exist");
 	}
 
-	Tcl_MutexLock(g_tcc_mutex); mutexheld = 1;
+	Tcl_MutexLock(&g_tcc_mutex); mutexheld = 1;
 
 	tcc = tcc_new();
 	tcc_set_error_func(tcc, &compile_errors, errfunc);
@@ -197,7 +197,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 		switch (part) {
 			case PART_CODE:
 				if (debugpath) { // Write out to a temporary file instead, and try to arrange for it for be unlinked when intrep is freed {{{
-					replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj**){
+					replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj*[]){
 						debugpath,
 						Tcl_ObjPrintf("%p_%d", tcc, codeseq++)	// TODO: use name(tcc) for a friendly name instead?
 					}));
@@ -209,7 +209,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 						goto finally;
 					}
 					TEST_OK_LABEL(finally, code, Tcl_WriteObj(chan, v));
-					TEST_OK_LABEL(finally, code, Tcl_Close(chan));
+					TEST_OK_LABEL(finally, code, Tcl_Close(interp, chan));
 					chan = NULL;
 
 					if (-1 == tcc_add_file(tcc, Tcl_GetString(debugfile)))
@@ -231,23 +231,22 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 			case PART_OPTIONS:			tcc_set_options        (tcc, Tcl_GetString(v)); break;
 			case PART_INCLUDE_PATH:		tcc_add_include_path   (tcc, Tcl_GetString(v)); break;
 			case PART_SYSINCLUDE_PATH:	tcc_add_sysinclude_path(tcc, Tcl_GetString(v)); break;
-			case PART_TCCDIR:			tcc_add_lib_path       (tcc, Tcl_GetString(v)); break;
+			case PART_TCCDIR:			tcc_set_lib_path       (tcc, Tcl_GetString(v)); break;
 			case PART_UNDEFINE:			tcc_undefine_symbol    (tcc, Tcl_GetString(v)); break;
 
 			case PART_SYMBOL:
 				{
 					// treat this as another code object+symbol name to retrieve
-					Tcl_Obj*	sv[];
+					Tcl_Obj**	sv;
 					int			sc;
 					void*		val = NULL;
 
-					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sv, &sc));
+					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sc, &sv));
 					if (sc != 2)
 						THROW_ERROR_LABEL(finally, code, "Symbol definition must be a list: cdef symbol", Tcl_GetString(v));
 					TEST_OK_LABEL(finally, code, Tinycc_GetSymbolFromObj(interp, sv[0], sv[1], &val));
 
-					if (-1 == tcc_define_symbol(tcc, Tcl_GetString(sv[1]), val))
-						THROW_ERROR_LABEL(finally, code, "Error defining symbol", Tcl_GetString(sv[1]));
+					tcc_define_symbol(tcc, Tcl_GetString(sv[1]), val);
 				}
 				break;
 
@@ -263,10 +262,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 
 			case PART_DEFINE:
 				{
-					Tcl_Obj*	sv[];
+					Tcl_Obj**	sv;
 					int			sc;
 
-					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sv, &sc));
+					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sc, &sv));
 					if (sc != 2)
 						THROW_ERROR_LABEL(finally, code, "Definition must be a list: name value", Tcl_GetString(v));
 					tcc_define_symbol(tcc, Tcl_GetString(sv[0]), Tcl_GetString(sv[1]));
@@ -284,12 +283,13 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 
 		// Already have error info, add to it
 		code = TCL_ERROR;
-		Tcl_SetObjResult(interp, Tcl_AppendPrintfToObj(Tcl_GetObjResult(interp), "\nCompile errors:\n%s", Tcl_GetString(compile_errors)));
+		Tcl_SetObjResult(interp, Tcl_ObjPrintf("%s\nCompile errors:\n%s", Tcl_GetString(Tcl_GetObjResult(interp)), Tcl_GetString(compile_errors)));
+		replace_tclobj(&compile_errors, NULL);
 		goto finally;
 	}
 
 	r = ckalloc(sizeof *r);
-	r = {0};
+	*r = (struct tinycc_intrep){0};
 
 	r->s = tcc;
 
@@ -306,42 +306,45 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 	replace_tclobj(&symbols, Tcl_NewListObj(0, NULL));
 	tcc_list_symbols(tcc, symbols, list_symbols);
 
-	Tcl_Obj*	symv[];
-	int			symc;
-	TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, symbols, symc, symv));
-	if (i % 2 == 1) THROW_ERROR_LABEL(finally, code, "symbols list isn't even");
-	ptrdiff_t	offsets[symc];
-	ptrdiff_t	offset = 0;
-	r->symbols = ckalloc(sizeof(const char*) * (symc+1));
-	r->values  = ckalloc(sizeof(void*) * symc);
-	Tcl_DString	packed_symbols;
-	Tcl_DStringInit(&packed_symbols);
-	for (i=0; i<symc; i+=2) {
-		int			symlen;
-		const char*	symname = Tcl_GetStringFromObj(symv[i], &symlen);
+	{
+		Tcl_Obj**	symv;
+		int			symc;
+		TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, symbols, &symc, &symv));
+		if (i % 2 == 1) THROW_ERROR_LABEL(finally, code, "symbols list isn't even");
+		ptrdiff_t	offsets[symc];
+		ptrdiff_t	offset = 0;
+		r->symbols = ckalloc(sizeof(const char*) * (symc/2+1));
+		r->values  = ckalloc(sizeof(void*) * symc/2);
+		Tcl_DString	packed_symbols;
+		Tcl_DStringInit(&packed_symbols);
+		for (i=0; i<symc; i+=2) {
+			int			symlen;
+			const char*	symname = Tcl_GetStringFromObj(symv[i], &symlen);
 
-		Tcl_DStringAppend(&packed_symbols, symlen);
-		Tcl_DStringAppend(&packed_symbols, "\0", 1);
-		offsets[i] = offset;
-		offset += symlen + 1;
+			Tcl_DStringAppend(&packed_symbols, symname, symlen);
+			Tcl_DStringAppend(&packed_symbols, "\0", 1);
+			offsets[i/2] = offset;
+			offset += symlen + 1;
+		}
+		const int packed_symbols_len = Tcl_DStringLength(&packed_symbols);
+		r->packed_symbols = ckalloc(packed_symbols_len+1);
+		memcpy(r->packed_symbols, Tcl_DStringValue(&packed_symbols), packed_symbols_len);
+		r->packed_symbols[packed_symbols_len] = 0;
+		Tcl_DStringFree(&packed_symbols);
+
+		for (i=0; i<symc; i+=2) {
+			Tcl_WideInt	w;
+			void*		ptr;
+
+			TEST_OK_LABEL(finally, code, Tcl_GetWideIntFromObj(interp, symv[i+1], &w));
+			//ptr = (void*)w;
+			ptr = INT2PTR(w);
+
+			r->symbols[i/2] = r->packed_symbols + offsets[i/2];
+			r->values[i/2]  = ptr;
+		}
+		r->symbols[symc/2] = NULL;
 	}
-	const int packed_symbols_len = Tcl_DStringLength(&packed_symbols);
-	r->packed_symbols = ckalloc(packed_symbols_len+1);
-	memcpy(r->packed_symbols, Tcl_DStringValue(&packed_symbols), packed_symbols_len);
-	r->packed_symbols[packed_symbols_len] = 0;
-	Tcl_DStringFree(&packed_symbols);
-
-	for (i=0; i<symc; i+=2) {
-		Tcl_WideInt	w;
-		void*		ptr;
-
-		TEST_OK_LABEL(finally, code, Tcl_GetWideIntFromObj(interp, symv[i+1], &w));
-		ptr = w;
-
-		r->symbols[i] = r->packed_symbols + offsets[i];
-		r->values[i]  = ptr;
-	}
-	r->symbols[symc] = NULL;
 
 	replace_tclobj(&r->cdef, cdef);
 	replace_tclobj(&r->debugfiles, debugfiles);
@@ -354,9 +357,14 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 	tcc = NULL;
 
 finally:
-	if (mutexheld) {
-		mutexheld = 0;
-		Tcl_MutexUnlock(g_tcc_mutex);
+	if (compile_errors) {
+		if (code == TCL_OK) {
+			Tcl_SetObjResult(interp, compile_errors);
+		} else {
+			// Already have error info, add to it
+			Tcl_SetObjResult(interp, Tcl_ObjPrintf("%s\nCompile errors:\n%s", Tcl_GetString(Tcl_GetObjResult(interp)), Tcl_GetString(compile_errors)));
+		}
+		code = TCL_ERROR;
 	}
 
 	if (chan) {
@@ -365,7 +373,7 @@ finally:
 	}
 
 	if (debugfiles) {
-		Tcl_Obj*	fv[];
+		Tcl_Obj**	fv;
 		int			fc;
 		if (TCL_OK == Tcl_ListObjGetElements(NULL, debugfiles, &fc, &fv)) {
 			for (int i=0; i<fc; i++) {
@@ -390,10 +398,12 @@ finally:
 	}
 
 	if (r) {
+		/*
 		if (r->objcode) {
 			ckfree(r->objcode);
 			r->objcode = NULL;
 		}
+		*/
 		if (r->packed_symbols) {
 			ckfree(r->packed_symbols);
 			r->packed_symbols = NULL;
@@ -415,6 +425,11 @@ finally:
 		tcc = NULL;
 	}
 
+	if (mutexheld) {
+		mutexheld = 0;
+		Tcl_MutexUnlock(&g_tcc_mutex);
+	}
+
 	return code;
 }
 
@@ -424,31 +439,27 @@ int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct tinycc_intrep** rPtr
 	int						code = TCL_OK;
 	Tcl_ObjIntRep*			ir = Tcl_FetchIntRep(obj, &tinycc_objtype);
 	struct tinycc_intrep*	r = NULL;
-	Tcl_Obj*				hold_cdef = NULL;
 
 	if (ir == NULL) {
 		Tcl_ObjIntRep	newir = {0};
 
-		TEST_OK_LABEL(finally, code, compile(interp, obj, &newir.twoPtrValue.ptr1));
+		TEST_OK_LABEL(finally, code, compile(interp, obj, (struct tinycc_intrep **)&newir.twoPtrValue.ptr1));
 
 		Tcl_FreeIntRep(obj);
 		Tcl_StoreIntRep(obj, &tinycc_objtype, &newir);
 		ir = Tcl_FetchIntRep(obj, &tinycc_objtype);
 	}
 
-	r = ir.twoPtrValue.ptr1;
-
-	if (r->s == NULL) {
+	r = ir->twoPtrValue.ptr1;
+	if (r == NULL) {
 		// Duplicated intrep, recompile from the cdef copy
-		replace_tclobj(&hold_cdef, r->cdef);		// Prevent a possible transition to refcount 0 for r->cdef as compile replaces r->cdef with itself
-		TEST_OK_LABEL(finally, code, compile(interp, hold_cdef, r));
+		TEST_OK_LABEL(finally, code, compile(interp, (Tcl_Obj*)ir->twoPtrValue.ptr2, &r));
+		replace_tclobj((Tcl_Obj**)&ir->twoPtrValue.ptr2, NULL);
 	}
 
 	*rPtr = r;
 
 finally:
-	replace_tclobj(&hold_cdef, NULL);
-
 	return code;
 }
 
@@ -475,25 +486,28 @@ int Tinycc_GetSymbolsFromObj(Tcl_Interp* interp, Tcl_Obj* obj, Tcl_Obj** symbols
 {
 	int						code = TCL_OK;
 	struct tinycc_intrep*	r = NULL;
-	Tcl_Obj*				symbols = NULL;
+	Tcl_Obj*				lsymbols = NULL;
 	int						symc;
 
 	TEST_OK_LABEL(finally, code, get_r_from_obj(interp, obj, &r));
 
-	replace_tclobj(&symbols, Tcl_NewListObj(0, NULL));
-	for (symc=0; r->symbols[symc]; symc++)
-		TEST_OK_LABEL(finally, code, Tcl_ListObjAppendElement(interp, symbols, Tcl_NewStringObj(r->symbols[symc], -1)));	// TODO: dedup?
+	replace_tclobj(&lsymbols, Tcl_NewListObj(0, NULL));
+	for (symc=0; r->symbols[symc]; symc++) {
+		TEST_OK_LABEL(finally, code, Tcl_ListObjAppendElement(interp, lsymbols, Tcl_NewStringObj(r->symbols[symc], -1)));	// TODO: dedup?
+	}
 
-	Tcl_SetObjResult(interp, symbols);
+	replace_tclobj(symbols, lsymbols);
 
 finally:
+	replace_tclobj(&lsymbols, NULL);
+
 	return code;
 }
 
 //}}}
 // Stubs API }}}
 // Script API {{{
-static int capply_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const obj[]) //{{{
+static int capply_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
 {
 	int				code = TCL_OK;
 	Tcl_ObjCmdProc*	proc = NULL;
@@ -504,7 +518,7 @@ static int capply_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *c
 		goto finally;
 	}
 
-	TEST_OK_LABEL(finally, code, Tinycc_GetSymbolFromObj(interp, objv[1], objv[2], &proc));
+	TEST_OK_LABEL(finally, code, Tinycc_GetSymbolFromObj(interp, objv[1], objv[2], (void**)&proc));
 
 	TEST_OK_LABEL(finally, code, (proc)(NULL, interp, objc-2, objv+2));
 
@@ -537,7 +551,7 @@ static struct cmd {
 } cmds[] = {
 	{NS "::capply",		capply_cmd},
 	{NS "::symbols",	symbols_cmd},
-	NULL,				NULL}
+	{NULL,				NULL}
 };
 // Script API }}}
 
@@ -561,7 +575,7 @@ DLLEXPORT int Tinycc_Init(Tcl_Interp* interp)
 	TEST_OK_LABEL(finally, code, Tcl_Export(interp, ns, "*", 0));
 
 	while (c->name) {
-		if (NULL == Tcl_CreateObjCommand(interp, c->name, c->proc, l, NULL)) {
+		if (NULL == Tcl_CreateObjCommand(interp, c->name, c->proc, NULL, NULL)) {
 			Tcl_SetObjResult(interp, Tcl_ObjPrintf("Could not create command %s", c->name));
 			code = TCL_ERROR;
 			goto finally;

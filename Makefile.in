@@ -197,7 +197,7 @@ all: binaries libraries doc
 # of the Makefile, in the "BINARIES" variable.
 #========================================================================
 
-binaries: $(BINARIES)
+binaries: tcc $(BINARIES)
 
 libraries:
 
@@ -249,10 +249,10 @@ install-doc: doc
 test: binaries libraries
 	$(TCLSH) `@CYGPATH@ $(srcdir)/tests/all.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list load `@CYGPATH@ $(PKG_LIB_FILE)` $(PACKAGE_NAME)]"
+		[list load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]]"
 
 benchmark: binaries libraries
-	$(TCLSH) `@CYGPATH@ $(srcdir)/bench/run.tcl` $(TESTFLAGS) -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ load\ `@CYGPATH@ $(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)]]
+	$(TCLSH) `@CYGPATH@ $(srcdir)/bench/run.tcl` $(TESTFLAGS) -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ load\ `@CYGPATH@ ./$(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)]]
 
 shell: binaries libraries
 	@$(TCLSH) $(SCRIPT)
@@ -390,6 +390,8 @@ clean:
 	-test -z "$(BINARIES)" || rm -f $(BINARIES)
 	-rm -f *.$(OBJEXT) core *.core
 	-test -z "$(CLEANFILES)" || rm -f $(CLEANFILES)
+	make -C tinycc clean
+	-rm -rf local
 
 distclean: clean
 	-rm -f *.tab.c
@@ -477,14 +479,17 @@ genstubs: generic/tinycc.decls
 tags:
 	ctags-exuberant generic/*
 
-tinycc/libtcc.h:
-	git submodule init
+tcc:
+	mkdir -p tinycc
+	mkdir -p local
+	git submodule update --init --depth 1 tinycc
+	(cd tinycc; ./configure --dwarf=5 --prefix=../local)
+	make -C tinycc -j 16 libtcc.so libtcc.a all
+	make -C tinycc install
 
-tinycc/libtcc.a:
-	(cd tinycc; ./configure --dwarf=5 --enable-static; make -j 16)
 
 .PHONY: all binaries clean depend distclean doc install libraries test
-.PHONY: gdb gdb-test valgrind valgrindshell genstubs
+.PHONY: gdb gdb-test valgrind valgrindshell genstubs tcc
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

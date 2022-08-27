@@ -3,14 +3,28 @@
 #include <libtcc.h>
 #include "tinycc.h"
 
+// pointer to/from int from tclInt.h
+#if !defined(INT2PTR)
+#   define INT2PTR(p) ((void *)(ptrdiff_t)(p))
+#endif
+#if !defined(PTR2INT)
+#   define PTR2INT(p) ((ptrdiff_t)(p))
+#endif
+#if !defined(UINT2PTR)
+#   define UINT2PTR(p) ((void *)(size_t)(p))
+#endif
+#if !defined(PTR2UINT)
+#   define PTR2UINT(p) ((size_t)(p))
+#endif
+
 extern Tcl_Mutex g_tcc_mutex;
 
 struct tinycc_intrep {
 	//const unsigned char*	objcode;
 	TCCState*				s;
-	const char*				packed_symbols;
-	const char*				symbols[];
-	void*					values[];
+	char*					packed_symbols;
+	const char**			symbols;
+	void**					values;
 	Tcl_Obj*				cdef;
 	Tcl_Obj*				debugfiles;
 };
