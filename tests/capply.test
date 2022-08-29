@@ -38,6 +38,159 @@ test capply-1.1 {hello, world} -body { #<<<
 	} hello foo bar
 } -result {hello, foo and bar}
 #>>>
+test capply-2.1 {missing symbol} -body { #<<<
+	tinycc::capply {
+		include_path local/lib/tcc/include
+		include_path /home/cyan/local8.7_valgrind/include
+		library_path local/lib/tcc
+		library_path /home/cyan/local8.7_valgrind/lib
+
+		code { //@begin=c@
+			#include <tcl.h>
+
+			int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+			{
+				int			code = TCL_OK;
+
+				if (objc != 3) {
+					Tcl_WrongNumArgs(interp, 1, objv, "a b");
+					code = TCL_ERROR;
+					goto finally;
+				}
+
+				Tcl_SetObjResult(interp, Tcl_ObjPrintf("hello, %s and %s",
+					Tcl_GetString(objv[1]),
+					Tcl_GetString(objv[2])));
+
+			finally:
+				return code;
+			}
+			//@end=c@
+		}
+	} hellox foo bar
+} -returnCodes error -errorCode {TINYCC SYMBOL hellox} -result {Symbol not found: "hellox"}
+#>>>
+test capply-3.1 {exception} -body { #<<<
+	tinycc::capply {
+		include_path local/lib/tcc/include
+		include_path /home/cyan/local8.7_valgrind/include
+		library_path local/lib/tcc
+		library_path /home/cyan/local8.7_valgrind/lib
+
+		code { //@begin=c@
+			#include <tcl.h>
+
+			int exception(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+			{
+				int			code = TCL_OK;
+
+				if (objc != 3) {
+					Tcl_WrongNumArgs(interp, 1, objv, "a b");
+					code = TCL_ERROR;
+					goto finally;
+				}
+
+				Tcl_SetErrorCode(interp, "FOO", "BAR", "BAZ", NULL);
+				Tcl_SetObjResult(interp, Tcl_NewStringObj("Some error message", -1));
+				code = TCL_ERROR;
+
+			finally:
+				return code;
+			}
+			//@end=c@
+		}
+	} exception foo bar
+} -returnCodes error -errorCode {FOO BAR BAZ} -result {Some error message}
+#>>>
+test capply-3.2 {exception: args} -setup { #<<<
+	set cdef	{
+		include_path local/lib/tcc/include
+		include_path /home/cyan/local8.7_valgrind/include
+		library_path local/lib/tcc
+		library_path /home/cyan/local8.7_valgrind/lib
+
+		code { //@begin=c@
+			#include <tcl.h>
+
+			int exception(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+			{
+				int			code = TCL_OK;
+
+				if (objc != 3) {
+					Tcl_WrongNumArgs(interp, 1, objv, "a b");
+					code = TCL_ERROR;
+					goto finally;
+				}
+
+				code = TCL_ERROR;
+
+			finally:
+				return code;
+			}
+			//@end=c@
+		}
+	}
+} -body {
+	tinycc::capply $cdef exception foo
+} -cleanup {
+	unset -nocomplain cdef
+} -returnCodes error -errorCode {TCL WRONGARGS} -result {wrong # args: should be "exception a b"}
+#>>>
+test capply-4.1 {mode: standard} -setup { #<<<
+	set cdef	{
+		code { //@begin=c@
+			int msg(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+			{
+				int			code = TCL_OK;
+				Tcl_Obj*	msg = NULL;
+
+				CHECK_ARGS(2, "a b");
+
+				replace_tclobj(&msg, Tcl_ObjPrintf("hello, %s and %s", Tcl_GetString(objv[1]), Tcl_GetString(objv[2])));
+				Tcl_SetObjResult(interp, msg);
+
+			finally:
+				replace_tclobj(&msg, NULL);
+
+				return code;
+			}
+			//@end=c@
+		}
+	}
+} -body {
+	tinycc::capply $cdef msg foo bar
+} -cleanup {
+	unset -nocomplain cdef
+} -result {hello, foo and bar}
+#>>>
+test capply-4.2 {mode: raw} -setup { #<<<
+	set cdef	{
+		mode	raw
+		code { //@begin=c@
+			int msg(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+			{
+				int			code = TCL_OK;
+				Tcl_Obj*	msg = NULL;
+
+				CHECK_ARGS(2, "a b");
+
+				replace_tclobj(&msg, Tcl_ObjPrintf("hello, %s and %s", Tcl_GetString(objv[1]), Tcl_GetString(objv[2])));
+				Tcl_SetObjResult(interp, msg);
+
+			finally:
+				replace_tclobj(&msg, NULL);
+
+				return code;
+			}
+			//@end=c@
+		}
+	}
+} -body {
+	tinycc::capply $cdef msg foo bar
+} -cleanup {
+	unset -nocomplain cdef
+} -returnCodes error -match glob -result "*<string>:2: error: ',' expected (got \"cdata\")*"
+#>>>
 
 # cleanup
 ::tcltest::cleanupTests

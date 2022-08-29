@@ -70,6 +70,11 @@ static void dup_tinycc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup) //{{{
 //}}}
 
 // Internal API {{{
+const char* lit_str[] = {
+	"include",
+	NULL
+};
+
 static void errfunc(void* cdata, const char* msg) //{{{
 {
 	Tcl_Obj**	compile_errors = (Tcl_Obj**)cdata;
@@ -107,6 +112,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 {
 	int						code = TCL_OK;
 	static const char* parts[] = {
+		"mode",
 		"code",
 		"file",
 		"debug",
@@ -122,6 +128,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 		NULL
 	};
 	enum {
+		PART_MODE,
 		PART_CODE,
 		PART_FILE,
 		PART_DEBUG,
@@ -135,6 +142,16 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 		PART_DEFINE,
 		PART_UNDEFINE
 	};
+	static const char* modes[] = {
+		"tcl",
+		"raw",
+		NULL
+	};
+	enum {
+		MODE_TCL,
+		MODE_RAW
+	};
+	int						mode = MODE_TCL;
 	Tcl_Obj**				ov;
 	int						oc;
 	int						i;
@@ -158,8 +175,14 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 	for (i=0; i<oc; i+=2) {
 		int			part;
 		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
-		if (part == PART_DEBUG)
-			replace_tclobj(&debugpath, ov[i+1]);
+		switch (part) {
+			case PART_DEBUG:
+				replace_tclobj(&debugpath, ov[i+1]);
+				break;
+			case PART_MODE:
+				TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i+1], modes, "mode", TCL_EXACT, &mode));
+				break;
+		}
 	}
 
 	if (debugpath) {
@@ -176,6 +199,33 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 	tcc_set_error_func(tcc, &compile_errors, errfunc);
 	tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
 
+	// Set some mode-dependent defaults
+	switch (mode) {
+		case MODE_TCL:
+			{
+				Tcl_Obj*	incpath = NULL;
+				struct interp_cx*	l = Tcl_GetAssocData(interp, "tinycc", NULL);
+
+				if (l->libdir == NULL)
+					THROW_ERROR_LABEL(finally, code, "No libdir set");
+
+				replace_tclobj(&incpath, Tcl_FSJoinToPath(l->libdir, 1, (Tcl_Obj*[]){
+					l->lit[LIT_INCLUDE]
+				}));
+				tcc_set_lib_path(tcc, Tcl_GetString(l->libdir));
+				tcc_add_include_path(tcc, Tcl_GetString(incpath));
+				tcc_add_library_path(tcc, Tcl_GetString(l->libdir));
+				replace_tclobj(&incpath, NULL);
+			}
+			break;
+
+		case MODE_RAW:
+			break;
+
+		default:
+			THROW_ERROR_LABEL(finally, code, "Unhandled mode");
+	}
+
 	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
 	for (i=0; i<oc; i+=2) {
 		int			part;
@@ -183,38 +233,62 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 
 		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
 		switch (part) {
-			case PART_CODE:
-				if (debugpath) { // Write out to a temporary file instead, and try to arrange for it for be unlinked when intrep is freed {{{
-					replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj*[]){
-						debugpath,
-						Tcl_ObjPrintf("%p_%d", tcc, codeseq++)	// TODO: use name(tcc) for a friendly name instead?
-					}));
-					replace_tclobj(&debugfile, Tcl_FSJoinPath(pathelements, 2));
-					TEST_OK_LABEL(finally, code, Tcl_ListObjAppendElement(interp, debugfiles, debugfile));
-					chan = Tcl_FSOpenFileChannel(interp, debugfile, "w", 0400);
-					if (chan == NULL) {
-						code = TCL_ERROR;
-						goto finally;
-					}
-					TEST_OK_LABEL(finally, code, Tcl_WriteObj(chan, v));
-					TEST_OK_LABEL(finally, code, Tcl_Close(interp, chan));
-					chan = NULL;
+			case PART_MODE:
+			case PART_DEBUG:
+				/* Handled above */
+				break;
 
-					if (-1 == tcc_add_file(tcc, Tcl_GetString(debugfile)))
-						THROW_ERROR_LABEL(finally, code, "Error compiling file", Tcl_GetString(debugfile));
-					//}}}
-				} else {
-					if (-1 == tcc_compile_string(tcc, Tcl_GetString(v)))
-						THROW_ERROR_LABEL(finally, code, "Error compiling code", Tcl_GetString(v));
+			case PART_CODE:
+				{
+					Tcl_DString		c;
+					int				len;
+					const char*		str = Tcl_GetStringFromObj(v, &len);
+
+					Tcl_DStringInit(&c);
+					switch (mode) {
+						case MODE_RAW:
+							break;
+						case MODE_TCL:
+							Tcl_DStringAppend(&c, "#include <tclstuff.h>\n", -1);
+							break;
+					}
+					Tcl_DStringAppend(&c, str, len);
+
+					if (debugpath) { // Write out to a temporary file instead, and try to arrange for it for be unlinked when intrep is freed {{{
+						replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj*[]){
+							debugpath,
+							Tcl_ObjPrintf("%p_%d", tcc, codeseq++)	// TODO: use name(tcc) for a friendly name instead?
+						}));
+						replace_tclobj(&debugfile, Tcl_FSJoinPath(pathelements, 2));
+						TEST_OK_LABEL(codeerror, code, Tcl_ListObjAppendElement(interp, debugfiles, debugfile));
+						chan = Tcl_FSOpenFileChannel(interp, debugfile, "w", 0400);
+						if (chan == NULL) {
+							code = TCL_ERROR;
+							goto finally;
+						}
+						TEST_OK_LABEL(codeerror, code, Tcl_WriteChars(chan, Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
+						TEST_OK_LABEL(codeerror, code, Tcl_Close(interp, chan));
+						chan = NULL;
+
+						if (-1 == tcc_add_file(tcc, Tcl_GetString(debugfile)))
+							THROW_ERROR_LABEL(codeerror, code, "Error compiling file \"", Tcl_GetString(debugfile), "\"");
+						//}}}
+					} else {
+						if (-1 == tcc_compile_string(tcc, Tcl_DStringValue(&c)))
+							THROW_ERROR_LABEL(codeerror, code, "Error compiling code:\n", Tcl_DStringValue(&c));
+					}
+					Tcl_DStringFree(&c);
+					break;
+codeerror:
+					Tcl_DStringFree(&c);
+					goto finally;
 				}
 				break;
 
 			case PART_FILE:
 				if (-1 == tcc_add_file(tcc, Tcl_GetString(v)))
-					THROW_ERROR_LABEL(finally, code, "Error compiling file", Tcl_GetString(v));
+					THROW_ERROR_LABEL(finally, code, "Error compiling file \"", Tcl_GetString(v), "\"");
 				break;
-
-			case PART_DEBUG: /* Handled above */ break;
 
 			case PART_OPTIONS:			tcc_set_options        (tcc, Tcl_GetString(v)); break;
 			case PART_INCLUDE_PATH:		tcc_add_include_path   (tcc, Tcl_GetString(v)); break;
@@ -231,7 +305,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sc, &sv));
 					if (sc != 2)
-						THROW_ERROR_LABEL(finally, code, "Symbol definition must be a list: cdef symbol", Tcl_GetString(v));
+						THROW_ERROR_LABEL(finally, code, "Symbol definition must be a list: cdef symbol: \"", Tcl_GetString(v), "\"");
 					TEST_OK_LABEL(finally, code, Tinycc_GetSymbolFromObj(interp, sv[0], sv[1], &val));
 
 					tcc_define_symbol(tcc, Tcl_GetString(sv[1]), val);
@@ -240,12 +314,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 
 			case PART_LIBRARY_PATH:
 				if (-1 == tcc_add_library_path(tcc, Tcl_GetString(v)))
-					THROW_ERROR_LABEL(finally, code, "Error adding library path", Tcl_GetString(v));
+					THROW_ERROR_LABEL(finally, code, "Error adding library path \"", Tcl_GetString(v), "\"");
 				break;
 
 			case PART_LIBRARY:
 				if (-1 == tcc_add_library(tcc, Tcl_GetString(v)))
-					THROW_ERROR_LABEL(finally, code, "Error adding library", Tcl_GetString(v));
+					THROW_ERROR_LABEL(finally, code, "Error adding library \"", Tcl_GetString(v), "\"");
 				break;
 
 			case PART_DEFINE:
@@ -255,7 +329,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sc, &sv));
 					if (sc != 2)
-						THROW_ERROR_LABEL(finally, code, "Definition must be a list: name value", Tcl_GetString(v));
+						THROW_ERROR_LABEL(finally, code, "Definition must be a list: name value: \"", Tcl_GetString(v), "\"");
 					tcc_define_symbol(tcc, Tcl_GetString(sv[0]), Tcl_GetString(sv[1]));
 				}
 				break;
@@ -394,6 +468,20 @@ finally:
 }
 
 //}}}
+static void free_interp_cx(ClientData cdata, Tcl_Interp* interp) //{{{
+{
+	struct interp_cx*	l = cdata;
+
+	for (int i=0; i<LIT_SIZE; i++)
+		replace_tclobj(&l->lit[i], NULL);
+
+	replace_tclobj(&l->libdir, NULL);
+
+	ckfree(l);
+	l = NULL;
+}
+
+//}}}
 // Internal API }}}
 // Stubs API {{{
 int Tinycc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* obj, Tcl_Obj* symbol, void** val) //{{{
@@ -409,7 +497,8 @@ int Tinycc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* obj, Tcl_Obj* symbol, v
 		TEST_OK_LABEL(finally, code, Tcl_GetWideIntFromObj(interp, valobj, &w));
 		*val = UINT2PTR(w);
 	} else {
-		THROW_ERROR_LABEL(finally, code, "Symbol not found");
+		Tcl_SetErrorCode(interp, "TINYCC", "SYMBOL", Tcl_GetString(symbol), NULL);
+		THROW_ERROR_LABEL(finally, code, "Symbol not found: \"", Tcl_GetString(symbol), "\"");
 	}
 
 
@@ -463,8 +552,7 @@ static int capply_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *c
 	}
 
 	TEST_OK_LABEL(finally, code, Tinycc_GetSymbolFromObj(interp, objv[1], objv[2], (void**)&proc));
-
-	TEST_OK_LABEL(finally, code, (proc)(NULL, interp, objc-2, objv+2));
+	code = (proc)(NULL, interp, objc-2, objv+2);
 
 finally:
 	return code;
@@ -487,6 +575,18 @@ finally:
 }
 
 //}}}
+static int setpath_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+{
+	struct interp_cx*	l = cdata;
+
+	CHECK_ARGS(1, "dir");
+
+	replace_tclobj(&l->libdir, objv[1]);
+
+	return TCL_OK;
+}
+
+//}}}
 
 #define NS	"::tinycc"
 static struct cmd {
@@ -495,6 +595,7 @@ static struct cmd {
 } cmds[] = {
 	{NS "::capply",		capply_cmd},
 	{NS "::symbols",	symbols_cmd},
+	{NS "::_setpath",	setpath_cmd},
 	{NULL,				NULL}
 };
 // Script API }}}
@@ -506,9 +607,10 @@ extern "C" {
 #endif
 DLLEXPORT int Tinycc_Init(Tcl_Interp* interp)
 {
-	int				code = TCL_OK;
-	Tcl_Namespace*	ns = NULL;
-	struct cmd*		c = cmds;
+	int					code = TCL_OK;
+	Tcl_Namespace*		ns = NULL;
+	struct cmd*			c = cmds;
+	struct interp_cx*	l = NULL;
 
 #if USE_TCL_STUBS
 	if (Tcl_InitStubs(interp, TCL_VERSION, 0) == NULL)
@@ -518,8 +620,17 @@ DLLEXPORT int Tinycc_Init(Tcl_Interp* interp)
 	ns = Tcl_CreateNamespace(interp, NS, NULL, NULL);
 	TEST_OK_LABEL(finally, code, Tcl_Export(interp, ns, "*", 0));
 
+	// Set up interp_cx {{{
+	l = (struct interp_cx*)ckalloc(sizeof *l);
+	memset(l, 0, sizeof *l);
+	for (int i=0; i<LIT_SIZE; i++)
+		replace_tclobj(&l->lit[i], Tcl_NewStringObj(lit_str[i], -1));
+
+	Tcl_SetAssocData(interp, "tinycc", free_interp_cx, l);
+	// Set up interp_cx }}}
+
 	while (c->name) {
-		if (NULL == Tcl_CreateObjCommand(interp, c->name, c->proc, NULL, NULL)) {
+		if (NULL == Tcl_CreateObjCommand(interp, c->name, c->proc, l, NULL)) {
 			Tcl_SetObjResult(interp, Tcl_ObjPrintf("Could not create command %s", c->name));
 			code = TCL_ERROR;
 			goto finally;

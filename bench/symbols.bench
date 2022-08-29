@@ -7,14 +7,7 @@ package require tinycc
 
 proc main {} {
 	set stdcdef	{
-		include_path local/lib/tcc/include
-		include_path /home/cyan/local8.7_valgrind/include
-		library_path local/lib/tcc
-		library_path /home/cyan/local8.7_valgrind/lib
-
 		code { //@begin=c@
-			#include <tcl.h>
-
 			int init(Tcl_Interp* interp)
 			{
 				return TCL_OK;

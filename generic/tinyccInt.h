@@ -28,4 +28,15 @@ struct tinycc_intrep {
 	Tcl_Interp*				interp;
 };
 
+enum {
+	LIT_INCLUDE,
+	LIT_SIZE
+};
+extern const char*	lit_str[];
+
+struct interp_cx {
+	Tcl_Obj*		lit[LIT_SIZE];
+	Tcl_Obj*		libdir;
+};
+
 int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct tinycc_intrep** rPtr);
