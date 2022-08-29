@@ -6,9 +6,10 @@ git config --global --add safe.directory /build/tinycc/tinycc
 cp -a /src/tinycc .
 cd tinycc
 
-#export CFLAGS="-O3 -march=haswell -flto"
+export CFLAGS="-O3 -march=haswell -flto"
 #export CFLAGS="-O3 -march=native -flto"
-export CFLAGS="-O3 -flto"
+#export CFLAGS="-O3 -flto"
+#export CFLAGS="-O2 -flto"
 
 autoconf
 ./configure CFLAGS="${CFLAGS}" --with-tcl=/usr/local/lib --enable-symbols --enable-64bit

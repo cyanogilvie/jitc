@@ -21,12 +21,8 @@
 extern Tcl_Mutex g_tcc_mutex;
 
 struct tinycc_intrep {
-	//const unsigned char*	objcode;
 	TCCState*				s;
-	char*					packed_symbols;
-	const char**			symbols;
-	Tcl_Obj*				symbolsdict;
-	void**					values;
+	Tcl_Obj*				symbols;
 	Tcl_Obj*				cdef;
 	Tcl_Obj*				debugfiles;
 	Tcl_Interp*				interp;

@@ -40,23 +40,6 @@ proc main {} {
 		}
 	} -result 1
 	#>>>
-	bench symbols-100.1 {get symbol, exists} -batch auto -setup { #<<<
-		set refval	[tinycc::capply $stdcdef sym]
-	} -compare {
-		index	{expr {[tinycc::symbol_index $stdcdef sym] eq $refval}}
-		dict	{expr {[tinycc::symbol_dict  $stdcdef sym] eq $refval}}
-		tcc		{expr {[tinycc::symbol_tcc   $stdcdef sym] eq $refval}}
-	} -cleanup {
-		unset -nocomplain refval
-	} -result 1
-	#>>>
-	bench symbols-100.2 {get symbol, doesn't exist} -batch auto -setup { #<<<
-	} -compare {
-		index	{catch {tinycc::symbol_index $stdcdef nonesuch]}}
-		dict	{catch {tinycc::symbol_dict  $stdcdef nonesuch]}}
-		tcc		{catch {tinycc::symbol_tcc   $stdcdef nonesuch]}}
-	} -result 1
-	#>>>
 }
 
 main
