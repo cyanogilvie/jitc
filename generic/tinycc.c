@@ -4,6 +4,9 @@
 
 Tcl_Mutex g_tcc_mutex = NULL;
 
+typedef int (cdef_init)(Tcl_Interp* interp);
+typedef int (cdef_release)(Tcl_Interp* interp);
+
 static void free_tinycc_internal_rep(Tcl_Obj* obj);
 static void dup_tinycc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
 
@@ -34,13 +37,16 @@ static void free_tinycc_internal_rep(Tcl_Obj* obj) //{{{
 		ckfree(r->values);
 		r->values = NULL;
 	}
+	replace_tclobj(&r->symbolsdict, NULL);
 	if (r->s) {
-		// TODO: lock mutex
 		Tcl_MutexLock(&g_tcc_mutex);
+		cdef_release*	release = tcc_get_symbol(r->s, "release");
+		if (release) (release)(r->interp);
 		tcc_delete(r->s);
 		r->s = NULL;
 		Tcl_MutexUnlock(&g_tcc_mutex);
 	}
+	r->interp = NULL;
 	replace_tclobj(&r->cdef, NULL);
 	if (r->debugfiles) {
 		Tcl_Obj**	fv;
@@ -103,6 +109,30 @@ static void list_symbols(void* ctx, const char* name, const void* val) //{{{
 	replace_tclobj(&valobj,  Tcl_NewWideIntObj(w));
 	if (TCL_OK != Tcl_ListObjAppendElement(NULL, symbols, nameobj)) goto finally;
 	if (TCL_OK != Tcl_ListObjAppendElement(NULL, symbols, valobj))  goto finally;
+	failed = 0;
+
+finally:
+	replace_tclobj(&nameobj, NULL);
+	replace_tclobj(&valobj,  NULL);
+
+	if (failed)
+		Tcl_Panic("Failed to append symbol to list: %s: %p", name, val);
+}
+
+//}}}
+static void list_symbols_dict(void* ctx, const char* name, const void* val) //{{{
+{
+	Tcl_Obj*	symbolsdict = ctx;
+	Tcl_Obj*	nameobj = NULL;
+	Tcl_Obj*	valobj = NULL;
+	Tcl_WideInt	w = (Tcl_WideInt)val;
+	int			failed = 1;
+
+	//fprintf(stderr, "list_symbols, name: (%s), val: %p, symbols: %p: \"%s\"\n", name, val, symbols, Tcl_GetString(symbols));
+
+	replace_tclobj(&nameobj, Tcl_NewStringObj(name, -1));
+	replace_tclobj(&valobj,  Tcl_NewWideIntObj(w));
+	if (TCL_OK != Tcl_DictObjPut(NULL, symbolsdict, nameobj, valobj)) goto finally;
 	failed = 0;
 
 finally:
@@ -292,6 +322,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 	*r = (struct tinycc_intrep){0};
 
 	r->s = tcc;
+	r->interp = interp;
 
 	/*
 	const int	memsize = tcc_relocate(tcc, NULL);
@@ -305,6 +336,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 
 	replace_tclobj(&symbols, Tcl_NewListObj(0, NULL));
 	tcc_list_symbols(tcc, symbols, list_symbols);
+
+	replace_tclobj(&r->symbolsdict, Tcl_NewDictObj());
+	tcc_list_symbols(tcc, r->symbolsdict, list_symbols_dict);
 
 	{
 		Tcl_Obj**	symv;
@@ -346,11 +380,14 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 		r->symbols[symc/2] = NULL;
 	}
 
-	replace_tclobj(&r->cdef, cdef);
+	// Avoid a circular reference between cdef and our new tinycc intrep obj
+	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
 	replace_tclobj(&r->debugfiles, debugfiles);
 	replace_tclobj(&debugfiles, NULL);
 
-	// TODO: if "init" symbol is defined, call it as "int init(Tcl_Interp*)", propagating any exception thrown
+	cdef_init*	init = tcc_get_symbol(tcc, "init");
+	if (init)
+		TEST_OK_LABEL(finally, code, (init)(interp));
 
 	*rPtr = r;
 	r = NULL;
@@ -416,6 +453,7 @@ finally:
 			ckfree(r->values);
 			r->values = NULL;
 		}
+		replace_tclobj(&r->symbolsdict, NULL);
 		ckfree(r);
 		r = NULL;
 	}
@@ -470,12 +508,20 @@ int Tinycc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* obj, Tcl_Obj* symbol, v
 {
 	int						code = TCL_OK;
 	struct tinycc_intrep*	r = NULL;
-	int						si;
+	Tcl_Obj*				valobj = NULL;
+	//int						si;
 
 	TEST_OK_LABEL(finally, code, get_r_from_obj(interp, obj, &r));
-	TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, symbol, r->symbols, "symbol", TCL_EXACT, &si));
+	//TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, symbol, r->symbols, "symbol", TCL_EXACT, &si));
+	TEST_OK_LABEL(finally, code, Tcl_DictObjGet(interp, r->symbolsdict, symbol, &valobj));
+	if (valobj) {
+		Tcl_WideInt	w;
+		TEST_OK_LABEL(finally, code, Tcl_GetWideIntFromObj(interp, valobj, &w));
+		*val = UINT2PTR(w);
+	} else {
+		THROW_ERROR_LABEL(finally, code, "Symbol not found");
+	}
 
-	*val = r->values[si];
 
 finally:
 	return code;
@@ -543,6 +589,63 @@ finally:
 }
 
 //}}}
+static int symbol_index_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+{
+	int						code = TCL_OK;
+	struct tinycc_intrep*	r = NULL;
+	int						si;
+
+	CHECK_ARGS(2, "cdef symbol");
+	TEST_OK_LABEL(finally, code, get_r_from_obj(interp, objv[1], &r));
+	TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, objv[2], r->symbols, "symbol", TCL_EXACT, &si));
+	Tcl_SetObjResult(interp, Tcl_NewWideIntObj(PTR2UINT(r->values[si])));;
+
+finally:
+	return code;
+}
+
+//}}}
+static int symbol_tcc_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+{
+	int						code = TCL_OK;
+	struct tinycc_intrep*	r = NULL;
+
+	CHECK_ARGS(2, "cdef symbol");
+	TEST_OK_LABEL(finally, code, get_r_from_obj(interp, objv[1], &r));
+	void*	val = tcc_get_symbol(r->s, Tcl_GetString(objv[2]));
+	if (val) {
+		Tcl_SetObjResult(interp, Tcl_NewWideIntObj(PTR2UINT(val)));
+	} else {
+		THROW_ERROR_LABEL(finally, code, "Symbol not found");
+	}
+
+finally:
+	return code;
+}
+
+//}}}
+static int symbol_dict_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+{
+	int						code = TCL_OK;
+	struct tinycc_intrep*	r = NULL;
+	Tcl_Obj*				valobj = NULL;
+	Tcl_WideInt				w;
+
+	CHECK_ARGS(2, "cdef symbol");
+	TEST_OK_LABEL(finally, code, get_r_from_obj(interp, objv[1], &r));
+	TEST_OK_LABEL(finally, code, Tcl_DictObjGet(interp, r->symbolsdict, objv[2], &valobj));
+	if (valobj) {
+		TEST_OK_LABEL(finally, code, Tcl_GetWideIntFromObj(interp, valobj, &w));
+		Tcl_SetObjResult(interp, valobj);
+	} else {
+		THROW_ERROR_LABEL(finally, code, "Symbol not found");
+	}
+
+finally:
+	return code;
+}
+
+//}}}
 
 #define NS	"::tinycc"
 static struct cmd {
@@ -551,6 +654,9 @@ static struct cmd {
 } cmds[] = {
 	{NS "::capply",		capply_cmd},
 	{NS "::symbols",	symbols_cmd},
+	{NS "::symbol_index",	symbol_index_cmd},
+	{NS "::symbol_tcc",		symbol_tcc_cmd},
+	{NS "::symbol_dict",	symbol_dict_cmd},
 	{NULL,				NULL}
 };
 // Script API }}}

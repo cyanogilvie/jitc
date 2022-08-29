@@ -213,11 +213,11 @@ https://github.com/cyanogilvie/tinycc/issues
 tcc(1), https://repo.or.cz/tinycc.git
 .SH PROJECT STATUS
 .PP
-Draft, never been built, let alone run and tested.
+Work in progress, only very basic testing has been done.
 Using it anywhere that matters would be very brave indeed.
 .SH TODO
 .IP \[bu] 2
-\[u2610] Implement \f[B]init\f[R] and \f[B]release\f[R]
+\[u2612] Implement \f[B]init\f[R] and \f[B]release\f[R]
 .IP \[bu] 2
 \[u2610] More test coverage
 .IP \[bu] 2

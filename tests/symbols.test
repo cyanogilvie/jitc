@@ -6,6 +6,33 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
 ::tcltest::loadTestedCommands
 package require tinycc
 
+set stdcdef	{
+	include_path local/lib/tcc/include
+	include_path /home/cyan/local8.7_valgrind/include
+	library_path local/lib/tcc
+	library_path /home/cyan/local8.7_valgrind/lib
+
+	code { //@begin=c@
+		#include <tcl.h>
+
+		int init(Tcl_Interp* interp)
+		{
+			return TCL_OK;
+		}
+
+		int sym(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+		{
+			Tcl_SetObjResult(interp, Tcl_NewWideIntObj((Tcl_WideInt)sym));
+			return TCL_OK;
+		}
+
+		void release(Tcl_Interp* interp)
+		{
+		}
+		//@end=c@
+	}
+}
+
 test symbols-1.1 {List the symbols in a cdef} -body { #<<<
 	lsort [lmap sym [tinycc::symbols {
 		include_path local/lib/tcc/include
@@ -36,11 +63,13 @@ test symbols-1.1 {List the symbols in a cdef} -body { #<<<
 
 			int init(Tcl_Interp* interp)
 			{
+				//fprintf(stderr, "symbols init\n");
 				return TCL_OK;
 			}
 
 			void release(Tcl_Interp* interp)
 			{
+				//fprintf(stderr, "symbols release\n");
 			}
 			//@end=c@
 		}
@@ -48,9 +77,36 @@ test symbols-1.1 {List the symbols in a cdef} -body { #<<<
 		if {$sym ni {hello init release}} continue
 		set sym
 	}]
+} -cleanup {
+	unset -nocomplain sym
 } -result {hello init release}
 #>>>
+test symbols-100.1 {fetch a symbol using GetIndexFromObj, exists} -body { #<<<
+	expr {[tinycc::symbol_index $stdcdef sym] eq [tinycc::capply $stdcdef sym]}
+} -result 1
+#>>>
+test symbols-100.2 {fetch a symbol using GetIndexFromObj, doesn't exist} -body { #<<<
+	tinycc::symbol_index $stdcdef nonesuch
+} -returnCodes error -errorCode {TCL LOOKUP INDEX symbol nonesuch} -match glob -result "bad symbol \"nonesuch\": must be *"
+#>>>
+test symbols-101.1 {fetch a symbol using native tcc api, exists} -body { #<<<
+	expr {[tinycc::symbol_tcc $stdcdef sym] eq [tinycc::capply $stdcdef sym]}
+} -result 1
+#>>>
+test symbols-101.2 {fetch a symbol using native tcc api, doesn't exist} -body { #<<<
+	tinycc::symbol_tcc $stdcdef nonesuch
+} -returnCodes error -errorCode NONE -result {Symbol not found}
+#>>>
+test symbols-102.1 {fetch a symbol from dict, exists} -body { #<<<
+	expr {[tinycc::symbol_dict $stdcdef sym] eq [tinycc::capply $stdcdef sym]}
+} -result 1
+#>>>
+test symbols-102.2 {fetch a symbol from dict, doesn't exist} -body { #<<<
+	tinycc::symbol_dict $stdcdef nonesuch
+} -returnCodes error -errorCode NONE -result {Symbol not found}
+#>>>
 
+unset -nocomplain stdcdef
 
 # cleanup
 ::tcltest::cleanupTests

@@ -1,0 +1,64 @@
+if {"bench" ni [info commands bench]} {
+	package require bench
+	namespace import bench::*
+}
+
+package require tinycc
+
+proc main {} {
+	set stdcdef	{
+		include_path local/lib/tcc/include
+		include_path /home/cyan/local8.7_valgrind/include
+		library_path local/lib/tcc
+		library_path /home/cyan/local8.7_valgrind/lib
+
+		code { //@begin=c@
+			#include <tcl.h>
+
+			int init(Tcl_Interp* interp)
+			{
+				return TCL_OK;
+			}
+
+			int sym(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+			{
+				Tcl_SetObjResult(interp, Tcl_NewWideIntObj((Tcl_WideInt)sym));
+				return TCL_OK;
+			}
+
+			void release(Tcl_Interp* interp)
+			{
+			}
+			//@end=c@
+		}
+	}
+
+	bench symbols-1.1 {list symbols} -batch auto -setup { #<<<
+	} -compare {
+		index {
+			expr {"sym" in [tinycc::symbols $stdcdef]}
+		}
+	} -result 1
+	#>>>
+	bench symbols-100.1 {get symbol, exists} -batch auto -setup { #<<<
+		set refval	[tinycc::capply $stdcdef sym]
+	} -compare {
+		index	{expr {[tinycc::symbol_index $stdcdef sym] eq $refval}}
+		dict	{expr {[tinycc::symbol_dict  $stdcdef sym] eq $refval}}
+		tcc		{expr {[tinycc::symbol_tcc   $stdcdef sym] eq $refval}}
+	} -cleanup {
+		unset -nocomplain refval
+	} -result 1
+	#>>>
+	bench symbols-100.2 {get symbol, doesn't exist} -batch auto -setup { #<<<
+	} -compare {
+		index	{catch {tinycc::symbol_index $stdcdef nonesuch]}}
+		dict	{catch {tinycc::symbol_dict  $stdcdef nonesuch]}}
+		tcc		{catch {tinycc::symbol_tcc   $stdcdef nonesuch]}}
+	} -result 1
+	#>>>
+}
+
+main
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

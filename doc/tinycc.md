@@ -202,13 +202,13 @@ tcc(1), https://repo.or.cz/tinycc.git
 
 # PROJECT STATUS
 
-Draft, never been built, let alone run and tested.  Using it anywhere that matters would be
+Work in progress, only very basic testing has been done.  Using it anywhere that matters would be
 very brave indeed.
 
 
 # TODO
 
-- [ ] Implement **init** and **release**
+- [x] Implement **init** and **release**
 - [ ] More test coverage
 - [ ] Document coverage, debugging
 

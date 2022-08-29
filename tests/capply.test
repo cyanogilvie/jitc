@@ -39,7 +39,6 @@ test capply-1.1 {hello, world} -body { #<<<
 } -result {hello, foo and bar}
 #>>>
 
-
 # cleanup
 ::tcltest::cleanupTests
 return

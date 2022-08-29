@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <string.h>
 #include "tclstuff.h"
 #include <libtcc.h>
 #include "tinycc.h"
@@ -24,9 +25,11 @@ struct tinycc_intrep {
 	TCCState*				s;
 	char*					packed_symbols;
 	const char**			symbols;
+	Tcl_Obj*				symbolsdict;
 	void**					values;
 	Tcl_Obj*				cdef;
 	Tcl_Obj*				debugfiles;
+	Tcl_Interp*				interp;
 };
 
 int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct tinycc_intrep** rPtr);
