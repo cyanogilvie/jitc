@@ -2,7 +2,7 @@
 #include <string.h>
 #include "tclstuff.h"
 #include <libtcc.h>
-#include "tinycc.h"
+#include "jitc.h"
 
 // pointer to/from int from tclInt.h
 #if !defined(INT2PTR)
@@ -20,7 +20,7 @@
 
 extern Tcl_Mutex g_tcc_mutex;
 
-struct tinycc_intrep {
+struct jitc_intrep {
 	TCCState*				s;
 	Tcl_Obj*				symbols;
 	Tcl_Obj*				cdef;
@@ -39,4 +39,4 @@ struct interp_cx {
 	Tcl_Obj*		libdir;
 };
 
-int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct tinycc_intrep** rPtr);
+int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct jitc_intrep** rPtr);

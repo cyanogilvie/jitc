@@ -1,13 +1,13 @@
 # NAME
 
-tinycc - Just In Time C for Tcl
+jitc - Just In Time C for Tcl
 
 # SYNOPSIS
 
-**package require tinycc** ?0.1?
+**package require jitc** ?0.1?
 
-**tinycc::capply** *cdef* *symbol* ?*arg* …?  
-**tinycc::symbols** *cdef*
+**jitc::capply** *cdef* *symbol* ?*arg* …?  
+**jitc::symbols** *cdef*
 
 # DESCRIPTION
 
@@ -25,19 +25,18 @@ The generation of object code is done by an embedded TinyCC compiler.
 
 # COMMANDS
 
-  - **tinycc::capply** *cdef* *symbol* ?*arg* …?  
+  - **jitc::capply** *cdef* *symbol* ?*arg* …?  
     Execute *symbol* in the compiled *cdef* as a Tcl\_ObjCmdProc. If
     *symbol* points to something other than a Tcl\_ObjCmdProc things are
     likely to get interesting quickly.
-  - **tinycc::symbols** *cdef*  
+  - **jitc::symbols** *cdef*  
     Return a list of the symbols in *cdef*.
 
 # CDEF FORMAT
 
-The *cdef* argument to **tinycc::capply** and **tinycc:symbols** is a
-list of pairs of elements: *part* and *value*. When compiling and
-linking the code the parts are applied in sequence. *part* must be one
-of:
+The *cdef* argument to **jitc::capply** and **jitc:symbols** is a list
+of pairs of elements: *part* and *value*. When compiling and linking the
+code the parts are applied in sequence. *part* must be one of:
 
   - **code**  
     *value* is a chunk of c code as a string.
@@ -98,9 +97,9 @@ code run in the *cdef*, and free any memory it allocated.
 Hello, world:
 
 ``` tcl
-package require tinycc
+package require jitc
 
-tinycc::capply {
+jitc::capply {
     code {
         int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
         {
@@ -112,13 +111,13 @@ tinycc::capply {
             return TCL_OK;
         }
     }
-} hello tinycc
+} hello jitc
 ```
 
 **init** and **release** symbols for resource management:
 
 ``` tcl
-package require tinycc
+package require jitc
 
 set cdef [list code {
     #include <stdio.h>
@@ -159,8 +158,8 @@ set cdef [list code {
     }
 }]
 
-tinycc::capply $cdef accumulate "foo"
-tinycc::capply $cdef accumulate "bar"
+jitc::capply $cdef accumulate "foo"
+jitc::capply $cdef accumulate "bar"
 
 unset cdef
 ```
@@ -175,11 +174,11 @@ Produces:
 # BUGS
 
 Please report any bugs to the github issue tracker:
-https://github.com/cyanogilvie/tinycc/issues
+https://github.com/cyanogilvie/jitc/issues
 
 # SEE ALSO
 
-tcc(1), https://repo.or.cz/tinycc.git
+tcc(1), https://repo.or.cz/jitc.git
 
 # PROJECT STATUS
 

@@ -2,8 +2,8 @@ services:
     benchmark:
         image: ubuntu-tcl-optimized
         volumes:
-            - ./:/src/tinycc:ro
+            - ./:/src/jitc:ro
         working_dir: /build
-        entrypoint: /src/tinycc/build_and_benchmark.sh
+        entrypoint: /src/jitc/build_and_benchmark.sh
 
 # vim: expandtab

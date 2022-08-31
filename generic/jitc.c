@@ -1,4 +1,4 @@
-#include "tinyccInt.h"
+#include "jitcInt.h"
 #include "tip445.h"
 #include <sys/stat.h>
 
@@ -7,21 +7,21 @@ Tcl_Mutex g_tcc_mutex = NULL;
 typedef int (cdef_init)(Tcl_Interp* interp);
 typedef int (cdef_release)(Tcl_Interp* interp);
 
-static void free_tinycc_internal_rep(Tcl_Obj* obj);
-static void dup_tinycc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
+static void free_jitc_internal_rep(Tcl_Obj* obj);
+static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
 
-Tcl_ObjType tinycc_objtype = {
-	"Tinycc",
-	free_tinycc_internal_rep,
-	dup_tinycc_internal_rep,
+Tcl_ObjType jitc_objtype = {
+	"Jitc",
+	free_jitc_internal_rep,
+	dup_jitc_internal_rep,
 	NULL,
 	NULL
 };
 
-static void free_tinycc_internal_rep(Tcl_Obj* obj) //{{{
+static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 {
-	Tcl_ObjIntRep*			ir = Tcl_FetchIntRep(obj, &tinycc_objtype);
-	struct tinycc_intrep*	r = ir->twoPtrValue.ptr1;
+	Tcl_ObjIntRep*		ir = Tcl_FetchIntRep(obj, &jitc_objtype);
+	struct jitc_intrep*	r = ir->twoPtrValue.ptr1;
 
 	replace_tclobj(&r->symbols, NULL);
 	if (r->s) {
@@ -54,17 +54,17 @@ static void free_tinycc_internal_rep(Tcl_Obj* obj) //{{{
 }
 
 //}}}
-static void dup_tinycc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup) //{{{
+static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup) //{{{
 {
-	Tcl_ObjIntRep*			ir = Tcl_FetchIntRep(src, &tinycc_objtype);
-	struct tinycc_intrep*	r = ir->twoPtrValue.ptr1;
-	Tcl_ObjIntRep			newir = {0};
+	Tcl_ObjIntRep*		ir = Tcl_FetchIntRep(src, &jitc_objtype);
+	struct jitc_intrep*	r = ir->twoPtrValue.ptr1;
+	Tcl_ObjIntRep		newir = {0};
 
 	// Shouldn't ever need to happen, but if it does we have to recompile from source.
 	// Set the dup's intrep to a dup of the cdef list instead
 	replace_tclobj((Tcl_Obj**)&newir.twoPtrValue.ptr2, r->cdef);
 
-	Tcl_StoreIntRep(dup, &tinycc_objtype, &newir);
+	Tcl_StoreIntRep(dup, &jitc_objtype, &newir);
 }
 
 //}}}
@@ -108,9 +108,9 @@ finally:
 }
 
 //}}}
-int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{{
+int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 {
-	int						code = TCL_OK;
+	int					code = TCL_OK;
 	static const char* parts[] = {
 		"mode",
 		"code",
@@ -151,21 +151,21 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 		MODE_TCL,
 		MODE_RAW
 	};
-	int						mode = MODE_TCL;
-	Tcl_Obj**				ov;
-	int						oc;
-	int						i;
-	Tcl_Obj*				debugpath = NULL;
-	struct TCCState*		tcc = NULL;
-	int						mutexheld = 0;
-	Tcl_Obj*				debugfiles = NULL;
-	Tcl_Obj*				debugfile = NULL;
-	Tcl_StatBuf*			stat = NULL;
-	int						codeseq = 1;
-	Tcl_Obj*				pathelements = NULL;
-	Tcl_Channel				chan = NULL;
-	Tcl_Obj*				compile_errors = NULL;
-	struct tinycc_intrep*	r = NULL;
+	int					mode = MODE_TCL;
+	Tcl_Obj**			ov;
+	int					oc;
+	int					i;
+	Tcl_Obj*			debugpath = NULL;
+	struct TCCState*	tcc = NULL;
+	int					mutexheld = 0;
+	Tcl_Obj*			debugfiles = NULL;
+	Tcl_Obj*			debugfile = NULL;
+	Tcl_StatBuf*		stat = NULL;
+	int					codeseq = 1;
+	Tcl_Obj*			pathelements = NULL;
+	Tcl_Channel			chan = NULL;
+	Tcl_Obj*			compile_errors = NULL;
+	struct jitc_intrep*	r = NULL;
 
 	TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, cdef, &oc, &ov));
 	if (oc % 2 == 1)
@@ -204,7 +204,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct tinycc_intrep** rPtr) //{{
 		case MODE_TCL:
 			{
 				Tcl_Obj*	incpath = NULL;
-				struct interp_cx*	l = Tcl_GetAssocData(interp, "tinycc", NULL);
+				struct interp_cx*	l = Tcl_GetAssocData(interp, "jitc", NULL);
 
 				if (l->libdir == NULL)
 					THROW_ERROR_LABEL(finally, code, "No libdir set");
@@ -306,7 +306,7 @@ codeerror:
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sc, &sv));
 					if (sc != 2)
 						THROW_ERROR_LABEL(finally, code, "Symbol definition must be a list: cdef symbol: \"", Tcl_GetString(v), "\"");
-					TEST_OK_LABEL(finally, code, Tinycc_GetSymbolFromObj(interp, sv[0], sv[1], &val));
+					TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, sv[0], sv[1], &val));
 
 					tcc_define_symbol(tcc, Tcl_GetString(sv[1]), val);
 				}
@@ -351,17 +351,18 @@ codeerror:
 	}
 
 	r = ckalloc(sizeof *r);
-	*r = (struct tinycc_intrep){0};
-
-	r->s = tcc;
-	r->interp = interp;
+	*r = (struct jitc_intrep){
+		.s = tcc,
+		.interp = interp
+	};
 
 	tcc_relocate(tcc, TCC_RELOCATE_AUTO);
 
+	if (compile_errors) goto finally;
 	replace_tclobj(&r->symbols, Tcl_NewDictObj());
 	tcc_list_symbols(tcc, r->symbols, list_symbols_dict);
 
-	// Avoid a circular reference between cdef and our new tinycc intrep obj
+	// Avoid a circular reference between cdef and our new jitc intrep obj
 	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
 
 	cdef_init*	init = tcc_get_symbol(tcc, "init");
@@ -370,10 +371,6 @@ codeerror:
 
 	replace_tclobj(&r->debugfiles, debugfiles);
 	replace_tclobj(&debugfiles, NULL);
-
-	*rPtr = r;
-	r = NULL;
-	tcc = NULL;
 
 finally:
 	if (compile_errors) {
@@ -384,6 +381,12 @@ finally:
 			Tcl_SetObjResult(interp, Tcl_ObjPrintf("%s\nCompile errors:\n%s", Tcl_GetString(Tcl_GetObjResult(interp)), Tcl_GetString(compile_errors)));
 		}
 		code = TCL_ERROR;
+	}
+
+	if (code == TCL_OK) {
+		*rPtr = r;
+		r = NULL;
+		tcc = NULL;
 	}
 
 	if (chan) {
@@ -434,24 +437,25 @@ finally:
 		Tcl_MutexUnlock(&g_tcc_mutex);
 	}
 
+	fprintf(stderr, "compile returning code: %d\n", code);
 	return code;
 }
 
 //}}}
-int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct tinycc_intrep** rPtr) //{{{
+int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct jitc_intrep** rPtr) //{{{
 {
-	int						code = TCL_OK;
-	Tcl_ObjIntRep*			ir = Tcl_FetchIntRep(obj, &tinycc_objtype);
-	struct tinycc_intrep*	r = NULL;
+	int					code = TCL_OK;
+	Tcl_ObjIntRep*		ir = Tcl_FetchIntRep(obj, &jitc_objtype);
+	struct jitc_intrep*	r = NULL;
 
 	if (ir == NULL) {
 		Tcl_ObjIntRep	newir = {0};
 
-		TEST_OK_LABEL(finally, code, compile(interp, obj, (struct tinycc_intrep **)&newir.twoPtrValue.ptr1));
+		TEST_OK_LABEL(finally, code, compile(interp, obj, (struct jitc_intrep **)&newir.twoPtrValue.ptr1));
 
 		Tcl_FreeIntRep(obj);
-		Tcl_StoreIntRep(obj, &tinycc_objtype, &newir);
-		ir = Tcl_FetchIntRep(obj, &tinycc_objtype);
+		Tcl_StoreIntRep(obj, &jitc_objtype, &newir);
+		ir = Tcl_FetchIntRep(obj, &jitc_objtype);
 	}
 
 	r = ir->twoPtrValue.ptr1;
@@ -484,11 +488,11 @@ static void free_interp_cx(ClientData cdata, Tcl_Interp* interp) //{{{
 //}}}
 // Internal API }}}
 // Stubs API {{{
-int Tinycc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* obj, Tcl_Obj* symbol, void** val) //{{{
+int Jitc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* obj, Tcl_Obj* symbol, void** val) //{{{
 {
-	int						code = TCL_OK;
-	struct tinycc_intrep*	r = NULL;
-	Tcl_Obj*				valobj = NULL;
+	int					code = TCL_OK;
+	struct jitc_intrep*	r = NULL;
+	Tcl_Obj*			valobj = NULL;
 
 	TEST_OK_LABEL(finally, code, get_r_from_obj(interp, obj, &r));
 	TEST_OK_LABEL(finally, code, Tcl_DictObjGet(interp, r->symbols, symbol, &valobj));
@@ -497,7 +501,7 @@ int Tinycc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* obj, Tcl_Obj* symbol, v
 		TEST_OK_LABEL(finally, code, Tcl_GetWideIntFromObj(interp, valobj, &w));
 		*val = UINT2PTR(w);
 	} else {
-		Tcl_SetErrorCode(interp, "TINYCC", "SYMBOL", Tcl_GetString(symbol), NULL);
+		Tcl_SetErrorCode(interp, "JITC", "SYMBOL", Tcl_GetString(symbol), NULL);
 		THROW_ERROR_LABEL(finally, code, "Symbol not found: \"", Tcl_GetString(symbol), "\"");
 	}
 
@@ -507,16 +511,16 @@ finally:
 }
 
 //}}}
-int Tinycc_GetSymbolsFromObj(Tcl_Interp* interp, Tcl_Obj* obj, Tcl_Obj** symbols) //{{{
+int Jitc_GetSymbolsFromObj(Tcl_Interp* interp, Tcl_Obj* obj, Tcl_Obj** symbols) //{{{
 {
-	int						code = TCL_OK;
-	struct tinycc_intrep*	r = NULL;
-	Tcl_Obj*				lsymbols = NULL;
-	Tcl_DictSearch			search;
-	Tcl_Obj*				k = NULL;
-	Tcl_Obj*				v = NULL;
-	int						searching = 0;
-	int						done;
+	int					code = TCL_OK;
+	struct jitc_intrep*	r = NULL;
+	Tcl_Obj*			lsymbols = NULL;
+	Tcl_DictSearch		search;
+	Tcl_Obj*			k = NULL;
+	Tcl_Obj*			v = NULL;
+	int					searching = 0;
+	int					done;
 
 	TEST_OK_LABEL(finally, code, get_r_from_obj(interp, obj, &r));
 
@@ -551,7 +555,7 @@ static int capply_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *c
 		goto finally;
 	}
 
-	TEST_OK_LABEL(finally, code, Tinycc_GetSymbolFromObj(interp, objv[1], objv[2], (void**)&proc));
+	TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, objv[1], objv[2], (void**)&proc));
 	code = (proc)(NULL, interp, objc-2, objv+2);
 
 finally:
@@ -566,7 +570,7 @@ static int symbols_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *
 
 	CHECK_ARGS(1, "cdef");
 
-	TEST_OK_LABEL(finally, code, Tinycc_GetSymbolsFromObj(interp, objv[1], &symbols));
+	TEST_OK_LABEL(finally, code, Jitc_GetSymbolsFromObj(interp, objv[1], &symbols));
 	Tcl_SetObjResult(interp, symbols);
 	replace_tclobj(&symbols, NULL);
 
@@ -588,7 +592,7 @@ static int setpath_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *
 
 //}}}
 
-#define NS	"::tinycc"
+#define NS	"::jitc"
 static struct cmd {
 	char*			name;
 	Tcl_ObjCmdProc*	proc;
@@ -600,12 +604,12 @@ static struct cmd {
 };
 // Script API }}}
 
-extern const TinyccStubs* const tinyccConstStubsPtr;
+extern const JitcStubs* const jitcConstStubsPtr;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-DLLEXPORT int Tinycc_Init(Tcl_Interp* interp)
+DLLEXPORT int Jitc_Init(Tcl_Interp* interp)
 {
 	int					code = TCL_OK;
 	Tcl_Namespace*		ns = NULL;
@@ -626,7 +630,7 @@ DLLEXPORT int Tinycc_Init(Tcl_Interp* interp)
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], Tcl_NewStringObj(lit_str[i], -1));
 
-	Tcl_SetAssocData(interp, "tinycc", free_interp_cx, l);
+	Tcl_SetAssocData(interp, "jitc", free_interp_cx, l);
 	// Set up interp_cx }}}
 
 	while (c->name) {
@@ -638,7 +642,7 @@ DLLEXPORT int Tinycc_Init(Tcl_Interp* interp)
 		c++;
 	}
 
-	TEST_OK_LABEL(finally, code, Tcl_PkgProvideEx(interp, PACKAGE_NAME, PACKAGE_VERSION, tinyccConstStubsPtr));
+	TEST_OK_LABEL(finally, code, Tcl_PkgProvideEx(interp, PACKAGE_NAME, PACKAGE_VERSION, jitcConstStubsPtr));
 
 finally:
 	return code;

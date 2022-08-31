@@ -1,10 +1,10 @@
 #!/bin/sh
 
-git config --global --add safe.directory /build/tinycc
-git config --global --add safe.directory /build/tinycc/tinycc
+git config --global --add safe.directory /build/jitc
+git config --global --add safe.directory /build/jitc/tinycc
 
-cp -a /src/tinycc .
-cd tinycc
+cp -a /src/jitc .
+cd jitc
 
 export CFLAGS="-O3 -march=haswell -flto"
 #export CFLAGS="-O3 -march=native -flto"

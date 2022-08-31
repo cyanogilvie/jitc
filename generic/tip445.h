@@ -6,7 +6,7 @@
 #include <assert.h>
 #include <limits.h>
 
-/* Just enough of TIP445 to build tinycc on Tcl 8.6 */
+/* Just enough of TIP445 to build jitc on Tcl 8.6 */
 
 #ifndef Tcl_ObjIntRep
 typedef union Tcl_ObjIntRep {

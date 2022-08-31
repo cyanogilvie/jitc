@@ -35,9 +35,7 @@
 // not include the objv[0] object (the function itself)
 #define CHECK_ARGS(expected, msg)										\
 	if (objc != expected + 1) {											\
-		Tcl_ResetResult( interp );										\
-		Tcl_AppendResult( interp, "Wrong # of arguments.  Must be \"",	\
-						  msg, "\"", NULL );							\
+		Tcl_WrongNumArgs(interp, 1, objv, msg);							\
 		return TCL_ERROR;												\
 	}
 
@@ -115,5 +113,9 @@ static inline void replace_tclobj(Tcl_Obj** target, Tcl_Obj* replacement)
 #	define DEBUGGER /* nop */
 #	define TIME(label, task) task
 #endif
+
+#define OBJCMD(name)	int (name)(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+#define INIT()			int init(Tcl_Interp* interp)
+#define RELEASE()		void release(Tcl_Interp* interp)
 
 #endif

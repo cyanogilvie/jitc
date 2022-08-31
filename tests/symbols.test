@@ -4,7 +4,7 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
 }
 
 ::tcltest::loadTestedCommands
-package require tinycc
+package require jitc
 
 set stdcdef	{
 	include_path local/lib/tcc/include
@@ -34,7 +34,7 @@ set stdcdef	{
 }
 
 test symbols-1.1 {List the symbols in a cdef} -body { #<<<
-	lsort [lmap sym [tinycc::symbols {
+	lsort [lmap sym [jitc::symbols {
 		include_path local/lib/tcc/include
 		include_path /home/cyan/local8.7_valgrind/include
 		library_path local/lib/tcc

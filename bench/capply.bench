@@ -3,7 +3,7 @@ if {"bench" ni [info commands bench]} {
 	namespace import bench::*
 }
 
-package require tinycc
+package require jitc
 
 proc main {} {
 	bench capply-1.1 {hello world} -batch auto -setup { #<<<
@@ -22,14 +22,14 @@ proc main {} {
 		}]
 	} -compare {
 		reuse {
-			tinycc::capply $cdef hello tinycc
+			jitc::capply $cdef hello jitc
 		}
 		recompile {
-			tinycc::capply [lrange [list foo {*}$cdef] 1 end] hello tinycc
+			jitc::capply [lrange [list foo {*}$cdef] 1 end] hello jitc
 		}
 	} -cleanup {
 		unset -nocomplain cdef
-	} -result {hello, tinycc}
+	} -result {hello, jitc}
 	#>>>
 }
 

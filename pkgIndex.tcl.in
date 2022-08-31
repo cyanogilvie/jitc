@@ -6,9 +6,9 @@ package ifneeded @PACKAGE_NAME@ @PACKAGE_VERSION@ [list apply {
 		load [file join $dir @PKG_LIB_FILE@] @PACKAGE_NAME@
 		set buildpath	[file join $dir local/lib/tcc]
 		if {[file exists $buildpath]} {
-			::tinycc::_setpath $dir
+			::jitc::_setpath $dir
 		} else {
-			::tinycc::_setpath $dir
+			::jitc::_setpath $dir
 		}
 	}
 }]

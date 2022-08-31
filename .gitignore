@@ -2,8 +2,8 @@ Makefile
 configure
 pkgIndex.tcl
 tclconfig
-tinyccConfig.sh
-generic/tinycc.h
+jitcConfig.sh
+generic/jitc.h
 autom4te.cache
 config.log
 config.status

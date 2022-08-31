@@ -19,7 +19,7 @@ dnl	to configure the system for the local environment.
 # so that we create the export library with the dll.
 #-----------------------------------------------------------------------
 
-AC_INIT([tinycc],[0.1])
+AC_INIT([jitc],[0.1])
 
 #--------------------------------------------------------------------
 # Call TEA_INIT as the first TEA_ macro to set up initial vars.
@@ -29,7 +29,7 @@ AC_INIT([tinycc],[0.1])
 
 CHECK_TESTMODE
 
-touch generic/tinycc.h
+touch generic/jitc.h
 
 TEA_INIT()
 
@@ -77,13 +77,13 @@ TEA_SETUP_COMPILER
 # and PKG_TCL_SOURCES.
 #-----------------------------------------------------------------------
 
-TEA_ADD_SOURCES([tinycc.c tinyccStubInit.c])
-TEA_ADD_HEADERS([generic/tinycc.h generic/tinyccDecls.h])
+TEA_ADD_SOURCES([jitc.c jitcStubInit.c])
+TEA_ADD_HEADERS([generic/jitc.h generic/jitcDecls.h])
 TEA_ADD_INCLUDES([-Ilocal/include])
 TEA_ADD_LIBS([-Llocal/lib -l:libtcc.a])
-#TEA_ADD_LIBS([tinycc/libtcc.a])
+#TEA_ADD_LIBS([jitc/libtcc.a])
 TEA_ADD_CFLAGS([])
-TEA_ADD_STUB_SOURCES([tinyccStubLib.c])
+TEA_ADD_STUB_SOURCES([jitcStubLib.c])
 TEA_ADD_TCL_SOURCES([])
 
 #--------------------------------------------------------------------
@@ -182,7 +182,7 @@ TEA_PROG_TCLSH
 # Setup a *Config.sh.in configuration file.
 #--------------------------------------------------------------------
 
-TEA_EXPORT_CONFIG([tinycc])
+TEA_EXPORT_CONFIG([jitc])
 #AC_SUBST(SAMPLE_VAR)
 
 #--------------------------------------------------------------------
@@ -191,20 +191,20 @@ TEA_EXPORT_CONFIG([tinycc])
 # substituting the AC variables in. Include these here.
 #--------------------------------------------------------------------
 
-TEAX_CONFIG_INCLUDE_LINE(TINYCC_INCLUDE_SPEC,		[${includedir}])
-TEAX_CONFIG_LINK_LINE(TINYCC_LIB_SPEC,
+TEAX_CONFIG_INCLUDE_LINE(JITC_INCLUDE_SPEC,		[${includedir}])
+TEAX_CONFIG_LINK_LINE(JITC_LIB_SPEC,
 					  [${libdir}/${PACKAGE_NAME}${PACKAGE_VERSION}], [${PACKAGE_NAME}])
-TEAX_CONFIG_LINK_LINE(TINYCC_STUB_LIB_SPEC,
+TEAX_CONFIG_LINK_LINE(JITC_STUB_LIB_SPEC,
 					  [${libdir}/${PACKAGE_NAME}${PACKAGE_VERSION}], [${PACKAGE_NAME}stub])
 
 BUILD_DIR="$(pwd | sed -e 's/ /\\\\ /g')"
-TEAX_CONFIG_INCLUDE_LINE(TINYCC_BUILD_INCLUDE_SPEC, [${BUILD_DIR}/generic])
-TEAX_CONFIG_LINK_LINE(TINYCC_BUILD_LIB_SPEC,
+TEAX_CONFIG_INCLUDE_LINE(JITC_BUILD_INCLUDE_SPEC, [${BUILD_DIR}/generic])
+TEAX_CONFIG_LINK_LINE(JITC_BUILD_LIB_SPEC,
 					 [${BUILD_DIR}], [${PACKAGE_NAME}])
-TEAX_CONFIG_LINK_LINE(TINYCC_BUILD_STUB_LIB_SPEC,
+TEAX_CONFIG_LINK_LINE(JITC_BUILD_STUB_LIB_SPEC,
 					 [${BUILD_DIR}], [${PACKAGE_NAME}stub])
 
-AC_CONFIG_FILES([Makefile pkgIndex.tcl tinyccConfig.sh generic/tinycc.h])
+AC_CONFIG_FILES([Makefile pkgIndex.tcl jitcConfig.sh generic/jitc.h])
 #AC_CONFIG_FILES([sampleConfig.sh])
 
 #--------------------------------------------------------------------

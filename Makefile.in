@@ -157,7 +157,7 @@ PKG_CFLAGS	= @PKG_CFLAGS@
 DEFS		= @DEFS@ $(PKG_CFLAGS)
 
 # Move pkgIndex.tcl to 'BINARIES' var if it is generated in the Makefile
-CONFIG_CLEAN_FILES = Makefile pkgIndex.tcl tinyccConfig.sh
+CONFIG_CLEAN_FILES = Makefile pkgIndex.tcl jitcConfig.sh
 CLEANFILES	= @CLEANFILES@
 
 CPPFLAGS	= @CPPFLAGS@
@@ -208,13 +208,13 @@ libraries:
 # end user machine when building from source.
 #========================================================================
 
-doc: doc/tinycc.n README.md
+doc: doc/jitc.n README.md
 
-doc/tinycc.n: doc/tinycc.md
-	pandoc --standalone --from markdown --to man doc/tinycc.md --output doc/tinycc.n
+doc/jitc.n: doc/jitc.md
+	pandoc --standalone --from markdown --to man doc/jitc.md --output doc/jitc.n
 
-README.md: doc/tinycc.md
-	pandoc --standalone --from markdown --to gfm doc/tinycc.md --output README.md
+README.md: doc/jitc.md
+	pandoc --standalone --from markdown --to gfm doc/jitc.md --output README.md
 
 
 install: all install-binaries install-libraries install-doc
@@ -250,24 +250,24 @@ install-doc: doc
 test: binaries libraries
 	$(TCLSH) `@CYGPATH@ $(srcdir)/tests/all.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; tinycc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
 
 benchmark: binaries libraries
 	$(TCLSH) `@CYGPATH@ $(srcdir)/bench/run.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; tinycc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
 
 shell: binaries libraries
 	@$(TCLSH) $(SCRIPT)
 
 vim-gdb: binaries libraries
-	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) tests/all.tcl $(TESTFLAGS) -singleproc 1 -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ apply\ {{}\ {load\ `@CYGPATH@ $(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)];\ tinycc::_setpath\ `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]" -c "2windo set nonumber" -c "1windo set nonumber" generic/tinycc.c
+	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) tests/all.tcl $(TESTFLAGS) -singleproc 1 -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ apply\ {{}\ {load\ `@CYGPATH@ $(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)];\ jitc::_setpath\ `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
 
 vim-core:
-	$(TCLSH_ENV) $(PKG_ENV) vim -c 'packadd termdebug' -c "set mouse=a" -c "set number" -c "set foldlevel=100" -c "Termdebug -ex layout\ asm -ex layout\ regs -ex focus\ cmd $(TCLSH_PROG) core" -c Winbar generic/tinycc.c
+	$(TCLSH_ENV) $(PKG_ENV) vim -c 'packadd termdebug' -c "set mouse=a" -c "set number" -c "set foldlevel=100" -c "Termdebug -ex layout\ asm -ex layout\ regs -ex focus\ cmd $(TCLSH_PROG) core" -c Winbar generic/jitc.c
 
 vim-gdb-benchmark: binaries libraries
-	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug --args $(TCLSH_PROG) bench/run.tcl $(TESTFLAGS) -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ load\ `@CYGPATH@ $(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)]]" generic/tinycc.c
+	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug --args $(TCLSH_PROG) bench/run.tcl $(TESTFLAGS) -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ load\ `@CYGPATH@ $(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)]]" generic/jitc.c
 
 gdb:
 	$(TCLSH_ENV) $(PKG_ENV) $(GDB) $(TCLSH_PROG) $(SCRIPT)
@@ -277,13 +277,13 @@ gdb-test: binaries libraries
 	    --args $(TCLSH_PROG) `@CYGPATH@ $(srcdir)/tests/all.tcl` \
 	    $(TESTFLAGS) -singleproc 1 \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; tinycc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
 
 valgrind: binaries libraries
 	$(TCLSH_ENV) $(PKG_ENV) $(VALGRIND) $(VALGRINDARGS) $(TCLSH_PROG) \
 	    `@CYGPATH@ $(srcdir)/tests/all.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; tinycc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
 
 valgrindshell: binaries libraries
 	$(TCLSH_ENV) $(PKG_ENV) $(VALGRIND) $(VALGRINDARGS) $(TCLSH_PROG) $(SCRIPT)
@@ -437,8 +437,8 @@ install-lib-binaries: binaries
 	@if test "x$(SHARED_BUILD)" = "x1"; then \
 	    echo " Install pkgIndex.tcl $(DESTDIR)$(pkglibdir)"; \
 	    $(INSTALL_DATA) pkgIndex.tcl $(DESTDIR)$(pkglibdir); \
-		echo " Install tinyccConfig.sh $(DESTDIR)$(pkglibdir)"; \
-		$(INSTALL_DATA) tinyccConfig.sh $(DESTDIR)$(pkglibdir); \
+		echo " Install jitcConfig.sh $(DESTDIR)$(pkglibdir)"; \
+		$(INSTALL_DATA) jitcConfig.sh $(DESTDIR)$(pkglibdir); \
 	fi
 	for p in local/lib/tcc/*; do \
 	    destp=`basename $$p`; \
@@ -487,8 +487,8 @@ uninstall-binaries:
 	  rm -f $(DESTDIR)$(bindir)/$$p; \
 	done
 
-genstubs: generic/tinycc.decls
-	$(TCLSH_PROG) $(TCL_SRC_DIR)/tools/genStubs.tcl generic generic/tinycc.decls
+genstubs: generic/jitc.decls
+	$(TCLSH_PROG) $(TCL_SRC_DIR)/tools/genStubs.tcl generic generic/jitc.decls
 
 tags:
 	ctags-exuberant generic/*
@@ -508,7 +508,7 @@ tcc:
 
 
 .PHONY: all binaries clean depend distclean doc install libraries test
-.PHONY: gdb gdb-test valgrind valgrindshell genstubs tcc
+.PHONY: gdb gdb-test valgrind valgrindshell genstubs tcc tags
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

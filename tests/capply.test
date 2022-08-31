@@ -4,10 +4,10 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
 }
 
 ::tcltest::loadTestedCommands
-package require tinycc
+package require jitc
 
 test capply-1.1 {hello, world} -body { #<<<
-	tinycc::capply {
+	jitc::capply {
 		include_path local/lib/tcc/include
 		include_path /home/cyan/local8.7_valgrind/include
 		library_path local/lib/tcc
@@ -39,7 +39,7 @@ test capply-1.1 {hello, world} -body { #<<<
 } -result {hello, foo and bar}
 #>>>
 test capply-2.1 {missing symbol} -body { #<<<
-	tinycc::capply {
+	jitc::capply {
 		include_path local/lib/tcc/include
 		include_path /home/cyan/local8.7_valgrind/include
 		library_path local/lib/tcc
@@ -68,10 +68,10 @@ test capply-2.1 {missing symbol} -body { #<<<
 			//@end=c@
 		}
 	} hellox foo bar
-} -returnCodes error -errorCode {TINYCC SYMBOL hellox} -result {Symbol not found: "hellox"}
+} -returnCodes error -errorCode {JITC SYMBOL hellox} -result {Symbol not found: "hellox"}
 #>>>
 test capply-3.1 {exception} -body { #<<<
-	tinycc::capply {
+	jitc::capply {
 		include_path local/lib/tcc/include
 		include_path /home/cyan/local8.7_valgrind/include
 		library_path local/lib/tcc
@@ -131,7 +131,7 @@ test capply-3.2 {exception: args} -setup { #<<<
 		}
 	}
 } -body {
-	tinycc::capply $cdef exception foo
+	jitc::capply $cdef exception foo
 } -cleanup {
 	unset -nocomplain cdef
 } -returnCodes error -errorCode {TCL WRONGARGS} -result {wrong # args: should be "exception a b"}
@@ -158,7 +158,7 @@ test capply-4.1 {mode: standard} -setup { #<<<
 		}
 	}
 } -body {
-	tinycc::capply $cdef msg foo bar
+	jitc::capply $cdef msg foo bar
 } -cleanup {
 	unset -nocomplain cdef
 } -result {hello, foo and bar}
@@ -186,10 +186,135 @@ test capply-4.2 {mode: raw} -setup { #<<<
 		}
 	}
 } -body {
-	tinycc::capply $cdef msg foo bar
+	jitc::capply $cdef msg foo bar
 } -cleanup {
 	unset -nocomplain cdef
 } -returnCodes error -match glob -result "*<string>:2: error: ',' expected (got \"cdata\")*"
+#>>>
+test capply-5.1 {OBJCMD} -body { #<<<
+	jitc::capply {
+		code {
+			OBJCMD(foo) {
+				CHECK_ARGS(0, "");
+				Tcl_SetObjResult(interp, Tcl_NewStringObj("bar", 3));
+				return TCL_OK;
+			}
+		}
+	} foo
+} -result bar
+#>>>
+test capply-6.1 {dedup} -setup { #<<<
+	set cdef	{
+		include_path	/home/cyan/local8.7_valgrind/include
+		library_path	/home/cyan/local8.7_valgrind/lib
+		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.0
+		library			dedup0.9.0
+		code {
+			#include <dedup.h>
+
+			struct dedup_pool*	g_dedup = NULL;
+
+			INIT() {
+				TEST_OK(Tcl_PkgRequireProc(interp, "dedup", 0, NULL, NULL));
+				g_dedup = Dedup_NewPool(interp);
+				return TCL_OK;
+			}
+
+			RELEASE() {
+				Dedup_FreePool(g_dedup);
+				g_dedup = NULL;
+			}
+
+			OBJCMD(foo) {
+				CHECK_ARGS(0, "");
+				Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, "bar", 3));
+				return TCL_OK;
+			}
+		}
+	}
+} -body {
+	jitc::capply $cdef foo
+} -cleanup {
+	unset -nocomplain cdef
+} -result bar
+#>>>
+test capply-6.2 {dedup stubs} -setup { #<<<
+	set cdef	{
+		include_path	/home/cyan/local8.7_valgrind/include
+		library_path	/home/cyan/local8.7_valgrind/lib
+		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.0
+		define			{USE_TCL_STUBS 1}
+		define			{USE_DEDUP_STUBS 1}
+		code {
+			#include <dedup.h>
+
+			struct dedup_pool*	g_dedup = NULL;
+
+			INIT() {
+				#if USE_TCL_STUBS
+				if (Tcl_InitStubs(interp, TCL_VERSION, 0) == NULL) return TCL_ERROR;
+				#endif
+				#if USE_DEDUP_STUBS
+				if (Dedup_InitStubs(interp) == NULL) return TCL_ERROR;
+				#endif
+
+				g_dedup = Dedup_NewPool(interp);
+				return TCL_OK;
+			}
+
+			RELEASE() {
+				Dedup_FreePool(g_dedup);
+				g_dedup = NULL;
+			}
+
+			OBJCMD(foo) {
+				CHECK_ARGS(0, "");
+				Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, "bar", 3));
+				return TCL_OK;
+			}
+		}
+		library			dedupstub0.9.0
+		library			tclstub8.7
+	}
+} -body {
+	jitc::capply $cdef foo
+} -cleanup {
+	unset -nocomplain cdef
+} -result bar
+#>>>
+test capply-6.3 {dedup no stubs, tcl package requireq} -setup { #<<<
+	package require dedup
+	set cdef	{
+		include_path	/home/cyan/local8.7_valgrind/include
+		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.0
+		library			dedup0.9.0
+		code {
+			#include <dedup.h>
+
+			struct dedup_pool*	g_dedup = NULL;
+
+			INIT() {
+				g_dedup = Dedup_NewPool(interp);
+				return TCL_OK;
+			}
+
+			RELEASE() {
+				Dedup_FreePool(g_dedup);
+				g_dedup = NULL;
+			}
+
+			OBJCMD(foo) {
+				CHECK_ARGS(0, "");
+				Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, "bar", 3));
+				return TCL_OK;
+			}
+		}
+	}
+} -body {
+	jitc::capply $cdef foo
+} -cleanup {
+	unset -nocomplain cdef
+} -result bar
 #>>>
 
 # cleanup

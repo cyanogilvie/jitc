@@ -1,0 +1,27 @@
+#include <tcl.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef BUILD_jitc
+#undef TCL_STORAGE_CLASS
+#define TCL_STORAGE_CLASS DLLEXPORT
+#endif
+
+/* Stubs exported API */
+
+#ifdef USE_JITC_STUBS
+extern const char* JitcInitializeStubs(Tcl_Interp* interp);
+#define Jitc_InitStubs(interp)	JitcInitializeStubs((interp))
+#else
+#define Jitc_InitStubs(interp)	Tcl_PkgRequire((interp), "@PACKAGE_NAME@", "@PACKAGE_VERSION@", 0)
+#endif
+
+#include "jitcDecls.h"
+
+EXTERN int Jitc_Init _ANSI_ARGS_((Tcl_Interp * interp));
+
+#ifdef __cplusplus
+}
+#endif

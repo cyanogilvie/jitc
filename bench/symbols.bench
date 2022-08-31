@@ -3,7 +3,7 @@ if {"bench" ni [info commands bench]} {
 	namespace import bench::*
 }
 
-package require tinycc
+package require jitc
 
 proc main {} {
 	set stdcdef	{
@@ -29,7 +29,7 @@ proc main {} {
 	bench symbols-1.1 {list symbols} -batch auto -setup { #<<<
 	} -compare {
 		index {
-			expr {"sym" in [tinycc::symbols $stdcdef]}
+			expr {"sym" in [jitc::symbols $stdcdef]}
 		}
 	} -result 1
 	#>>>
