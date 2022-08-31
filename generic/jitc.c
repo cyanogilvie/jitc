@@ -437,7 +437,6 @@ finally:
 		Tcl_MutexUnlock(&g_tcc_mutex);
 	}
 
-	fprintf(stderr, "compile returning code: %d\n", code);
 	return code;
 }
 
