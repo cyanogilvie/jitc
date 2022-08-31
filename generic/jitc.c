@@ -126,6 +126,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		"tccdir",
 		"define",
 		"undefine",
+		"package",
 		NULL
 	};
 	enum {
@@ -141,7 +142,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		PART_LIBRARY,
 		PART_TCCDIR,
 		PART_DEFINE,
-		PART_UNDEFINE
+		PART_UNDEFINE,
+		PART_PACKAGE
 	};
 	static const char* modes[] = {
 		"tcl",
@@ -167,6 +169,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	Tcl_Channel			chan = NULL;
 	Tcl_Obj*			compile_errors = NULL;
 	struct jitc_intrep*	r = NULL;
+	Tcl_DString			preamble;
+
+	Tcl_DStringInit(&preamble);
 
 	TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, cdef, &oc, &ov));
 	if (oc % 2 == 1)
@@ -224,6 +229,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				for (int i=0; i<oc; i++) tcc_add_library_path(tcc, Tcl_GetString(ov[i]));
 
 				//tcc_add_library(tcc, Tcl_GetString(l->tcllib));	// Tcl symbols are reverse exported, this doesn't seem to be necessary
+
+				Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
 			}
 			break;
 
@@ -232,6 +239,91 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 		default:
 			THROW_ERROR_LABEL(finally, code, "Unhandled mode");
+	}
+
+	// Second pass through the parts to process PART_PACKAGE directives
+	for (i=0; i<oc; i+=2) {
+		int			part;
+		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
+		switch (part) {
+			case PART_PACKAGE:
+				{
+					int			pc;
+					Tcl_Obj**	pv = NULL;
+					Tcl_Obj*	cmd[3] = {0};
+
+					// TODO: Cache these lookups
+					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, ov[i+1], &pc, &pv));
+					if (pc < 1) THROW_ERROR_LABEL(finally, code, "At least package name is required");
+					TEST_OK_LABEL(finally, code, Tcl_PkgRequireProc(interp, Tcl_GetString(pv[0]), pc-1, pv+1, NULL));
+					replace_tclobj(&cmd[0], Tcl_ObjPrintf("%s::pkgconfig", Tcl_GetString(pv[0])));
+					replace_tclobj(&cmd[1], Tcl_NewStringObj("get", 3));
+					const char* keys[] = {
+						"header",
+						"includedir,runtime",
+						"includedir,install",
+						"libdir,runtime",
+						"libdir,install",
+						"library",
+						NULL
+					};
+					enum {
+						KEY_HEADER,
+						KEY_INCLUDEDIR_RUNTIME,
+						KEY_INCLUDEDIR_INSTALL,
+						KEY_LIBDIR_RUNTIME,
+						KEY_LIBDIR_INSTALL,
+						KEY_LIBRARY,
+						KEY_END
+					};
+					Tcl_Obj*	vals[KEY_END] = {0};
+
+					for (int i=0; keys[i]; i++) {
+						replace_tclobj(&cmd[2], Tcl_NewStringObj(keys[i], -1));
+						code = Tcl_EvalObjv(interp, 3, cmd, TCL_EVAL_GLOBAL);
+						if (code == TCL_OK)
+							replace_tclobj(&vals[i], Tcl_GetObjResult(interp));
+						Tcl_ResetResult(interp);
+						code = TCL_OK;
+					}
+
+					if (vals[KEY_HEADER]) {
+						Tcl_DStringAppend(&preamble, "#include <", -1);
+						Tcl_DStringAppend(&preamble, Tcl_GetString(vals[KEY_HEADER]), -1);
+						Tcl_DStringAppend(&preamble, ">\n", -1);
+					}
+
+					if (vals[KEY_INCLUDEDIR_RUNTIME])
+						tcc_add_include_path(tcc, Tcl_GetString(vals[KEY_INCLUDEDIR_RUNTIME]));
+					if (vals[KEY_INCLUDEDIR_INSTALL])
+						tcc_add_include_path(tcc, Tcl_GetString(vals[KEY_INCLUDEDIR_INSTALL]));
+					if (vals[KEY_LIBDIR_RUNTIME])
+						if (-1 == tcc_add_library_path(tcc, Tcl_GetString(vals[KEY_LIBDIR_RUNTIME]))) {
+							// TODO: what?
+						}
+					if (vals[KEY_LIBDIR_INSTALL])
+						if (-1 == tcc_add_library_path(tcc, Tcl_GetString(vals[KEY_LIBDIR_INSTALL]))) {
+							// TODO: what?
+						}
+					if (vals[KEY_LIBRARY]) {
+						const char* libstr = Tcl_GetString(vals[KEY_LIBRARY]);
+						if (strncmp("lib", libstr, 3) == 0) {
+							libstr += 3;
+						}
+						if (-1 == tcc_add_library(tcc, libstr))
+							THROW_ERROR_LABEL(freevals, code, "Error adding library \"", Tcl_GetString(vals[KEY_LIBRARY]), "\"");
+					}
+
+freevals:
+					for (int i=0; i<3; i++)
+						replace_tclobj(&cmd[i], NULL);
+					for (int i=0; i<KEY_END; i++)
+						replace_tclobj(&vals[i], NULL);
+
+					if (code != TCL_OK) goto finally;
+				}
+				break;
+		}
 	}
 
 	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
@@ -253,13 +345,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 					const char*		str = Tcl_GetStringFromObj(v, &len);
 
 					Tcl_DStringInit(&c);
-					switch (mode) {
-						case MODE_RAW:
-							break;
-						case MODE_TCL:
-							Tcl_DStringAppend(&c, "#include <tclstuff.h>\n", -1);
-							break;
-					}
+					Tcl_DStringAppend(&c, Tcl_DStringValue(&preamble), Tcl_DStringLength(&preamble));
 					Tcl_DStringAppend(&c, str, len);
 
 					if (debugpath) { // Write out to a temporary file instead, and try to arrange for it for be unlinked when intrep is freed {{{
@@ -342,6 +428,9 @@ codeerror:
 				}
 				break;
 
+			case PART_PACKAGE:
+				break;
+
 			default:
 				THROW_ERROR_LABEL(finally, code, "Invalid part id");
 		}
@@ -381,6 +470,8 @@ codeerror:
 	replace_tclobj(&debugfiles, NULL);
 
 finally:
+	Tcl_DStringFree(&preamble);
+
 	if (compile_errors) {
 		if (code == TCL_OK) {
 			Tcl_SetObjResult(interp, compile_errors);

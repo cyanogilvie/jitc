@@ -1,0 +1,90 @@
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:TclInitByteCode
+	...
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:Tcl_ObjPrintf
+	fun:Tcl_MainEx
+	fun:main
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:Tcl_CreateLiteral
+	...
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:TclCreateLiteral
+	...
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:Tcl_CompileCmdLiteral
+	...
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:CompileCmdLiteral
+	...
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:Tcl_CreateInterp
+	fun:main
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:Tcl_Alloc
+	fun:TEBCresume
+	...
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:Tcl_Alloc
+	fun:TclNREvalObjv
+	fun:TEBCresume
+	...
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:Tcl_Alloc
+	fun:EvalObjvCore
+	fun:TclNRRunCallbacks
+	...
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:Tcl_Alloc
+	fun:TclNREvalObjEx
+	...
+}
+{
+	Tcl
+	Memcheck:Leak
+	...
+	fun:AppendPrintfToObjVA
+}

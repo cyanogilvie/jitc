@@ -178,8 +178,9 @@ test capply-5.1 {OBJCMD} -body { #<<<
 #>>>
 test capply-6.1 {dedup} -setup { #<<<
 	set cdef	{
-		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.0
-		library			dedup0.9.0
+		include_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
+		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
+		library			dedup0.9.2
 		code {
 			#include <dedup.h>
 
@@ -211,7 +212,8 @@ test capply-6.1 {dedup} -setup { #<<<
 #>>>
 test capply-6.2 {dedup stubs} -setup { #<<<
 	set cdef	{
-		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.0
+		include_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
+		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
 		define			{USE_TCL_STUBS 1}
 		define			{USE_DEDUP_STUBS 1}
 		code {
@@ -242,7 +244,7 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 				return TCL_OK;
 			}
 		}
-		library			dedupstub0.9.0
+		library			dedupstub0.9.2
 		library			tclstub8.7
 	}
 } -body {
@@ -251,14 +253,44 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 	unset -nocomplain cdef
 } -result bar
 #>>>
-test capply-6.3 {dedup no stubs, tcl package requireq} -setup { #<<<
+test capply-6.3 {dedup no stubs, tcl package require} -setup { #<<<
 	package require dedup
 	set cdef	{
-		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.0
-		library			dedup0.9.0
+		include_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
+		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
+		library			dedup0.9.2
 		code {
 			#include <dedup.h>
 
+			struct dedup_pool*	g_dedup = NULL;
+
+			INIT() {
+				g_dedup = Dedup_NewPool(interp);
+				return TCL_OK;
+			}
+
+			RELEASE() {
+				Dedup_FreePool(g_dedup);
+				g_dedup = NULL;
+			}
+
+			OBJCMD(foo) {
+				CHECK_ARGS(0, "");
+				Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, "bar", 3));
+				return TCL_OK;
+			}
+		}
+	}
+} -body {
+	jitc::capply $cdef foo
+} -cleanup {
+	unset -nocomplain cdef
+} -result bar
+#>>>
+test capply-6.4 {dedup package} -setup { #<<<
+	set cdef	{
+		package	{dedup 0.9.2}
+		code {
 			struct dedup_pool*	g_dedup = NULL;
 
 			INIT() {
