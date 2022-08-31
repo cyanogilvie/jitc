@@ -1,6 +1,6 @@
 services:
     benchmark:
-        image: ubuntu-tcl-optimized
+        image: cyanogilvie/ubuntu-tcl:22.04-8.7a4-1-optimized
         volumes:
             - ./:/src/jitc:ro
         working_dir: /build

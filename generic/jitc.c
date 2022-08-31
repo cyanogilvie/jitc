@@ -72,6 +72,7 @@ static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup) //{{{
 // Internal API {{{
 const char* lit_str[] = {
 	"include",
+	"lib",
 	NULL
 };
 
@@ -203,19 +204,26 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	switch (mode) {
 		case MODE_TCL:
 			{
-				Tcl_Obj*	incpath = NULL;
 				struct interp_cx*	l = Tcl_GetAssocData(interp, "jitc", NULL);
+				Tcl_Obj**			ov;
+				int					oc;
+				Tcl_Obj*			incdir = NULL;
 
 				if (l->libdir == NULL)
 					THROW_ERROR_LABEL(finally, code, "No libdir set");
 
-				replace_tclobj(&incpath, Tcl_FSJoinToPath(l->libdir, 1, (Tcl_Obj*[]){
-					l->lit[LIT_INCLUDE]
-				}));
 				tcc_set_lib_path(tcc, Tcl_GetString(l->libdir));
-				tcc_add_include_path(tcc, Tcl_GetString(incpath));
 				tcc_add_library_path(tcc, Tcl_GetString(l->libdir));
-				replace_tclobj(&incpath, NULL);
+				replace_tclobj(&incdir, Tcl_FSJoinToPath(l->libdir, 1, (Tcl_Obj*[]){l->lit[LIT_INCLUDE]}));
+				tcc_add_include_path(tcc, Tcl_GetString(incdir));
+				replace_tclobj(&incdir, NULL);
+
+				TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, l->stdincludepath, &oc, &ov));
+				for (int i=0; i<oc; i++) tcc_add_include_path(tcc, Tcl_GetString(ov[i]));
+				TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, l->stdlibpath, &oc, &ov));
+				for (int i=0; i<oc; i++) tcc_add_library_path(tcc, Tcl_GetString(ov[i]));
+
+				//tcc_add_library(tcc, Tcl_GetString(l->tcllib));	// Tcl symbols are reverse exported, this doesn't seem to be necessary
 			}
 			break;
 
@@ -479,6 +487,10 @@ static void free_interp_cx(ClientData cdata, Tcl_Interp* interp) //{{{
 		replace_tclobj(&l->lit[i], NULL);
 
 	replace_tclobj(&l->libdir, NULL);
+	replace_tclobj(&l->prefix, NULL);
+	replace_tclobj(&l->stdincludepath, NULL);
+	replace_tclobj(&l->stdlibpath, NULL);
+	replace_tclobj(&l->tcllib, NULL);
 
 	ckfree(l);
 	l = NULL;
@@ -584,7 +596,7 @@ static int setpath_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *
 
 	CHECK_ARGS(1, "dir");
 
-	replace_tclobj(&l->libdir, objv[1]);
+	replace_tclobj(&l->libdir, Tcl_FSGetNormalizedPath(interp, objv[1]));
 
 	return TCL_OK;
 }
@@ -625,11 +637,36 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp)
 
 	// Set up interp_cx {{{
 	l = (struct interp_cx*)ckalloc(sizeof *l);
-	memset(l, 0, sizeof *l);
+	*l = (struct interp_cx){0};
+	Tcl_SetAssocData(interp, "jitc", free_interp_cx, l);
+
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], Tcl_NewStringObj(lit_str[i], -1));
 
-	Tcl_SetAssocData(interp, "jitc", free_interp_cx, l);
+	{
+		Tcl_Obj**		rv;
+		int				rc;
+
+		TEST_OK_LABEL(finally, code, Tcl_Eval(interp, "list "
+					"[file join {*}[lrange [file split [info nameofexecutable]] 0 end-2]] "
+					"[tcl::pkgconfig get dllfile,runtime] "
+					"[tcl::pkgconfig get includedir,runtime] "
+					"[tcl::pkgconfig get libdir,runtime]"
+		));
+		TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, Tcl_GetObjResult(interp), &rc, &rv));
+		if (rc != 4) THROW_ERROR_LABEL(finally, code, "Expecting list of 4 elements");
+
+		replace_tclobj(&l->prefix, rv[0]);
+		replace_tclobj(&l->tcllib, rv[1]);
+		replace_tclobj(&l->stdincludepath, Tcl_NewListObj(2, (Tcl_Obj*[]){
+			rv[2],
+			Tcl_FSJoinToPath(l->prefix, 1, (Tcl_Obj*[]){l->lit[LIT_INCLUDE]})
+		}));
+		replace_tclobj(&l->stdlibpath, Tcl_NewListObj(2, (Tcl_Obj*[]){
+			rv[3],
+			Tcl_FSJoinToPath(l->prefix, 1, (Tcl_Obj*[]){l->lit[LIT_LIB]})
+		}));
+	}
 	// Set up interp_cx }}}
 
 	while (c->name) {
@@ -644,6 +681,8 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp)
 	TEST_OK_LABEL(finally, code, Tcl_PkgProvideEx(interp, PACKAGE_NAME, PACKAGE_VERSION, jitcConstStubsPtr));
 
 finally:
+	if (code != TCL_OK) Tcl_DeleteAssocData(interp, "jitc");
+
 	return code;
 }
 

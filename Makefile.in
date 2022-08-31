@@ -250,24 +250,24 @@ install-doc: doc
 test: binaries libraries
 	$(TCLSH) `@CYGPATH@ $(srcdir)/tests/all.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list apply {{} {load `@CYGPATH@ ./$(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
 
 benchmark: binaries libraries
 	$(TCLSH) `@CYGPATH@ $(srcdir)/bench/run.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list apply {{} {load `@CYGPATH@ ./$(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
 
 shell: binaries libraries
 	@$(TCLSH) $(SCRIPT)
 
 vim-gdb: binaries libraries
-	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) tests/all.tcl $(TESTFLAGS) -singleproc 1 -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ apply\ {{}\ {load\ `@CYGPATH@ $(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)];\ jitc::_setpath\ `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
+	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) tests/all.tcl $(TESTFLAGS) -singleproc 1 -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ apply\ {{}\ {load\ `@CYGPATH@ ./$(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)];\ jitc::_setpath\ `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
 
 vim-core:
 	$(TCLSH_ENV) $(PKG_ENV) vim -c 'packadd termdebug' -c "set mouse=a" -c "set number" -c "set foldlevel=100" -c "Termdebug -ex layout\ asm -ex layout\ regs -ex focus\ cmd $(TCLSH_PROG) core" -c Winbar generic/jitc.c
 
 vim-gdb-benchmark: binaries libraries
-	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug --args $(TCLSH_PROG) bench/run.tcl $(TESTFLAGS) -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ load\ `@CYGPATH@ $(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)]]" generic/jitc.c
+	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) bench/run.tcl $(TESTFLAGS) -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ apply\ {{}\ {load\ `@CYGPATH@ ./$(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)];\ jitc::_setpath\ `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
 
 gdb:
 	$(TCLSH_ENV) $(PKG_ENV) $(GDB) $(TCLSH_PROG) $(SCRIPT)
@@ -277,13 +277,13 @@ gdb-test: binaries libraries
 	    --args $(TCLSH_PROG) `@CYGPATH@ $(srcdir)/tests/all.tcl` \
 	    $(TESTFLAGS) -singleproc 1 \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list apply {{} {load `@CYGPATH@ ./$(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
 
 valgrind: binaries libraries
 	$(TCLSH_ENV) $(PKG_ENV) $(VALGRIND) $(VALGRINDARGS) $(TCLSH_PROG) \
 	    `@CYGPATH@ $(srcdir)/tests/all.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ $(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list apply {{} {load `@CYGPATH@ ./$(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
 
 valgrindshell: binaries libraries
 	$(TCLSH_ENV) $(PKG_ENV) $(VALGRIND) $(VALGRINDARGS) $(TCLSH_PROG) $(SCRIPT)
@@ -502,9 +502,6 @@ tcc:
 	make -C tinycc install
 	# Not part of tcc, but required to build code that uses MODE_TCL
 	cp generic/tclstuff.h local/lib/tcc/include
-	cp $(TCL_PREFIX)/include/tcl.h local/lib/tcc/include
-	cp $(TCL_PREFIX)/include/tclDecls.h local/lib/tcc/include
-	cp $(TCL_PREFIX)/include/tclPlatDecls.h local/lib/tcc/include
 
 
 .PHONY: all binaries clean depend distclean doc install libraries test

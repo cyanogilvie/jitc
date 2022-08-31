@@ -8,14 +8,7 @@ package require jitc
 
 test capply-1.1 {hello, world} -body { #<<<
 	jitc::capply {
-		include_path local/lib/tcc/include
-		include_path /home/cyan/local8.7_valgrind/include
-		library_path local/lib/tcc
-		library_path /home/cyan/local8.7_valgrind/lib
-
 		code { //@begin=c@
-			#include <tcl.h>
-
 			int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
 			{
 				int			code = TCL_OK;
@@ -40,14 +33,7 @@ test capply-1.1 {hello, world} -body { #<<<
 #>>>
 test capply-2.1 {missing symbol} -body { #<<<
 	jitc::capply {
-		include_path local/lib/tcc/include
-		include_path /home/cyan/local8.7_valgrind/include
-		library_path local/lib/tcc
-		library_path /home/cyan/local8.7_valgrind/lib
-
 		code { //@begin=c@
-			#include <tcl.h>
-
 			int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
 			{
 				int			code = TCL_OK;
@@ -72,14 +58,7 @@ test capply-2.1 {missing symbol} -body { #<<<
 #>>>
 test capply-3.1 {exception} -body { #<<<
 	jitc::capply {
-		include_path local/lib/tcc/include
-		include_path /home/cyan/local8.7_valgrind/include
-		library_path local/lib/tcc
-		library_path /home/cyan/local8.7_valgrind/lib
-
 		code { //@begin=c@
-			#include <tcl.h>
-
 			int exception(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
 			{
 				int			code = TCL_OK;
@@ -104,14 +83,7 @@ test capply-3.1 {exception} -body { #<<<
 #>>>
 test capply-3.2 {exception: args} -setup { #<<<
 	set cdef	{
-		include_path local/lib/tcc/include
-		include_path /home/cyan/local8.7_valgrind/include
-		library_path local/lib/tcc
-		library_path /home/cyan/local8.7_valgrind/lib
-
 		code { //@begin=c@
-			#include <tcl.h>
-
 			int exception(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
 			{
 				int			code = TCL_OK;
@@ -136,8 +108,9 @@ test capply-3.2 {exception: args} -setup { #<<<
 	unset -nocomplain cdef
 } -returnCodes error -errorCode {TCL WRONGARGS} -result {wrong # args: should be "exception a b"}
 #>>>
-test capply-4.1 {mode: standard} -setup { #<<<
+test capply-4.1 {mode: tcl} -setup { #<<<
 	set cdef	{
+		mode	tcl
 		code { //@begin=c@
 			int msg(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
 			{
@@ -205,8 +178,6 @@ test capply-5.1 {OBJCMD} -body { #<<<
 #>>>
 test capply-6.1 {dedup} -setup { #<<<
 	set cdef	{
-		include_path	/home/cyan/local8.7_valgrind/include
-		library_path	/home/cyan/local8.7_valgrind/lib
 		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.0
 		library			dedup0.9.0
 		code {
@@ -240,8 +211,6 @@ test capply-6.1 {dedup} -setup { #<<<
 #>>>
 test capply-6.2 {dedup stubs} -setup { #<<<
 	set cdef	{
-		include_path	/home/cyan/local8.7_valgrind/include
-		library_path	/home/cyan/local8.7_valgrind/lib
 		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.0
 		define			{USE_TCL_STUBS 1}
 		define			{USE_DEDUP_STUBS 1}
@@ -285,7 +254,6 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 test capply-6.3 {dedup no stubs, tcl package requireq} -setup { #<<<
 	package require dedup
 	set cdef	{
-		include_path	/home/cyan/local8.7_valgrind/include
 		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.0
 		library			dedup0.9.0
 		code {

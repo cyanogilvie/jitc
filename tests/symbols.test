@@ -7,14 +7,7 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
 package require jitc
 
 set stdcdef	{
-	include_path local/lib/tcc/include
-	include_path /home/cyan/local8.7_valgrind/include
-	library_path local/lib/tcc
-	library_path /home/cyan/local8.7_valgrind/lib
-
 	code { //@begin=c@
-		#include <tcl.h>
-
 		int init(Tcl_Interp* interp)
 		{
 			return TCL_OK;
@@ -35,14 +28,7 @@ set stdcdef	{
 
 test symbols-1.1 {List the symbols in a cdef} -body { #<<<
 	lsort [lmap sym [jitc::symbols {
-		include_path local/lib/tcc/include
-		include_path /home/cyan/local8.7_valgrind/include
-		library_path local/lib/tcc
-		library_path /home/cyan/local8.7_valgrind/lib
-
 		code { //@begin=c@
-			#include <tcl.h>
-
 			int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
 			{
 				int			code = TCL_OK;
