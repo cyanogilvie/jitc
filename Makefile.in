@@ -97,6 +97,7 @@ INSTALL_LIBRARY	= ${INSTALL_DATA}
 PACKAGE_NAME	= @PACKAGE_NAME@
 PACKAGE_VERSION	= @PACKAGE_VERSION@
 CC		= @CC@
+CC_FOR_BUILD	= @CC_FOR_BUILD@
 CFLAGS_DEFAULT	= @CFLAGS_DEFAULT@
 CFLAGS_WARNING	= @CFLAGS_WARNING@
 EXEEXT		= @EXEEXT@
@@ -171,9 +172,10 @@ COMPILE		= $(CC) $(DEFS) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) \
 
 GDB		= gdb
 VALGRIND	= valgrind
-VALGRINDARGS	= --tool=memcheck --num-callers=8 --leak-resolution=high \
+VALGRINDARGS_EXTRA =
+VALGRINDARGS	= --tool=memcheck -q --num-callers=8 --leak-resolution=high \
 		  --leak-check=yes -v --suppressions=suppressions --keep-debuginfo=yes \
-		  --trace-children=yes
+		  --track-fds=yes $(VALGRINDARGS_EXTRA)
 
 .SUFFIXES: .c .$(OBJEXT)
 
@@ -198,9 +200,12 @@ all: binaries libraries doc
 # of the Makefile, in the "BINARIES" variable.
 #========================================================================
 
-binaries: tcc $(BINARIES)
+binaries: tcc tools $(BINARIES)
 
-libraries:
+libraries: library/jitc.tcl
+
+library/jitc.tcl: library/jitc.tcl.in
+	./config.status
 
 #========================================================================
 # Your doc target should differentiate from doc builds (by the developer)
@@ -219,7 +224,7 @@ README.md: doc/jitc.md
 
 install: all install-binaries install-libraries install-doc
 
-install-binaries: binaries install-lib-binaries install-bin-binaries
+install-binaries: binaries install-lib-binaries install-bin-binaries install-tools
 
 #========================================================================
 # This rule installs platform-independent files, such as header files.
@@ -227,11 +232,19 @@ install-binaries: binaries install-lib-binaries install-bin-binaries
 #========================================================================
 
 install-libraries: libraries
-	@$(INSTALL_DATA_DIR) $(DESTDIR)$(includedir)
-	@echo "Installing header files in $(DESTDIR)$(includedir)"
+	@$(INSTALL_DATA_DIR) $(DESTDIR)$(pkglibdir)
+	@echo "Installing header files in $(DESTDIR)$(pkglibdir)"
 	@list='$(PKG_HEADERS)'; for i in $$list; do \
 	    echo "Installing $(srcdir)/$$i" ; \
-	    $(INSTALL_DATA) $(srcdir)/$$i $(DESTDIR)$(includedir) ; \
+		$(INSTALL_DATA) $(srcdir)/$$i $(DESTDIR)$(pkglibdir) ; \
+	done;
+
+install-tools: tools
+	@$(INSTALL_DATA_DIR) $(DESTDIR)$(pkglibdir)
+	@echo "Installing tools to $(DESTDIR)$(pkglibdir)"
+	@list='re2c packcc lemon'; for i in $$list; do \
+	    echo "Installing local/bin/$$i" ; \
+		$(INSTALL_PROGRAM) local/bin/$$i $(DESTDIR)$(pkglibdir) ; \
 	done;
 
 #========================================================================
@@ -247,45 +260,54 @@ install-doc: doc
 	    $(INSTALL_DATA) $$i $(DESTDIR)$(mandir)/mann ; \
 	done
 
-test: binaries libraries
+test: binaries libraries dedup
 	$(TCLSH) `@CYGPATH@ $(srcdir)/tests/all.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ ./$(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]"
 
-benchmark: binaries libraries
+benchmark: binaries librariesdedup
 	$(TCLSH) `@CYGPATH@ $(srcdir)/bench/run.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ ./$(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]"
 
 shell: binaries libraries
 	@$(TCLSH) $(SCRIPT)
 
-vim-gdb: binaries libraries
-	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) tests/all.tcl $(TESTFLAGS) -singleproc 1 -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ apply\ {{}\ {load\ `@CYGPATH@ ./$(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)];\ jitc::_setpath\ `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
+vim-gdb: binaries libraries dedup
+	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) tests/all.tcl $(TESTFLAGS) -singleproc 1 -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ source\ [file\ join\ `@CYGPATH@ ./$(srcdir)`\ library/jitc.tcl]]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
+
+vim-valgrind-gdb: binaries libraries dedup
+	-rm -f valgrind_output
+	$(TCLSH_ENV) $(PKG_ENV) $(VALGRIND) $(VALGRINDARGS) --vgdb=full --vgdb-error=0 -q --log-file=valgrind_output $(TCLSH_PROG) \
+	    `@CYGPATH@ $(srcdir)/tests/all.tcl` $(TESTFLAGS) \
+	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
+		[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]" &
+	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on -ex target\ remote\ |\ vgdb --args $(TCLSH_PROG) tests/all.tcl $(TESTFLAGS) -singleproc 1 -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ source\ [file\ join\ `@CYGPATH@ ./$(srcdir)`\ library/jitc.tcl]]" -c "2windo set nonumber" -c "terminal tail -f valgrind_output" -c "1windo set nonumber" generic/jitc.c
+	-rm -f valgrind_output
 
 vim-core:
 	$(TCLSH_ENV) $(PKG_ENV) vim -c 'packadd termdebug' -c "set mouse=a" -c "set number" -c "set foldlevel=100" -c "Termdebug -ex layout\ asm -ex layout\ regs -ex focus\ cmd $(TCLSH_PROG) core" -c Winbar generic/jitc.c
 
-vim-gdb-benchmark: binaries libraries
-	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) bench/run.tcl $(TESTFLAGS) -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ apply\ {{}\ {load\ `@CYGPATH@ ./$(PKG_LIB_FILE)`\ [string\ totitle\ $(PACKAGE_NAME)];\ jitc::_setpath\ `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
+vim-gdb-benchmark: binaries libraries dedup
+	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) bench/run.tcl $(TESTFLAGS) -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ source\ [file\ join\ `@CYGPATH@ ./$(srcdir)`\ library/jitc.tcl]]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
 
 gdb:
 	$(TCLSH_ENV) $(PKG_ENV) $(GDB) $(TCLSH_PROG) $(SCRIPT)
 
-gdb-test: binaries libraries
+gdb-test: binaries libraries dedup
 	$(TCLSH_ENV) $(PKG_ENV) $(GDB) \
 	    --args $(TCLSH_PROG) `@CYGPATH@ $(srcdir)/tests/all.tcl` \
 	    $(TESTFLAGS) -singleproc 1 \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ ./$(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]"
 
-valgrind: binaries libraries
+valgrind: binaries libraries dedup
 	$(TCLSH_ENV) $(PKG_ENV) $(VALGRIND) $(VALGRINDARGS) $(TCLSH_PROG) \
 	    `@CYGPATH@ $(srcdir)/tests/all.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-		[list apply {{} {load `@CYGPATH@ ./$(PKG_LIB_FILE)` [string totitle $(PACKAGE_NAME)]; jitc::_setpath `@CYGPATH@ $(srcdir)/local/lib/tcc`}}]; "
+		[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]"
 
-valgrindshell: binaries libraries
+valgrindshell: binaries libraries dedup
 	$(TCLSH_ENV) $(PKG_ENV) $(VALGRIND) $(VALGRINDARGS) $(TCLSH_PROG) $(SCRIPT)
 
 depend:
@@ -393,7 +415,9 @@ clean:
 	-rm -f *.$(OBJEXT) core *.core
 	-test -z "$(CLEANFILES)" || rm -f $(CLEANFILES)
 	make -C tinycc clean
+	-test -x dedup/Makefile && make -C dedup clean
 	-rm -rf local
+	-rm -rf build
 
 distclean: clean
 	-rm -f *.tab.c
@@ -503,9 +527,41 @@ tcc:
 	# Not part of tcc, but required to build code that uses MODE_TCL
 	cp generic/tclstuff.h local/lib/tcc/include
 
+tools: local/bin/re2c local/bin/packcc local/bin/lemon
+
+local/bin/re2c:
+	mkdir -p tools/re2c
+	mkdir -p build/re2c
+	mkdir -p local/bin
+	git submodule update --init --depth 1 tools/re2c
+	cd tools/re2c && ./autogen.sh
+	cd build/re2c && ../../tools/re2c/configure CC="$(CC)" --disable-golang --disable-rust --enable-libs --disable-shared --enable-static && make -j 16
+	make -C build/re2c install-strip DESTDIR="`pwd`" prefix=/local
+
+local/bin/packcc:
+	mkdir -p tools/packcc
+	mkdir -p local/bin
+	git submodule update --init --depth 1 tools/packcc
+	$(CC) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS_DEFAULT) $(CFLAGS_WARNING) $(SHLIB_CFLAGS) $(CFLAGS) \
+		-o $@ tools/packcc/src/packcc.c
+
+local/bin/lemon:
+	mkdir -p tools/sqlite
+	mkdir -p local/bin
+	git submodule update --init --depth 1 tools/sqlite
+	$(CC) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS_DEFAULT) $(CFLAGS_WARNING) $(SHLIB_CFLAGS) $(CFLAGS) \
+		-o $@ tools/sqlite/tool/lemon.c
+
+local/lib/dedup%/pkgIndex.tcl:
+	git submodule update --init --depth 1 dedup
+	ln -sf "`pwd`/tclconfig" dedup/tclconfig
+	(cd dedup; autoconf && ./configure CFLAGS="-DPURIFY -Og" --prefix= --exec-prefix="`pwd`/../local" --enable-symbols --with-tcl=$(TCL_BIN_DIR))
+	make -C dedup install-binaries install-libraries
+
+dedup: local/lib/dedup0.9.3/pkgIndex.tcl
 
 .PHONY: all binaries clean depend distclean doc install libraries test
-.PHONY: gdb gdb-test valgrind valgrindshell genstubs tcc tags
+.PHONY: gdb gdb-test valgrind valgrindshell genstubs tcc tags tools dedup
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

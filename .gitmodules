@@ -1,3 +1,19 @@
 [submodule "tinycc"]
 	path = tinycc
 	url = git://repo.or.cz/tinycc.git
+	shallow = true
+[submodule "re2c"]
+	path = tools/re2c
+	url = https://github.com/skvadrik/re2c
+	shallow = true
+[submodule "packcc"]
+	path = tools/packcc
+	url = https://github.com/arithy/packcc
+	shallow = true
+[submodule "lemon"]
+	path = tools/sqlite
+	url = https://github.com/sqlite/sqlite.git
+	shallow = true
+[submodule "dedup"]
+	path = dedup
+	url = https://github.com/cyanogilvie/dedup.git

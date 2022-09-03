@@ -15,3 +15,5 @@ tags
 *~
 last
 local
+build
+valgrind_output

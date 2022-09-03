@@ -29,6 +29,13 @@
 		goto label;											\
 	}
 
+#define THROW_PRINTF_LABEL( label, var, fmtstr, ... )						\
+	{																		\
+		Tcl_SetObjResult(interp, Tcl_ObjPrintf((fmtstr), ##__VA_ARGS__));	\
+		var = TCL_ERROR;													\
+		goto label;															\
+	}
+
 // convenience macro to check the number of arguments passed to a function
 // implementing a tcl command against the number expected, and to throw
 // a tcl error if they don't match.  Note that the value of expected does
@@ -115,7 +122,7 @@ static inline void replace_tclobj(Tcl_Obj** target, Tcl_Obj* replacement)
 #endif
 
 #define OBJCMD(name)	int (name)(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
-#define INIT()			int init(Tcl_Interp* interp)
-#define RELEASE()		void release(Tcl_Interp* interp)
+#define INIT			int init(Tcl_Interp* interp)
+#define RELEASE			void release(Tcl_Interp* interp)
 
 #endif

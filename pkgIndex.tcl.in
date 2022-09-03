@@ -1,14 +1,4 @@
 #
 # Tcl package index file
 #
-package ifneeded @PACKAGE_NAME@ @PACKAGE_VERSION@ [list apply {
-	dir {
-		load [file join $dir @PKG_LIB_FILE@] @PACKAGE_NAME@
-		set buildpath	[file join $dir local/lib/tcc]
-		if {[file exists $buildpath]} {
-			::jitc::_setpath $dir
-		} else {
-			::jitc::_setpath $dir
-		}
-	}
-}]
+package ifneeded @PACKAGE_NAME@ @PACKAGE_VERSION@ [list source [file join $dir jitc.tcl]]

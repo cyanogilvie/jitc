@@ -84,7 +84,7 @@ TEA_ADD_LIBS([-Llocal/lib -l:libtcc.a])
 #TEA_ADD_LIBS([jitc/libtcc.a])
 TEA_ADD_CFLAGS([])
 TEA_ADD_STUB_SOURCES([jitcStubLib.c])
-TEA_ADD_TCL_SOURCES([])
+TEA_ADD_TCL_SOURCES([library/jitc.tcl])
 
 #--------------------------------------------------------------------
 # __CHANGE__
@@ -152,6 +152,7 @@ TEA_CONFIG_CFLAGS
 # Check for required polyfill
 TIP445
 #DEDUP_STUBS
+AX_CC_FOR_BUILD
 
 #--------------------------------------------------------------------
 # Set the default compiler switches based on the --enable-symbols option.
@@ -204,7 +205,7 @@ TEAX_CONFIG_LINK_LINE(JITC_BUILD_LIB_SPEC,
 TEAX_CONFIG_LINK_LINE(JITC_BUILD_STUB_LIB_SPEC,
 					 [${BUILD_DIR}], [${PACKAGE_NAME}stub])
 
-AC_CONFIG_FILES([Makefile pkgIndex.tcl jitcConfig.sh generic/jitc.h])
+AC_CONFIG_FILES([Makefile pkgIndex.tcl library/jitc.tcl jitcConfig.sh generic/jitc.h])
 #AC_CONFIG_FILES([sampleConfig.sh])
 
 #--------------------------------------------------------------------

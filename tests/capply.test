@@ -6,6 +6,20 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
 ::tcltest::loadTestedCommands
 package require jitc
 
+# Send debug output via puts so that the test's -output handling can capure it
+set puts_format	{{PUTS_FORMAT(fmt, ...)} {do {					\
+		Tcl_Obj*	cmd = NULL;						\
+		replace_tclobj(&cmd, Tcl_NewListObj(3, (Tcl_Obj*[]){		\
+			Tcl_NewStringObj("puts", 4),			\
+			Tcl_NewStringObj("-nonewline", 10),		\
+			Tcl_ObjPrintf(fmt, ##__VA_ARGS__)		\
+		}));										\
+		Tcl_EvalObjEx(interp, cmd, TCL_EVAL_GLOBAL);\
+		replace_tclobj(&cmd, NULL);					\
+		Tcl_ResetResult(interp);					\
+	} while(0);
+}}
+
 test capply-1.1 {hello, world} -body { #<<<
 	jitc::capply {
 		code { //@begin=c@
@@ -176,23 +190,22 @@ test capply-5.1 {OBJCMD} -body { #<<<
 	} foo
 } -result bar
 #>>>
-test capply-6.1 {dedup} -setup { #<<<
+test capply-6.1 {dedup} -constraints knownBug -setup { #<<<
 	set cdef	{
-		include_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
-		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
-		library			dedup0.9.2
+		include_path	local/lib/dedup0.9.3
+		library_path	local/lib/dedup0.9.3
 		code {
 			#include <dedup.h>
 
 			struct dedup_pool*	g_dedup = NULL;
 
-			INIT() {
+			INIT {
 				TEST_OK(Tcl_PkgRequireProc(interp, "dedup", 0, NULL, NULL));
 				g_dedup = Dedup_NewPool(interp);
 				return TCL_OK;
 			}
 
-			RELEASE() {
+			RELEASE {
 				Dedup_FreePool(g_dedup);
 				g_dedup = NULL;
 			}
@@ -203,6 +216,7 @@ test capply-6.1 {dedup} -setup { #<<<
 				return TCL_OK;
 			}
 		}
+		library			dedup0.9.3
 	}
 } -body {
 	jitc::capply $cdef foo
@@ -212,8 +226,8 @@ test capply-6.1 {dedup} -setup { #<<<
 #>>>
 test capply-6.2 {dedup stubs} -setup { #<<<
 	set cdef	{
-		include_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
-		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
+		include_path	local/lib/dedup0.9.3
+		library_path	local/lib/dedup0.9.3
 		define			{USE_TCL_STUBS 1}
 		define			{USE_DEDUP_STUBS 1}
 		code {
@@ -221,7 +235,7 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 
 			struct dedup_pool*	g_dedup = NULL;
 
-			INIT() {
+			INIT {
 				#if USE_TCL_STUBS
 				if (Tcl_InitStubs(interp, TCL_VERSION, 0) == NULL) return TCL_ERROR;
 				#endif
@@ -233,7 +247,7 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 				return TCL_OK;
 			}
 
-			RELEASE() {
+			RELEASE {
 				Dedup_FreePool(g_dedup);
 				g_dedup = NULL;
 			}
@@ -244,7 +258,7 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 				return TCL_OK;
 			}
 		}
-		library			dedupstub0.9.2
+		library			dedupstub0.9.3
 		library			tclstub8.7
 	}
 } -body {
@@ -253,23 +267,23 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 	unset -nocomplain cdef
 } -result bar
 #>>>
-test capply-6.3 {dedup no stubs, tcl package require} -setup { #<<<
+test capply-6.3 {dedup no stubs, tcl package require} -constraints knownBug -setup { #<<<
 	package require dedup
 	set cdef	{
-		include_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
-		library_path	/home/cyan/local8.7_valgrind/lib/dedup0.9.2
-		library			dedup0.9.2
+		include_path	local/lib/dedup0.9.3
+		library_path	local/lib/dedup0.9.3
+		library			dedup0.9.3
 		code {
 			#include <dedup.h>
 
 			struct dedup_pool*	g_dedup = NULL;
 
-			INIT() {
+			INIT {
 				g_dedup = Dedup_NewPool(interp);
 				return TCL_OK;
 			}
 
-			RELEASE() {
+			RELEASE {
 				Dedup_FreePool(g_dedup);
 				g_dedup = NULL;
 			}
@@ -289,16 +303,16 @@ test capply-6.3 {dedup no stubs, tcl package require} -setup { #<<<
 #>>>
 test capply-6.4 {dedup package} -setup { #<<<
 	set cdef	{
-		package	{dedup 0.9.2}
+		package	{dedup 0.9.3}
 		code {
 			struct dedup_pool*	g_dedup = NULL;
 
-			INIT() {
+			INIT {
 				g_dedup = Dedup_NewPool(interp);
 				return TCL_OK;
 			}
 
-			RELEASE() {
+			RELEASE {
 				Dedup_FreePool(g_dedup);
 				g_dedup = NULL;
 			}
@@ -315,6 +329,281 @@ test capply-6.4 {dedup package} -setup { #<<<
 } -cleanup {
 	unset -nocomplain cdef
 } -result bar
+#>>>
+test capply-6.5 {dedup package, reuse pool} -setup { #<<<
+	set dedup_cdef	[list \
+		package	{dedup 0.9.3} \
+		define	$puts_format \
+	]
+	lappend dedup_cdef code { //@begin=c@
+		struct dedup_pool*	g_dedup = NULL;
+
+		INIT {
+			g_dedup = Dedup_NewPool(interp);
+			PUTS_FORMAT("initialized dedup pool\n");
+			return TCL_OK;
+		}
+
+		RELEASE {
+			Dedup_FreePool(g_dedup);
+			g_dedup = NULL;
+			PUTS_FORMAT("freed dedup pool\n");
+		}
+		//@end=c@
+	}
+
+	set code { //@begin=c@
+		extern struct dedup_pool*	g_dedup;
+
+		#define STR2(x)	#x
+		#define STR(x)	STR2(x)
+
+		RELEASE {
+			PUTS_FORMAT("Releasing %s\n", STR(CHILD));
+		}
+
+		OBJCMD(dedup_str) {
+			CHECK_ARGS(1, "str");
+			PUTS_FORMAT("dedup_str in %s\n", STR(CHILD));
+			Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, Tcl_GetString(objv[1]), -1));
+			return TCL_OK;
+		}
+
+		OBJCMD(stats) {
+			CHECK_ARGS(0, "");
+			Tcl_DString	ds;
+			Tcl_DStringInit(&ds);
+			Dedup_Stats(&ds, g_dedup);
+			Tcl_SetObjResult(interp, Tcl_NewStringObj(Tcl_DStringValue(&ds), Tcl_DStringLength(&ds)));
+			Tcl_DStringFree(&ds);
+			return TCL_OK;
+		}
+		//@end=c@
+	}
+
+	set cdef1 [list \
+		symbol	[list $dedup_cdef g_dedup] \
+		package	{dedup 0.9.3} \
+		define	$puts_format \
+		define	{CHILD cdef1} \
+		code	$code \
+	]
+
+	set cdef2 [list \
+		symbol	[list $dedup_cdef g_dedup] \
+		package	{dedup 0.9.3} \
+		define	$puts_format \
+		define	{CHILD cdef2} \
+		code	$code \
+	]
+
+	list	;# Prevent a ref to cdef2 being held as the result of the setup script
+} -body {
+	set get1	[jitc::capply $cdef1 dedup_str foo]
+	#puts stderr "before shimmer dedup_cdef: [tcl::unsupported::representation $dedup_cdef]"
+	#llength $dedup_cdef		;# Doesn't crash, but recompiles dedup_cdef for cdef2's symbol import
+	#puts stderr "shimmered dedup_cdef: [tcl::unsupported::representation $dedup_cdef]"
+	unset dedup_cdef	;# Test that the cdef1 and cdef2 hold refs
+	set get2	[jitc::capply $cdef2 dedup_str foo]
+	list [expr {
+		[tcl::unsupported::representation $get1] eq [tcl::unsupported::representation $get2]
+	}] [jitc::capply $cdef2 stats][unset -nocomplain cdef1 cdef2 code dedup_cdef]	;# unset here to capture the output from the RELEASE handlers
+} -cleanup {
+	unset -nocomplain dedup_cdef cdef1 cdef2 code get1 get2
+} -result [list 1 [format "refCount: %4d, heat: %4d, \"foo\"\nentries: %4d" 4 1 1]] -output {initialized dedup pool
+dedup_str in cdef1
+dedup_str in cdef2
+Releasing cdef1
+Releasing cdef2
+freed dedup pool
+}
+
+#>>>
+test capply-6.6 {dedup package, reuse pool, import function symbols} -setup { #<<<
+	set dedup_cdef	[list \
+		package	{dedup 0.9.3} \
+		define	$puts_format \
+	]
+	lappend dedup_cdef code { //@begin=c@
+		struct dedup_pool*	g_dedup = NULL;
+
+		// Reference these symbols so that we can reexport them
+		void* ref1 = Dedup_NewStringObj;
+		void* ref2 = Dedup_Stats;
+
+		INIT {
+			g_dedup = Dedup_NewPool(interp);
+			PUTS_FORMAT("initialized dedup pool\n");
+			return TCL_OK;
+		}
+
+		RELEASE {
+			Dedup_FreePool(g_dedup);
+			g_dedup = NULL;
+			PUTS_FORMAT("freed dedup pool\n");
+		}
+		//@end=c@
+	}
+
+	set code { //@begin=c@
+		extern struct dedup_pool*	g_dedup;
+		Tcl_Obj* Dedup_NewStringObj(struct dedup_pool* p, const char* str, int len);
+		Tcl_Obj* Dedup_Stats(Tcl_DString* ds, struct dedup_pool* p);
+
+		#define STR2(x)	#x
+		#define STR(x)	STR2(x)
+
+		RELEASE {
+			PUTS_FORMAT("Releasing %s\n", STR(CHILD));
+		}
+
+		OBJCMD(dedup_str) {
+			CHECK_ARGS(1, "str");
+			PUTS_FORMAT("dedup_str in %s\n", STR(CHILD));
+			Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, Tcl_GetString(objv[1]), -1));
+			return TCL_OK;
+		}
+
+		OBJCMD(stats) {
+			CHECK_ARGS(0, "");
+			Tcl_DString	ds;
+			Tcl_DStringInit(&ds);
+			Dedup_Stats(&ds, g_dedup);
+			Tcl_SetObjResult(interp, Tcl_NewStringObj(Tcl_DStringValue(&ds), Tcl_DStringLength(&ds)));
+			Tcl_DStringFree(&ds);
+			return TCL_OK;
+		}
+		//@end=c@
+	}
+
+	set cdef1 [list \
+		symbol	[list $dedup_cdef g_dedup Dedup_NewStringObj] \
+		define	$puts_format \
+		define	{CHILD cdef1} \
+		code	$code \
+	]
+
+	set cdef2 [list \
+		symbol	[list $dedup_cdef g_dedup Dedup_NewStringObj Dedup_Stats] \
+		define	$puts_format \
+		define	{CHILD cdef2} \
+		code	$code \
+	]
+
+	list	;# Prevent a ref to cdef2 being held as the result of the setup script
+} -body {
+	set get1	[jitc::capply $cdef1 dedup_str foo]
+	#puts stderr "before shimmer dedup_cdef: [tcl::unsupported::representation $dedup_cdef]"
+	#llength $dedup_cdef		;# Doesn't crash, but recompiles dedup_cdef for cdef2's symbol import
+	#puts stderr "shimmered dedup_cdef: [tcl::unsupported::representation $dedup_cdef]"
+	unset dedup_cdef	;# Test that the cdef1 and cdef2 hold refs
+	set get2	[jitc::capply $cdef2 dedup_str foo]
+	list [expr {
+		[tcl::unsupported::representation $get1] eq [tcl::unsupported::representation $get2]
+	}] [jitc::capply $cdef2 stats][unset -nocomplain cdef1 cdef2 code dedup_cdef]	;# unset here to capture the output from the RELEASE handlers
+} -cleanup {
+	unset -nocomplain dedup_cdef cdef1 cdef2 code get1 get2
+} -result [list 1 [format "refCount: %4d, heat: %4d, \"foo\"\nentries: %4d" 4 1 1]] -output {initialized dedup pool
+dedup_str in cdef1
+dedup_str in cdef2
+Releasing cdef1
+Releasing cdef2
+freed dedup pool
+}
+
+#>>>
+test capply-7.1 {filter re2c, sentinel with bounds check} -setup { #<<<
+	file mkdir /tmp/jitc_capply-7.1
+	set cdef	{
+		filter	{jitc::re2c -W --case-ranges}
+		debug	/tmp/jitc_capply-7.1
+		options	{}
+		code	{
+			OBJCMD(isdecimal) {
+				CHECK_ARGS(1, "str");
+				int         len;
+				const char* str = Tcl_GetStringFromObj(objv[1], &len);
+				const char* YYCURSOR = str;
+				const char* YYLIMIT  = str+len;
+				const char* YYMARKER;
+				/*!re2c
+					re2c:yyfill:enable = 0;
+					re2c:define:YYCTYPE = "char";
+					re2c:eof = 0;
+
+					number = [1-9][0-9]*;
+
+					number { Tcl_SetObjResult(interp, Tcl_NewBooleanObj(YYCURSOR == YYLIMIT)); goto done; }
+					$      { Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0)); goto done; }
+					*      { Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0)); goto done; }
+				*/
+			done:
+				return TCL_OK;
+			}
+		}
+	}
+} -body {
+	list \
+		[jitc::capply $cdef isdecimal 12345] \
+		[jitc::capply $cdef isdecimal 12345x] \
+		[jitc::capply $cdef isdecimal 012345] \
+		[jitc::capply $cdef isdecimal {}]
+} -cleanup {
+	unset -nocomplain cdef
+} -result {1 0 0 0}
+#>>>
+test capply-7.2 {filter re2c, sentinel without bounds check} -setup { #<<<
+	file mkdir /tmp/jitc_capply-7.2
+	set cdef	{
+		filter	{jitc::re2c -W --case-ranges}
+		debug	/tmp/jitc_capply-7.2
+		options	{}
+		code	{
+			OBJCMD(isdecimal) {
+				CHECK_ARGS(1, "str");
+				int         len;
+				const char* str = Tcl_GetStringFromObj(objv[1], &len);
+				const char* YYCURSOR = str;
+				const char* YYMARKER;
+				/*!re2c
+					re2c:yyfill:enable = 0;
+					re2c:define:YYCTYPE = "char";
+
+					end    = [\x00];
+					number = [1-9][0-9]*;
+
+					number end { Tcl_SetObjResult(interp, Tcl_NewBooleanObj(1)); goto done; }
+					*          { Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0)); goto done; }
+				*/
+			done:
+				return TCL_OK;
+			}
+		}
+	}
+} -body {
+	list \
+		[jitc::capply $cdef isdecimal 12345] \
+		[jitc::capply $cdef isdecimal 12345x] \
+		[jitc::capply $cdef isdecimal 012345] \
+		[jitc::capply $cdef isdecimal {}]
+} -cleanup {
+	unset -nocomplain cdef
+} -result {1 0 0 0}
+#>>>
+test capply-8.1 {tcc memory leak when a header is not found, mode raw: no leak} -body { #<<<
+	jitc::capply {mode raw code "#include <nonesuch.h>"} foo
+} -returnCodes error -result {Error compiling code:
+#include <nonesuch.h>
+Compile errors:
+<string>:1: error: include file 'nonesuch.h' not found}
+#>>>
+test capply-8.2 {tcc memory leak when a header is not found, mode tcl: inline functions leak} -constraints tccMemleak -body { #<<<
+	jitc::capply {mode tcl code "#include <nonesuch.h>"} foo
+} -returnCodes error -result {Error compiling code:
+#include <tclstuff.h>
+#include <nonesuch.h>
+Compile errors:
+<string>:2: error: include file 'nonesuch.h' not found}
 #>>>
 
 # cleanup

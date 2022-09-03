@@ -72,7 +72,13 @@ static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup) //{{{
 // Internal API {{{
 const char* lit_str[] = {
 	"include",
+	"generic",
 	"lib",
+	"::jitc::tccpath",
+	"::jitc::includepath",
+	"::jitc::librarypath",
+	"::jitc::packagedir",
+	"::jitc::prefix",
 	NULL
 };
 
@@ -112,6 +118,7 @@ finally:
 int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 {
 	int					code = TCL_OK;
+	struct interp_cx*	l = Tcl_GetAssocData(interp, "jitc", NULL);
 	static const char* parts[] = {
 		"mode",
 		"code",
@@ -123,13 +130,14 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		"symbol",
 		"library_path",
 		"library",
-		"tccdir",
+		"tccpath",
 		"define",
 		"undefine",
 		"package",
+		"filter",
 		NULL
 	};
-	enum {
+	enum partenum {
 		PART_MODE,
 		PART_CODE,
 		PART_FILE,
@@ -140,10 +148,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		PART_SYMBOL,
 		PART_LIBRARY_PATH,
 		PART_LIBRARY,
-		PART_TCCDIR,
+		PART_TCCPATH,
 		PART_DEFINE,
 		PART_UNDEFINE,
-		PART_PACKAGE
+		PART_PACKAGE,
+		PART_FILTER
 	};
 	static const char* modes[] = {
 		"tcl",
@@ -170,6 +179,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	Tcl_Obj*			compile_errors = NULL;
 	struct jitc_intrep*	r = NULL;
 	Tcl_DString			preamble;
+	Tcl_Obj*			filter = NULL;
 
 	Tcl_DStringInit(&preamble);
 
@@ -179,8 +189,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	// First pass through the parts to check for a debugpath setting
 	for (i=0; i<oc; i+=2) {
-		int			part;
+		enum partenum	part;
 		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
+		_Pragma("GCC diagnostic push")
+		_Pragma("GCC diagnostic ignored \"-Wswitch\"")
 		switch (part) {
 			case PART_DEBUG:
 				replace_tclobj(&debugpath, ov[i+1]);
@@ -188,15 +200,27 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 			case PART_MODE:
 				TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i+1], modes, "mode", TCL_EXACT, &mode));
 				break;
+			case PART_SYMBOL:
+				// Have to pre-flight these to ensure that the compilation (if required) happens before we lock the Mutex and create the TCCState below
+				{
+					Tcl_Obj**	sv;
+					int			sc;
+					struct jitc_intrep*	r;
+
+					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, ov[i+1], &sc, &sv));
+					if (sc >= 1) TEST_OK_LABEL(finally, code, get_r_from_obj(interp, sv[0], &r));
+				}
+				break;
 		}
+		_Pragma("GCC diagnostic pop")
 	}
 
 	if (debugpath) {
 		stat = Tcl_AllocStatBuf();
 		if (
 				-1 == Tcl_FSStat(debugpath, stat) ||	// Doesn't exist
-				Tcl_GetModeFromStat(stat) != S_IFDIR	// Not a directory
-		) THROW_ERROR_LABEL(finally, code, "debugpath \"", Tcl_GetString(debugpath), "\" doesn't exist");
+				!(S_ISDIR(Tcl_GetModeFromStat(stat)))	// Not a directory
+		) THROW_ERROR_LABEL(finally, code, "debug path \"", Tcl_GetString(debugpath), "\" doesn't exist");
 	}
 
 	Tcl_MutexLock(&g_tcc_mutex); mutexheld = 1;
@@ -209,32 +233,50 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	switch (mode) {
 		case MODE_TCL:
 			{
-				struct interp_cx*	l = Tcl_GetAssocData(interp, "jitc", NULL);
 				Tcl_Obj**			ov;
 				int					oc;
-				Tcl_Obj*			incdir = NULL;
+				Tcl_Obj*			includepath = NULL;
+				Tcl_Obj*			librarypath = NULL;
+				Tcl_Obj*			tccpath = NULL;
 
-				if (l->libdir == NULL)
-					THROW_ERROR_LABEL(finally, code, "No libdir set");
+				replace_tclobj(&tccpath,     Tcl_ObjGetVar2(interp, l->lit[LIT_TCC_VAR], NULL, TCL_LEAVE_ERR_MSG));
+				if (tccpath == NULL) {code = TCL_ERROR; goto modetclfinally;}
+				replace_tclobj(&includepath, Tcl_ObjGetVar2(interp, l->lit[LIT_INCLUDEPATH_VAR], NULL, TCL_LEAVE_ERR_MSG));
+				if (includepath == NULL) {code = TCL_ERROR; goto modetclfinally;}
+				replace_tclobj(&librarypath, Tcl_ObjGetVar2(interp, l->lit[LIT_LIBRARYPATH_VAR], NULL, TCL_LEAVE_ERR_MSG));
+				if (librarypath == NULL) {code = TCL_ERROR; goto modetclfinally;}
 
-				tcc_set_lib_path(tcc, Tcl_GetString(l->libdir));
-				tcc_add_library_path(tcc, Tcl_GetString(l->libdir));
-				replace_tclobj(&incdir, Tcl_FSJoinToPath(l->libdir, 1, (Tcl_Obj*[]){l->lit[LIT_INCLUDE]}));
-				tcc_add_include_path(tcc, Tcl_GetString(incdir));
-				replace_tclobj(&incdir, NULL);
+				tcc_set_lib_path(tcc, Tcl_GetString(tccpath));
 
-				TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, l->stdincludepath, &oc, &ov));
+				TEST_OK_LABEL(modetclfinally, code, Tcl_ListObjGetElements(interp, includepath, &oc, &ov));
 				for (int i=0; i<oc; i++) tcc_add_include_path(tcc, Tcl_GetString(ov[i]));
-				TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, l->stdlibpath, &oc, &ov));
-				for (int i=0; i<oc; i++) tcc_add_library_path(tcc, Tcl_GetString(ov[i]));
+				TEST_OK_LABEL(modetclfinally, code, Tcl_ListObjGetElements(interp, librarypath, &oc, &ov));
+				for (int i=0; i<oc; i++)
+					if (-1 == tcc_add_library_path(tcc, Tcl_GetString(ov[i])))
+						THROW_PRINTF_LABEL(modetclfinally, code, "Error adding library path \"%s\"", Tcl_GetString(ov[i]));
 
 				//tcc_add_library(tcc, Tcl_GetString(l->tcllib));	// Tcl symbols are reverse exported, this doesn't seem to be necessary
 
+			modetclfinally:
+				replace_tclobj(&includepath, NULL);
+				replace_tclobj(&librarypath, NULL);
+				replace_tclobj(&tccpath, NULL);
+				if (code != TCL_OK) goto finally;
 				Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
 			}
 			break;
 
 		case MODE_RAW:
+			{
+				Tcl_Obj*	tccpath = NULL;
+
+				replace_tclobj(&tccpath, Tcl_ObjGetVar2(interp, l->lit[LIT_TCC_VAR], NULL, TCL_LEAVE_ERR_MSG));
+				if (tccpath == NULL) {code = TCL_ERROR; goto moderawfinally;}
+				tcc_set_lib_path(tcc, Tcl_GetString(tccpath));
+			moderawfinally:
+				replace_tclobj(&tccpath, NULL);
+				if (code != TCL_OK) goto finally;
+			}
 			break;
 
 		default:
@@ -243,8 +285,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	// Second pass through the parts to process PART_PACKAGE directives
 	for (i=0; i<oc; i+=2) {
-		int			part;
+		enum partenum		part;
 		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
+		_Pragma("GCC diagnostic push")
+		_Pragma("GCC diagnostic ignored \"-Wswitch\"")
 		switch (part) {
 			case PART_PACKAGE:
 				{
@@ -314,7 +358,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 							THROW_ERROR_LABEL(freevals, code, "Error adding library \"", Tcl_GetString(vals[KEY_LIBRARY]), "\"");
 					}
 
-freevals:
+				freevals:
 					for (int i=0; i<3; i++)
 						replace_tclobj(&cmd[i], NULL);
 					for (int i=0; i<KEY_END; i++)
@@ -324,17 +368,19 @@ freevals:
 				}
 				break;
 		}
+		_Pragma("GCC diagnostic pop")
 	}
 
 	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
 	for (i=0; i<oc; i+=2) {
-		int			part;
-		Tcl_Obj*	v = ov[i+1];
+		enum partenum	part;
+		Tcl_Obj*		v = ov[i+1];
 
 		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
 		switch (part) {
 			case PART_MODE:
 			case PART_DEBUG:
+			case PART_PACKAGE:
 				/* Handled above */
 				break;
 
@@ -348,10 +394,29 @@ freevals:
 					Tcl_DStringAppend(&c, Tcl_DStringValue(&preamble), Tcl_DStringLength(&preamble));
 					Tcl_DStringAppend(&c, str, len);
 
+					if (filter) {
+						Tcl_Obj*	in = NULL;
+						Tcl_Obj*	filtercmd = NULL;
+
+						replace_tclobj(&filtercmd, Tcl_DuplicateObj(filter));
+						replace_tclobj(&in, Tcl_NewStringObj(Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
+						TEST_OK_LABEL(filtererror, code, Tcl_ListObjAppendElement(interp, filtercmd, in));
+						TEST_OK_LABEL(filtererror, code, Tcl_EvalObjEx(interp, filtercmd, 0));
+						Tcl_DStringTrunc(&c, 0);
+						int filtered_len;
+						const char* filtered_str = Tcl_GetStringFromObj(Tcl_GetObjResult(interp), &filtered_len);
+						Tcl_DStringAppend(&c, filtered_str, filtered_len);
+						Tcl_ResetResult(interp);
+					filtererror:
+						replace_tclobj(&in, NULL);
+						replace_tclobj(&filtercmd, NULL);
+						if (code != TCL_OK) goto codeerror;
+					}
+
 					if (debugpath) { // Write out to a temporary file instead, and try to arrange for it for be unlinked when intrep is freed {{{
 						replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj*[]){
 							debugpath,
-							Tcl_ObjPrintf("%p_%d", tcc, codeseq++)	// TODO: use name(tcc) for a friendly name instead?
+							Tcl_ObjPrintf("%p_%d.c", tcc, codeseq++)	// TODO: use name(tcc) for a friendly name instead?
 						}));
 						replace_tclobj(&debugfile, Tcl_FSJoinPath(pathelements, 2));
 						TEST_OK_LABEL(codeerror, code, Tcl_ListObjAppendElement(interp, debugfiles, debugfile));
@@ -360,7 +425,10 @@ freevals:
 							code = TCL_ERROR;
 							goto finally;
 						}
-						TEST_OK_LABEL(codeerror, code, Tcl_WriteChars(chan, Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
+						const int c_len = Tcl_DStringLength(&c);
+						const int wrote = Tcl_WriteChars(chan, Tcl_DStringValue(&c), c_len);
+						if (wrote != c_len)
+							THROW_PRINTF_LABEL(codeerror, code, "Tried to write %d characters to %s, only managed %d", c_len, Tcl_GetString(debugfile), wrote);
 						TEST_OK_LABEL(codeerror, code, Tcl_Close(interp, chan));
 						chan = NULL;
 
@@ -387,7 +455,7 @@ codeerror:
 			case PART_OPTIONS:			tcc_set_options        (tcc, Tcl_GetString(v)); break;
 			case PART_INCLUDE_PATH:		tcc_add_include_path   (tcc, Tcl_GetString(v)); break;
 			case PART_SYSINCLUDE_PATH:	tcc_add_sysinclude_path(tcc, Tcl_GetString(v)); break;
-			case PART_TCCDIR:			tcc_set_lib_path       (tcc, Tcl_GetString(v)); break;
+			case PART_TCCPATH:			tcc_set_lib_path       (tcc, Tcl_GetString(v)); break;
 			case PART_UNDEFINE:			tcc_undefine_symbol    (tcc, Tcl_GetString(v)); break;
 
 			case PART_SYMBOL:
@@ -395,14 +463,16 @@ codeerror:
 					// treat this as another code object+symbol name to retrieve
 					Tcl_Obj**	sv;
 					int			sc;
-					void*		val = NULL;
 
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sc, &sv));
-					if (sc != 2)
+					if (sc < 1)
 						THROW_ERROR_LABEL(finally, code, "Symbol definition must be a list: cdef symbol: \"", Tcl_GetString(v), "\"");
-					TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, sv[0], sv[1], &val));
 
-					tcc_define_symbol(tcc, Tcl_GetString(sv[1]), val);
+					for (int i=1; i<sc; i++) {
+						void*	val = NULL;
+						TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, sv[0], sv[i], &val));
+						tcc_add_symbol(tcc, Tcl_GetString(sv[i]), val);
+					}
 				}
 				break;
 
@@ -428,7 +498,11 @@ codeerror:
 				}
 				break;
 
-			case PART_PACKAGE:
+			case PART_FILTER:
+				int			len;
+				Tcl_GetStringFromObj(ov[1], &len);
+
+				replace_tclobj(&filter, len ? ov[1] : NULL);
 				break;
 
 			default:
@@ -511,6 +585,7 @@ finally:
 	replace_tclobj(&debugfile,		NULL);
 	replace_tclobj(&pathelements,	NULL);
 	replace_tclobj(&compile_errors,	NULL);
+	replace_tclobj(&filter,			NULL);
 
 	if (stat) {
 		ckfree(stat);
@@ -576,12 +651,6 @@ static void free_interp_cx(ClientData cdata, Tcl_Interp* interp) //{{{
 
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], NULL);
-
-	replace_tclobj(&l->libdir, NULL);
-	replace_tclobj(&l->prefix, NULL);
-	replace_tclobj(&l->stdincludepath, NULL);
-	replace_tclobj(&l->stdlibpath, NULL);
-	replace_tclobj(&l->tcllib, NULL);
 
 	ckfree(l);
 	l = NULL;
@@ -681,15 +750,33 @@ finally:
 }
 
 //}}}
-static int setpath_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+static int mkdtemp_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
 {
-	struct interp_cx*	l = cdata;
+	int				code = TCL_OK;
+	char*     template = NULL;
 
-	CHECK_ARGS(1, "dir");
+	CHECK_ARGS(1, "template");
 
-	replace_tclobj(&l->libdir, Tcl_FSGetNormalizedPath(interp, objv[1]));
+	template = strdup(Tcl_GetString(objv[1]));
 
-	return TCL_OK;
+	char* dir = mkdtemp(template);
+	if (dir == NULL) {
+		int			err = Tcl_GetErrno();
+		const char*	errstr = Tcl_ErrnoId();
+
+		if (err == EINVAL)
+			THROW_ERROR_LABEL(finally, code, "Template must end with XXXXXX");
+		Tcl_SetErrorCode(interp, "POSIX", errstr, Tcl_ErrnoMsg(err), NULL);
+		THROW_ERROR_LABEL(finally, code, "Could not create temporary directory: ", Tcl_ErrnoMsg(err));
+	}
+	Tcl_SetObjResult(interp, Tcl_NewStringObj(dir, -1));
+
+finally:
+	if (template) {
+		free(template);
+		template = NULL;
+	}
+	return code;
 }
 
 //}}}
@@ -701,7 +788,7 @@ static struct cmd {
 } cmds[] = {
 	{NS "::capply",		capply_cmd},
 	{NS "::symbols",	symbols_cmd},
-	{NS "::_setpath",	setpath_cmd},
+	{NS "::mkdtemp",	mkdtemp_cmd},
 	{NULL,				NULL}
 };
 // Script API }}}
@@ -714,7 +801,7 @@ extern "C" {
 DLLEXPORT int Jitc_Init(Tcl_Interp* interp)
 {
 	int					code = TCL_OK;
-	Tcl_Namespace*		ns = NULL;
+	//Tcl_Namespace*		ns = NULL;
 	struct cmd*			c = cmds;
 	struct interp_cx*	l = NULL;
 
@@ -723,8 +810,8 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp)
 		return TCL_ERROR;
 #endif
 
-	ns = Tcl_CreateNamespace(interp, NS, NULL, NULL);
-	TEST_OK_LABEL(finally, code, Tcl_Export(interp, ns, "*", 0));
+	//ns = Tcl_CreateNamespace(interp, NS, NULL, NULL);
+	//TEST_OK_LABEL(finally, code, Tcl_Export(interp, ns, "*", 0));
 
 	// Set up interp_cx {{{
 	l = (struct interp_cx*)ckalloc(sizeof *l);
@@ -733,31 +820,6 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp)
 
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], Tcl_NewStringObj(lit_str[i], -1));
-
-	{
-		Tcl_Obj**		rv;
-		int				rc;
-
-		TEST_OK_LABEL(finally, code, Tcl_Eval(interp, "list "
-					"[file join {*}[lrange [file split [info nameofexecutable]] 0 end-2]] "
-					"[tcl::pkgconfig get dllfile,runtime] "
-					"[tcl::pkgconfig get includedir,runtime] "
-					"[tcl::pkgconfig get libdir,runtime]"
-		));
-		TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, Tcl_GetObjResult(interp), &rc, &rv));
-		if (rc != 4) THROW_ERROR_LABEL(finally, code, "Expecting list of 4 elements");
-
-		replace_tclobj(&l->prefix, rv[0]);
-		replace_tclobj(&l->tcllib, rv[1]);
-		replace_tclobj(&l->stdincludepath, Tcl_NewListObj(2, (Tcl_Obj*[]){
-			rv[2],
-			Tcl_FSJoinToPath(l->prefix, 1, (Tcl_Obj*[]){l->lit[LIT_INCLUDE]})
-		}));
-		replace_tclobj(&l->stdlibpath, Tcl_NewListObj(2, (Tcl_Obj*[]){
-			rv[3],
-			Tcl_FSJoinToPath(l->prefix, 1, (Tcl_Obj*[]){l->lit[LIT_LIB]})
-		}));
-	}
 	// Set up interp_cx }}}
 
 	while (c->name) {
