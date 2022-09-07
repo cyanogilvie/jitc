@@ -1,0 +1,77 @@
+if {"bench" ni [info commands bench]} {
+	package require bench
+	namespace import bench::*
+}
+
+package require jitc
+
+proc readfile fn {
+	set h	[open $fn]
+	try {read $h} finally {close $h}
+}
+
+proc main {} {
+	bench jitc_json-1.1 {test a json doc for validity} -batch auto -setup { #<<<
+		package require jitclib::json
+		package require rl_json
+		set a	{ {"foo": "bar", "baz": [1, 2, 3]}}
+		set b	{ {"foo": "bar", "baz": [1, 2, 3,]}}
+	} -compare {
+		jitclib_json_valid	{
+			list \
+				[jitc::capply $::jitclib::json valid $a] \
+				[jitc::capply $::jitclib::json valid $b]
+		}
+		jitclib_json_check	{
+			list \
+				[jitc::capply $::jitclib::json_check check $a] \
+				[jitc::capply $::jitclib::json_check check $b]
+		}
+		rl_json_valid	{
+			list \
+				[rl_json::json valid $a] \
+				[rl_json::json valid $b]
+		}
+		rl_json_keys	{
+			list \
+				[expr {![catch {
+					rl_json::json keys $a
+				}]}] \
+				[expr {![catch {
+					rl_json::json keys $b
+				}]}]
+		}
+	} -cleanup {
+		unset -nocomplain a b
+	} -result {1 0}
+	#>>>
+	if {[file exists /tmp/items9.json]} {
+	bench jitc_json-2.1 {validate a large JSON doc} -batch auto -setup { #<<<
+		package require jitclib::json
+		package require rl_json
+		set doc	[readfile /tmp/items9.json]
+	} -compare {
+		jitclib_json_check	{
+			jitc::capply $::jitclib::json_check check $doc
+		}
+		jitclib_json_valid	{
+			jitc::capply $::jitclib::json valid $doc
+		}
+		rl_json_valid	{
+			rl_json::json valid $doc
+		}
+		rl_json_type	{
+			expr {![catch {
+				rl_json::json type $doc
+			}]}
+		}
+	} -cleanup {
+		unset -nocomplain doc
+	} -result 1
+	#>>>
+	}
+}
+
+main
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

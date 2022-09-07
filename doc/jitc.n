@@ -37,12 +37,12 @@ Just In Time C for Tcl
 \f[I]source\f[R]
 .SS DESCRIPTION
 .PP
-This package provides just-in-time compilation of c code to memory for
+This package provides just-in-time compilation of C code to memory for
 Tcl scripts, with the ability to call functions in that compiled object,
 and reference-counted memory management for the compiled objects.
 .PP
 There are several other similar projects (critcl, tcc4tcl, etc.), but
-this package takes a different design approach: treating c code and
+this package takes a different design approach: treating C code and
 related settings as a value stored in a Tcl_Obj and doing the
 compilation as needed, caching the result and freeing the memory when
 the last reference goes away.
@@ -71,7 +71,7 @@ Process the C source code \f[I]source\f[R] through the bundled
 \f[B]re2c\f[R](1)).
 The modified source code is returned.
 Useful as a filter (see the \f[B]filter\f[R] part) to implement very
-fast regular expression based parsers.
+fast regular expression based lexers.
 .SS CDEF FORMAT
 .PP
 The \f[I]cdef\f[R] argument to \f[B]jitc::capply\f[R] and
@@ -81,10 +81,10 @@ When compiling and linking the code the parts are applied in sequence.
 \f[I]part\f[R] must be one of:
 .TP
 \f[B]code\f[R]
-\f[I]value\f[R] is a chunk of c code as a string.
+\f[I]value\f[R] is a chunk of C code as a string.
 .TP
 \f[B]file\f[R]
-\f[I]value\f[R] names a file containing c code.
+\f[I]value\f[R] names a file containing C code.
 Cannot currently refer to a path handled by a Tcl VFS plugin.
 .TP
 \f[B]mode\f[R]
@@ -93,13 +93,13 @@ Select the mode of operation \f[I]value\f[R], which must be either
 \f[B]tcl\f[R] mode automatically sets up include and library search
 paths to link to the running Tcl interpreter, and includes a header file
 which brings in \f[B]tcl.h\f[R] and defines a handful of convenience
-macros for implementing Tcl commands in c (see the \f[B]CONVENIENCE
+macros for implementing Tcl commands in C (see the \f[B]CONVENIENCE
 MACROS\f[R] section).
 Mode \f[B]raw\f[R] turns off this behaviour.
 .TP
 \f[B]debug\f[R]
 \f[I]value\f[R] names a filesystem path (which must exist, and be a
-directory) in which to write copies of the code sections specified by
+directory) into which to write copies of the code sections specified by
 \f[B]code\f[R] parts.
 This is useful when debugging the code, so that the debugger can find
 the source code.
@@ -120,10 +120,11 @@ Add the path in \f[I]value\f[R] to the paths searched for include files.
 Add the path in \f[I]value\f[R] to the paths searched for system include
 files.
 .TP
-\f[B]symbol\f[R]
-Define a symbol: \f[I]value\f[R] is a two element list, the first of
-which is another \f[I]cdef\f[R] and the second the name of the symbol
-from that \f[I]cdef\f[R] to import.
+\f[B]symbols\f[R]
+Import symbols from the \f[I]cdef\f[R] given as the first element of
+\f[I]value\f[R].
+The following (0 or more) elements of \f[I]value\f[R] name symbols to
+import from that cdef.
 .TP
 \f[B]library_path\f[R]
 Add the path in \f[I]value\f[R] to the list of paths searched for
@@ -205,8 +206,44 @@ Any keys that aren\[cq]t defined are ignored.
 .TP
 \f[B]filter\f[R]
 Pass the C source code through the filter specified by \f[I]value\f[R],
-which Must be a Tcl command prefix, to which will be added an arg
+which must be a Tcl command prefix to which will be added an arg
 containing the C source code and which must return the modified source.
+.TP
+\f[B]export\f[R]
+Declare the symbols exported from this object and the header text
+required to use them, for use by other cdefs as described by the
+\f[B]use\f[R] part below.
+\f[I]value\f[R] must be a dictionary with keys described below:
+.RS
+.PP
+.TS
+tab(@);
+l l.
+T{
+Key
+T}@T{
+Description
+T}
+_
+T{
+\f[B]symbols\f[R]
+T}@T{
+A list of the exported symbols.
+Optional
+T}
+T{
+\f[B]header\f[R]
+T}@T{
+The text of the header section to include.
+Optional
+T}
+.TE
+.RE
+.TP
+\f[B]use\f[R]
+Link with the cdef given in \f[I]value\f[R].
+Any symbols and header text it declares in its \f[B]export\f[R] part are
+automatically imported.
 .SS SPECIAL SYMBOLS
 .PP
 If the \f[I]cdef\f[R] exports a symbol \f[B]init\f[R] then that is
@@ -221,7 +258,8 @@ compilation.
 If the \f[I]cdef\f[R] exports a symbol \f[B]release\f[R] then it is
 called when the memory containing the compiled \f[I]cdef\f[R] is about
 to be freed.
-It must be a function taking \f[B]Tcl_Interp\f[R] and returning void.
+It must be a function taking \f[B]Tcl_Interp\f[R] and returning
+\f[B]void\f[R].
 It should reverse any side effects created in the interpreter by
 \f[B]init\f[R] or any of the code run in the \f[I]cdef\f[R], and free
 any memory it allocated.
@@ -241,19 +279,19 @@ Description
 T}
 _
 T{
-INIT
+\f[B]INIT\f[R]
 T}@T{
 Expands to the standard initialization hook export: \[lq]int
 init(Tcl_Interp* interp)\[rq].
 T}
 T{
-RELEASE
+\f[B]RELEASE\f[R]
 T}@T{
 Expands to the standard release hook export: \[lq]void
 release(Tcl_Interp* interp)\[rq].
 T}
 T{
-OBJCMD(\f[I]name\f[R])
+\f[B]OBJCMD\f[R](\f[I]name\f[R])
 T}@T{
 Defines a Tcl_ObjCmdProc named \f[I]name\f[R].
 \f[B]cdata\f[R] is the passed ClientData, \f[B]interp\f[R] is the
@@ -261,15 +299,15 @@ Tcl_Interp, \f[B]objc\f[R] holds the count of arguments and
 \f[B]objv\f[R] is an array of Tcl_Obj pointers to the arguments.
 T}
 T{
-CHECK_ARGS(\f[I]expecting\f[R], \f[I]msg\f[R])
+\f[B]CHECK_ARGS\f[R](\f[I]expecting\f[R], \f[I]msg\f[R])
 T}@T{
 Checks that the count of arguments passed to the command matches
 \f[I]expecting\f[R] (in addition to the command argument itself).
-If not an error message is left in the \f[B]interp\f[R] containing
+If not, an error message is left in the \f[B]interp\f[R] containing
 \f[I]msg\f[R] and we return \f[B]TCL_ERROR\f[R].
 T}
 T{
-TEST_OK_LABEL(\f[I]label\f[R], \f[I]code\f[R],
+\f[B]TEST_OK_LABEL\f[R](\f[I]label\f[R], \f[I]code\f[R],
 \f[I]checked_command\f[R])
 T}@T{
 Test the return code from \f[I]checked_command\f[R] and store it in
@@ -279,7 +317,7 @@ Useful to implement exception handling that releases any allocated
 resources and returns \f[I]code\f[R] at the end of the function.
 T}
 T{
-replace_tclobj(\f[I]varPtr\f[R], \f[I]replacement\f[R])
+\f[B]replace_tclobj\f[R](\f[I]varPtr\f[R], \f[I]replacement\f[R])
 T}@T{
 Assign the Tcl_Obj pointed to by \f[I]replacement\f[R] into the variable
 whose address is \f[I]varPtr\f[R], managing the refCount for the
@@ -509,13 +547,42 @@ puts \[dq]second: [tcl::unsupported::representation $first]\[dq]
 puts \[dq]dedup pool stats:\[rs]n[jitc::capply $cdef stats]\[dq]
 \f[R]
 .fi
+.SS C API
+.PP
+This package exports a stubs API for use by other extensions:
+.TP
+int \f[B]Jitc_GetSymbolFromObj\f[R](Tcl_Interp* \f[I]interp\f[R], Tcl_Obj* \f[I]cdef\f[R], Tcl_Obj* \f[I]symbol\f[R], void** \f[I]val\f[R])
+Retrieve the symbol \f[I]symbol\f[R] from \f[I]cdef\f[R], compiling it
+if needed.
+.TP
+int \f[B]Jitc_GetSymbolsFromObj\f[R](Tcl_Interp* \f[I]interp\f[R], Tcl_Obj* \f[I]cdef\f[R], Tcl_Obj** \f[I]symbols\f[R])
+Retrieve a list of all symbols in \f[I]cdef\f[R], compiling it if
+needed.
+.TP
+int \f[B]Jitc_GetExportHeadersFromObj\f[R](Tcl_Interp* \f[I]interp\f[R], Tcl_Obj* \f[I]cdef\f[R], Tcl_Obj** \f[I]headers\f[R])
+Retrieve the headers text exported from \f[I]cdef\f[R], compiling it if
+needed.
+\f[I]headers\f[R] may be NULL if \f[I]cdef\f[R] doesn\[cq]t declare any
+exported header.
+Will still return \f[B]TCL_OK\f[R] for this case.
+.TP
+int \f[B]Jitc_GetExportSymbolsFromObj\f[R](Tcl_Interp* \f[I]interp\f[R], Tcl_Obj* \f[I]cdef\f[R], Tcl_Obj** \f[I]symbols\f[R])
+Retrieve a list of the symbols declared for export from \f[I]cdef\f[R],
+compiling it if needed.
+\f[I]symbols\f[R] may be NULL if \f[I]cdef\f[R] doesn\[cq]t declare any
+exported symbols.
+Will still return \f[B]TCL_OK\f[R] for this case.
 .SS BUGS
 .PP
 Please report any bugs to the github issue tracker:
 https://github.com/cyanogilvie/jitc/issues
 .SS SEE ALSO
 .PP
-tcc(1), https://repo.or.cz/jitc.git
+critcl: https://wiki.tcl-lang.org/page/Critcl, tcc4tcl:
+https://wiki.tcl-lang.org/page/tcc4tcl, tcc(1),
+https://repo.or.cz/tinycc.git, re2c: https://en.wikipedia.org/wiki/Re2c,
+packcc: https://en.wikipedia.org/wiki/PackCC, lemon:
+https://sqlite.org/src/doc/trunk/doc/lemon.html.
 .SS PROJECT STATUS
 .PP
 Work in progress, only very basic testing has been done.
@@ -524,11 +591,11 @@ Using it anywhere that matters would be very brave indeed.
 .IP \[bu] 2
 \[u2612] Implement \f[B]init\f[R] and \f[B]release\f[R]
 .IP \[bu] 2
-\[u2610] Implement \f[B]packageinclude\f[R]
+\[u2612] Implement \f[B]packageinclude\f[R]
 .IP \[bu] 2
-\[u2610] Implement \f[B]filter\f[R]
+\[u2612] Implement \f[B]filter\f[R]
 .IP \[bu] 2
-\[u2610] Implement \f[B]jitc::re2c\f[R] wrapper
+\[u2612] Implement \f[B]jitc::re2c\f[R] wrapper
 .IP \[bu] 2
 \[u2610] Implement \f[B]jitc::packcc\f[R] wrapper
 .IP \[bu] 2
@@ -549,7 +616,7 @@ so doesn\[cq]t trigger any GPL issues, but if you build this package and
 distribute the result you will need to ensure that you are in compliance
 with the terms of the TCC LGPL license.
 The git submodules for the linked tools each have their own license:
-TinyCC is LGPL; re2c is public domain; packcc is BSD; lemon and sqlite
+TinyCC is LGPL; re2c is public domain; packcc is MIT; lemon and sqlite
 are public domain.
 .SH AUTHORS
 Cyan Ogilvie.

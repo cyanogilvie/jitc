@@ -29,9 +29,12 @@ struct jitc_intrep {
 	Tcl_Obj*				cdef;
 	Tcl_Obj*				debugfiles;
 	Tcl_Interp*				interp;
+	Tcl_Obj*				exported_symbols;
+	Tcl_Obj*				exported_headers;
 };
 
 enum {
+	LIT_BLANK,
 	LIT_INCLUDE,
 	LIT_GENERIC,
 	LIT_LIB,
@@ -40,6 +43,7 @@ enum {
 	LIT_LIBRARYPATH_VAR,
 	LIT_PACKAGEDIR_VAR,
 	LIT_PREFIX_VAR,
+	LIT_COMPILEERROR,
 	LIT_SIZE
 };
 extern const char*	lit_str[];

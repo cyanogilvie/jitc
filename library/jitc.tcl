@@ -23,6 +23,7 @@ namespace eval ::jitc {
 			lappend includepath	[file join $packagedir generic]
 			lappend includepath	[file join $packagedir local/lib/tcc/include]
 			lappend librarypath	[file join $packagedir local/lib/tcc]
+			set jitclib $dir
 		} else {
 			set packagedir	$dir
 			set tccpath		$packagedir
@@ -32,6 +33,7 @@ namespace eval ::jitc {
 
 			lappend includepath	[file join $packagedir include]
 			lappend librarypath	$packagedir
+			set jitclib $packagedir
 		}
 
 		foreach path [list \
@@ -65,7 +67,32 @@ namespace eval ::jitc {
 		}
 
 		load [file join $packagedir libjitc0.1.so] jitc
+		tcl::tm::path add $jitclib
 	} [namespace current]]
+
+	proc _build_compile_error {code errorstr args} { #<<<
+		package require jitclib::parse_tcc_errors
+		switch -exact -- [llength $args] {
+			0	{}
+			2	{lassign $args previous_errmsg previous_options}
+			default	{error "Wrong args"}
+		}
+		set lines	[split $code \n]
+		#set errors	[jitc::capply $::jitclib::parse_tcc_errors parse $errorstr]
+		set errors	[lmap {- fn line msg} [regexp -all -inline -line {^<(.*?)>:([0-9]+):\s+(.*?)$} $errorstr] {
+			list $fn $line $msg
+		}]
+		set error_report	{}
+		set sep				{}
+		foreach error $errors {
+			lassign $error fn line msg
+			append error_report	$sep [format "In \"%s\", line %d: %s:\n%s" $fn $line $msg [lindex $lines $line-1]]
+			set sep	\n
+		}
+		list [list JITC COMPILE $errors $code] $error_report
+	}
+
+	#>>>
 
 	proc packageinclude {} { #<<<
 		variable packagedir

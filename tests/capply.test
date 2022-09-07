@@ -382,7 +382,7 @@ test capply-6.5 {dedup package, reuse pool} -setup { #<<<
 	}
 
 	set cdef1 [list \
-		symbol	[list $dedup_cdef g_dedup] \
+		symbols	[list $dedup_cdef g_dedup] \
 		package	{dedup 0.9.3} \
 		define	$puts_format \
 		define	{CHILD cdef1} \
@@ -390,7 +390,7 @@ test capply-6.5 {dedup package, reuse pool} -setup { #<<<
 	]
 
 	set cdef2 [list \
-		symbol	[list $dedup_cdef g_dedup] \
+		symbols	[list $dedup_cdef g_dedup] \
 		package	{dedup 0.9.3} \
 		define	$puts_format \
 		define	{CHILD cdef2} \
@@ -477,14 +477,14 @@ test capply-6.6 {dedup package, reuse pool, import function symbols} -setup { #<
 	}
 
 	set cdef1 [list \
-		symbol	[list $dedup_cdef g_dedup Dedup_NewStringObj] \
+		symbols	[list $dedup_cdef g_dedup Dedup_NewStringObj] \
 		define	$puts_format \
 		define	{CHILD cdef1} \
 		code	$code \
 	]
 
 	set cdef2 [list \
-		symbol	[list $dedup_cdef g_dedup Dedup_NewStringObj Dedup_Stats] \
+		symbols	[list $dedup_cdef g_dedup Dedup_NewStringObj Dedup_Stats] \
 		define	$puts_format \
 		define	{CHILD cdef2} \
 		code	$code \
@@ -561,8 +561,7 @@ test capply-7.2 {filter re2c, sentinel without bounds check} -setup { #<<<
 		code	{
 			OBJCMD(isdecimal) {
 				CHECK_ARGS(1, "str");
-				int         len;
-				const char* str = Tcl_GetStringFromObj(objv[1], &len);
+				const char* str = Tcl_GetString(objv[1]);
 				const char* YYCURSOR = str;
 				const char* YYMARKER;
 				/*!re2c
@@ -605,6 +604,59 @@ test capply-8.2 {tcc memory leak when a header is not found, mode tcl: inline fu
 Compile errors:
 <string>:2: error: include file 'nonesuch.h' not found}
 #>>>
+test capply-9.1 {debug info (-g)} -body { #<<<
+	jitc::capply {
+		options {-g}
+		code {
+			OBJCMD(foo) {
+				CHECK_ARGS(0, "");
+				Tcl_SetObjResult(interp, Tcl_NewStringObj("capply-9.1", -1));
+				return TCL_OK;
+			}
+		}
+	} foo
+} -result capply-9.1
+#>>>
+test capply-10.1 {use, jitclib, jitclib::json} -setup { #<<<
+	package require jitclib::json
+} -body {
+	list \
+		[jitc::capply $::jitclib::json valid {{"foo": "bar", "baz": [1, 2, 3]}}] \
+		[jitc::capply $::jitclib::json valid {{"foo": "bar", "baz": [1, 2, 3,]}}] \
+} -result {1 0}
+#>>>
+test capply-10.2 {use, jitclib, jitclib::json_check} -setup { #<<<
+	package require jitclib::json
+} -body {
+	list \
+		[jitc::capply $::jitclib::json_check check {{"foo": "bar", "baz": [1, 2, 3]}}] \
+		[jitc::capply $::jitclib::json_check check {{"foo": "bar", "baz": [1, 2, 3,]}}] \
+} -result {1 0}
+#>>>
+if {[file exists /tmp/items9.json]} {
+test capply-10.3 {use, jitclib, jitclib::json_check} -setup { #<<<
+	package require jitclib::json
+	set h	[open /tmp/items9.json]
+	try {set doc [read $h]} finally {close $h}
+} -body {
+	jitc::capply $::jitclib::json_check check $doc
+} -cleanup {
+	unset doc
+} -result 1
+if {[file exists tests/foo.so]} {
+test capply-11.1 {jitclib::load_cdef} -setup { #<<<
+	package require jitclib::load_cdef
+	set h	[open /tmp/items9.json]
+	try {set doc [read $h]} finally {close $h}
+} -body {
+	jitc::capply $::jitclib::load_cdef capply tests/foo.so check $doc
+} -cleanup {
+	unset doc
+} -result 1
+#>>>
+}
+#>>>
+}
 
 # cleanup
 ::tcltest::cleanupTests

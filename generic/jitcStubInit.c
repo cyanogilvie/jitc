@@ -7,6 +7,8 @@ const JitcStubs jitcStubs = {
     0,
     Jitc_GetSymbolFromObj, /* 0 */
     Jitc_GetSymbolsFromObj, /* 1 */
+    Jitc_GetExportHeadersFromObj, /* 2 */
+    Jitc_GetExportSymbolsFromObj, /* 3 */
 };
 
 /* !END!: Do not edit above this line. */

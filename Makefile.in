@@ -92,6 +92,7 @@ INSTALL_DATA_DIR = ${INSTALL} -d -m 755
 INSTALL_DATA	= @INSTALL_DATA@
 INSTALL_PROGRAM	= @INSTALL_PROGRAM@
 INSTALL_SCRIPT	= @INSTALL_SCRIPT@
+INSTALL_SCRIPTS	= @INSTALL_DATA@ -t
 INSTALL_LIBRARY	= ${INSTALL_DATA}
 
 PACKAGE_NAME	= @PACKAGE_NAME@
@@ -205,7 +206,7 @@ binaries: tcc tools $(BINARIES)
 libraries: library/jitc.tcl
 
 library/jitc.tcl: library/jitc.tcl.in
-	./config.status
+	cd $(top_builddir) && ./config.status
 
 #========================================================================
 # Your doc target should differentiate from doc builds (by the developer)
@@ -265,7 +266,7 @@ test: binaries libraries dedup
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
 		[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]"
 
-benchmark: binaries librariesdedup
+benchmark: binaries libraries dedup
 	$(TCLSH) `@CYGPATH@ $(srcdir)/bench/run.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
 		[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]"
@@ -286,7 +287,7 @@ vim-valgrind-gdb: binaries libraries dedup
 	-rm -f valgrind_output
 
 vim-core:
-	$(TCLSH_ENV) $(PKG_ENV) vim -c 'packadd termdebug' -c "set mouse=a" -c "set number" -c "set foldlevel=100" -c "Termdebug -ex layout\ asm -ex layout\ regs -ex focus\ cmd $(TCLSH_PROG) core" -c Winbar generic/jitc.c
+	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on $(TCLSH_PROG) core" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
 
 vim-gdb-benchmark: binaries libraries dedup
 	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) bench/run.tcl $(TESTFLAGS) -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ source\ [file\ join\ `@CYGPATH@ ./$(srcdir)`\ library/jitc.tcl]]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
@@ -458,6 +459,9 @@ install-lib-binaries: binaries
 	    $(INSTALL_DATA) $(srcdir)/$$p $(DESTDIR)$(pkglibdir)/$$destp; \
 	  fi; \
 	done
+	$(INSTALL_DATA_DIR) $(DESTDIR)$(pkglibdir)/jitclib
+	echo " Install library/jitclib $(DESTDIR)$(pkglibdir)/jitclib"
+	$(INSTALL_SCRIPTS) $(DESTDIR)$(pkglibdir)/jitclib $(srcdir)/library/jitclib/*
 	@if test "x$(SHARED_BUILD)" = "x1"; then \
 	    echo " Install pkgIndex.tcl $(DESTDIR)$(pkglibdir)"; \
 	    $(INSTALL_DATA) pkgIndex.tcl $(DESTDIR)$(pkglibdir); \
@@ -535,6 +539,8 @@ local/bin/re2c:
 	mkdir -p local/bin
 	git submodule update --init --depth 1 tools/re2c
 	cd tools/re2c && ./autogen.sh
+	# -gz=none: prevent gcc from compressing the debug symbols in libtcc1.a, which tcc isn't expecting
+	#cd build/re2c && CFLAGS="-gz=none" ../../tools/re2c/configure CC="$(CC)" --disable-golang --disable-rust --enable-libs --disable-shared --enable-static && make -j 16
 	cd build/re2c && ../../tools/re2c/configure CC="$(CC)" --disable-golang --disable-rust --enable-libs --disable-shared --enable-static && make -j 16
 	make -C build/re2c install-strip DESTDIR="`pwd`" prefix=/local
 

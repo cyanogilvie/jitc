@@ -15,12 +15,12 @@ Just In Time C for Tcl
 
 ## DESCRIPTION
 
-This package provides just-in-time compilation of c code to memory for
+This package provides just-in-time compilation of C code to memory for
 Tcl scripts, with the ability to call functions in that compiled object,
 and reference-counted memory management for the compiled objects.
 
 There are several other similar projects (critcl, tcc4tcl, etc.), but
-this package takes a different design approach: treating c code and
+this package takes a different design approach: treating C code and
 related settings as a value stored in a Tcl\_Obj and doing the
 compilation as needed, caching the result and freeing the memory when
 the last reference goes away.
@@ -44,7 +44,7 @@ The compiler supports the most of the C99 and C11 C language standards.
     *option*s are as understood by **re2c** (see **re2c**(1)). The
     modified source code is returned. Useful as a filter (see the
     **filter** part) to implement very fast regular expression based
-    parsers.
+    lexers.
 
 ## CDEF FORMAT
 
@@ -53,10 +53,10 @@ of pairs of elements: *part* and *value*. When compiling and linking the
 code the parts are applied in sequence. *part* must be one of:
 
   - **code**  
-    *value* is a chunk of c code as a string.
+    *value* is a chunk of C code as a string.
 
   - **file**  
-    *value* names a file containing c code. Cannot currently refer to a
+    *value* names a file containing C code. Cannot currently refer to a
     path handled by a Tcl VFS plugin.
 
   - **mode**  
@@ -65,12 +65,12 @@ code the parts are applied in sequence. *part* must be one of:
     include and library search paths to link to the running Tcl
     interpreter, and includes a header file which brings in **tcl.h**
     and defines a handful of convenience macros for implementing Tcl
-    commands in c (see the **CONVENIENCE MACROS** section). Mode **raw**
+    commands in C (see the **CONVENIENCE MACROS** section). Mode **raw**
     turns off this behaviour.
 
   - **debug**  
     *value* names a filesystem path (which must exist, and be a
-    directory) in which to write copies of the code sections specified
+    directory) into which to write copies of the code sections specified
     by **code** parts. This is useful when debugging the code, so that
     the debugger can find the source code. The files are removed when
     the *cdef* is freed (except if the program crashes, in which case
@@ -89,10 +89,10 @@ code the parts are applied in sequence. *part* must be one of:
     Add the path in *value* to the paths searched for system include
     files.
 
-  - **symbol**  
-    Define a symbol: *value* is a two element list, the first of which
-    is another *cdef* and the second the name of the symbol from that
-    *cdef* to import.
+  - **symbols**  
+    Import symbols from the *cdef* given as the first element of
+    *value*. The following (0 or more) elements of *value* name symbols
+    to import from that cdef.
 
   - **library\_path**  
     Add the path in *value* to the list of paths searched for libraries.
@@ -137,9 +137,25 @@ code the parts are applied in sequence. *part* must be one of:
 
   - **filter**  
     Pass the C source code through the filter specified by *value*,
-    which Must be a Tcl command prefix, to which will be added an arg
+    which must be a Tcl command prefix to which will be added an arg
     containing the C source code and which must return the modified
     source.
+
+  - **export**  
+    Declare the symbols exported from this object and the header text
+    required to use them, for use by other cdefs as described by the
+    **use** part below. *value* must be a dictionary with keys described
+    below:
+    
+    | Key         | Description                                         |
+    | ----------- | --------------------------------------------------- |
+    | **symbols** | A list of the exported symbols. Optional            |
+    | **header**  | The text of the header section to include. Optional |
+    
+
+  - **use**  
+    Link with the cdef given in *value*. Any symbols and header text it
+    declares in its **export** part are automatically imported.
 
 ## SPECIAL SYMBOLS
 
@@ -152,23 +168,23 @@ propagate to the command that caused the compilation.
 
 If the *cdef* exports a symbol **release** then it is called when the
 memory containing the compiled *cdef* is about to be freed. It must be a
-function taking **Tcl\_Interp** and returning void. It should reverse
-any side effects created in the interpreter by **init** or any of the
-code run in the *cdef*, and free any memory it allocated.
+function taking **Tcl\_Interp** and returning **void**. It should
+reverse any side effects created in the interpreter by **init** or any
+of the code run in the *cdef*, and free any memory it allocated.
 
 ## CONVENIENCE MACROS
 
 In the default **tcl** mode (as selected by the **mode** part of the
 *cdef*), some helpful macros and utilities are included:
 
-| Macro                                                | Description                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| INIT                                                 | Expands to the standard initialization hook export: “int init(Tcl\_Interp\* interp)”.                                                                                                                                                                                                         |
-| RELEASE                                              | Expands to the standard release hook export: “void release(Tcl\_Interp\* interp)”.                                                                                                                                                                                                            |
-| OBJCMD(*name*)                                       | Defines a Tcl\_ObjCmdProc named *name*. **cdata** is the passed ClientData, **interp** is the Tcl\_Interp, **objc** holds the count of arguments and **objv** is an array of Tcl\_Obj pointers to the arguments.                                                                              |
-| CHECK\_ARGS(*expecting*, *msg*)                      | Checks that the count of arguments passed to the command matches *expecting* (in addition to the command argument itself). If not an error message is left in the **interp** containing *msg* and we return **TCL\_ERROR**.                                                                   |
-| TEST\_OK\_LABEL(*label*, *code*, *checked\_command*) | Test the return code from *checked\_command* and store it in *code*. If it differs from **TCL\_OK** jump to the label *label*. Useful to implement exception handling that releases any allocated resources and returns *code* at the end of the function.                                    |
-| replace\_tclobj(*varPtr*, *replacement*)             | Assign the Tcl\_Obj pointed to by *replacement* into the variable whose address is *varPtr*, managing the refCount for the Tcl\_Objs. If the variable being assigned to already pointed to a Tcl\_Obj, its refcount is decremented. If *replacement* is non-NULL its refcount is incremented. |
+| Macro                                                    | Description                                                                                                                                                                                                                                                                                   |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **INIT**                                                 | Expands to the standard initialization hook export: “int init(Tcl\_Interp\* interp)”.                                                                                                                                                                                                         |
+| **RELEASE**                                              | Expands to the standard release hook export: “void release(Tcl\_Interp\* interp)”.                                                                                                                                                                                                            |
+| **OBJCMD**(*name*)                                       | Defines a Tcl\_ObjCmdProc named *name*. **cdata** is the passed ClientData, **interp** is the Tcl\_Interp, **objc** holds the count of arguments and **objv** is an array of Tcl\_Obj pointers to the arguments.                                                                              |
+| **CHECK\_ARGS**(*expecting*, *msg*)                      | Checks that the count of arguments passed to the command matches *expecting* (in addition to the command argument itself). If not, an error message is left in the **interp** containing *msg* and we return **TCL\_ERROR**.                                                                  |
+| **TEST\_OK\_LABEL**(*label*, *code*, *checked\_command*) | Test the return code from *checked\_command* and store it in *code*. If it differs from **TCL\_OK** jump to the label *label*. Useful to implement exception handling that releases any allocated resources and returns *code* at the end of the function.                                    |
+| **replace\_tclobj**(*varPtr*, *replacement*)             | Assign the Tcl\_Obj pointed to by *replacement* into the variable whose address is *varPtr*, managing the refCount for the Tcl\_Objs. If the variable being assigned to already pointed to a Tcl\_Obj, its refcount is decremented. If *replacement* is non-NULL its refcount is incremented. |
 
 To make these available in source code referend in **file** parts, or
 **code** parts in **raw** **mode**, include **tclstuff.h**, which is
@@ -379,6 +395,28 @@ puts "second: [tcl::unsupported::representation $first]"
 puts "dedup pool stats:\n[jitc::capply $cdef stats]"
 ```
 
+## C API
+
+This package exports a stubs API for use by other extensions:
+
+  - int **Jitc\_GetSymbolFromObj**(Tcl\_Interp\* *interp*, Tcl\_Obj\*
+    *cdef*, Tcl\_Obj\* *symbol*, void\*\* *val*)  
+    Retrieve the symbol *symbol* from *cdef*, compiling it if needed.
+  - int **Jitc\_GetSymbolsFromObj**(Tcl\_Interp\* *interp*, Tcl\_Obj\*
+    *cdef*, Tcl\_Obj\*\* *symbols*)  
+    Retrieve a list of all symbols in *cdef*, compiling it if needed.
+  - int **Jitc\_GetExportHeadersFromObj**(Tcl\_Interp\* *interp*,
+    Tcl\_Obj\* *cdef*, Tcl\_Obj\*\* *headers*)  
+    Retrieve the headers text exported from *cdef*, compiling it if
+    needed. *headers* may be NULL if *cdef* doesn’t declare any exported
+    header. Will still return **TCL\_OK** for this case.
+  - int **Jitc\_GetExportSymbolsFromObj**(Tcl\_Interp\* *interp*,
+    Tcl\_Obj\* *cdef*, Tcl\_Obj\*\* *symbols*)  
+    Retrieve a list of the symbols declared for export from *cdef*,
+    compiling it if needed. *symbols* may be NULL if *cdef* doesn’t
+    declare any exported symbols. Will still return **TCL\_OK** for this
+    case.
+
 ## BUGS
 
 Please report any bugs to the github issue tracker:
@@ -386,7 +424,11 @@ https://github.com/cyanogilvie/jitc/issues
 
 ## SEE ALSO
 
-tcc(1), https://repo.or.cz/jitc.git
+critcl: https://wiki.tcl-lang.org/page/Critcl, tcc4tcl:
+https://wiki.tcl-lang.org/page/tcc4tcl, tcc(1),
+https://repo.or.cz/tinycc.git, re2c: https://en.wikipedia.org/wiki/Re2c,
+packcc: https://en.wikipedia.org/wiki/PackCC, lemon:
+https://sqlite.org/src/doc/trunk/doc/lemon.html.
 
 ## PROJECT STATUS
 
@@ -396,9 +438,9 @@ anywhere that matters would be very brave indeed.
 ## TODO
 
   - [x] Implement **init** and **release**
-  - [ ] Implement **packageinclude**
-  - [ ] Implement **filter**
-  - [ ] Implement **jitc::re2c** wrapper
+  - [x] Implement **packageinclude**
+  - [x] Implement **filter**
+  - [x] Implement **jitc::re2c** wrapper
   - [ ] Implement **jitc::packcc** wrapper
   - [ ] Implement **jitc::lemon** wrapper
   - [ ] Proper exceptions on compile errors
@@ -414,4 +456,4 @@ doesn’t trigger any GPL issues, but if you build this package and
 distribute the result you will need to ensure that you are in compliance
 with the terms of the TCC LGPL license. The git submodules for the
 linked tools each have their own license: TinyCC is LGPL; re2c is public
-domain; packcc is BSD; lemon and sqlite are public domain.
+domain; packcc is MIT; lemon and sqlite are public domain.
