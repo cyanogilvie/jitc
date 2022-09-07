@@ -17,3 +17,6 @@
 [submodule "dedup"]
 	path = dedup
 	url = https://github.com/cyanogilvie/dedup.git
+[submodule "tclconfig"]
+	path = tclconfig
+	url = git@github.com:cyanogilvie/tclconfig

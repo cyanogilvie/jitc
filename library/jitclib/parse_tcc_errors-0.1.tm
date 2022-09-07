@@ -6,6 +6,23 @@ namespace eval ::jitclib {
 			#include <stdint.h>
 			#include <stdio.h>
 
+			Tcl_Obj*	g_warning = NULL;
+			Tcl_Obj*	g_error = NULL;
+			Tcl_Obj*	g_blank = NULL;
+
+			INIT {
+				replace_tclobj(&g_warning, Tcl_NewStringObj("warning", 7));
+				replace_tclobj(&g_error,   Tcl_NewStringObj("error", 5));
+				replace_tclobj(&g_blank,   Tcl_NewObj());
+				return TCL_OK;
+			}
+
+			RELEASE {
+				replace_tclobj(&g_warning, NULL);
+				replace_tclobj(&g_error,   NULL);
+				replace_tclobj(&g_blank,   NULL);
+			}
+
 			OBJCMD(parse) {
 				CHECK_ARGS(1, "errorstr");
 
@@ -17,7 +34,7 @@ namespace eval ::jitclib {
 				const unsigned char*		m = NULL;
 				Tcl_Obj*					errors = NULL;
 				/*!stags:re2c format = "const unsigned char*		@@;\n"; */
-				const unsigned char			*fn_s, *fn_e, *line_s, *line_e, *msg_s, *msg_e;
+				const unsigned char			*fn_s, *fn_e, *line_s, *line_e, *msg_s, *msg_e, *lvl_err, *lvl_warn;
 
 				replace_tclobj(&errors, Tcl_NewListObj(0, NULL));
 
@@ -34,16 +51,29 @@ namespace eval ::jitclib {
 					digit		= [0-9];
 					errmsg		= ([\x20-\u10ffff] \ "\n")+;
 					eol			= "\n";
-					errline		= "<" @fn_s fnchar+ @fn_e ">:" @line_s digit+ @line_e ":" ws @msg_s errmsg @msg_e;
+					level		= "error" @lvl_err | "warning" @lvl_warn;
+					comperr		= "<" @fn_s fnchar+ @fn_e ">:" @line_s digit+ @line_e ": " level ": " @msg_s errmsg @msg_e;
+					linkerr		= @fn_s [^:]+ @fn_e ": " level ": " @msg_s errmsg @msg_e;
 
 					eol {
 						goto line;
 					}
 
-					errline {
-						TEST_OK_LABEL(done, code, Tcl_ListObjAppendElement(interp, errors, Tcl_NewListObj(3, (Tcl_Obj*[]){
+					comperr {
+						TEST_OK_LABEL(done, code, Tcl_ListObjAppendElement(interp, errors, Tcl_NewListObj(4, (Tcl_Obj*[]){
+							lvl_err ? g_error : g_warning,
 							Tcl_NewStringObj(fn_s, fn_e-fn_s),
 							Tcl_NewStringObj(line_s, line_e-line_s),
+							Tcl_NewStringObj(msg_s, msg_e-msg_s)
+						})));
+						goto line;
+					}
+
+					linkerr {
+						TEST_OK_LABEL(done, code, Tcl_ListObjAppendElement(interp, errors, Tcl_NewListObj(4, (Tcl_Obj*[]){
+							lvl_err ? g_error : g_warning,
+							Tcl_NewStringObj(fn_s, fn_e-fn_s),
+							g_blank,
 							Tcl_NewStringObj(msg_s, msg_e-msg_s)
 						})));
 						goto line;

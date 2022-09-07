@@ -1,7 +1,6 @@
 Makefile
 configure
 pkgIndex.tcl
-tclconfig
 jitcConfig.sh
 generic/jitc.h
 autom4te.cache

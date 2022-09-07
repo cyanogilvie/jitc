@@ -176,7 +176,8 @@ test capply-4.2 {mode: raw} -setup { #<<<
 	jitc::capply $cdef msg foo bar
 } -cleanup {
 	unset -nocomplain cdef
-} -returnCodes error -match glob -result "*<string>:2: error: ',' expected (got \"cdata\")*"
+} -returnCodes error -result {In "string", line 2: error: ',' expected (got "cdata"):
+			int msg(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])}
 #>>>
 test capply-5.1 {OBJCMD} -body { #<<<
 	jitc::capply {
@@ -591,10 +592,8 @@ test capply-7.2 {filter re2c, sentinel without bounds check} -setup { #<<<
 #>>>
 test capply-8.1 {tcc memory leak when a header is not found, mode raw: no leak} -body { #<<<
 	jitc::capply {mode raw code "#include <nonesuch.h>"} foo
-} -returnCodes error -result {Error compiling code:
-#include <nonesuch.h>
-Compile errors:
-<string>:1: error: include file 'nonesuch.h' not found}
+} -returnCodes error -result {In "string", line 1: error: include file 'nonesuch.h' not found:
+#include <nonesuch.h>}
 #>>>
 test capply-8.2 {tcc memory leak when a header is not found, mode tcl: inline functions leak} -constraints tccMemleak -body { #<<<
 	jitc::capply {mode tcl code "#include <nonesuch.h>"} foo

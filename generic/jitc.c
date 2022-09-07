@@ -253,7 +253,6 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	tcc = tcc_new();
 	tcc_set_error_func(tcc, &compile_errors, errfunc);
-	tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
 
 	// Set some mode-dependent defaults
 	switch (mode) {
@@ -326,6 +325,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		_Pragma("GCC diagnostic push")
 		_Pragma("GCC diagnostic ignored \"-Wswitch\"")
 		switch (part) {
+			case PART_OPTIONS: tcc_set_options(tcc, Tcl_GetString(ov[i+1])); break;	// Must be set before tcc_set_output_type
 			case PART_PACKAGE: //{{{
 				{
 					int			pc;
@@ -492,6 +492,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		_Pragma("GCC diagnostic pop")
 	}
 
+	tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
 	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
 	for (i=0; i<oc; i+=2) {
 		enum partenum	part;
@@ -499,6 +500,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
 		switch (part) {
+			case PART_OPTIONS:
 			case PART_MODE:
 			case PART_DEBUG:
 			case PART_PACKAGE:
@@ -578,7 +580,6 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 					THROW_ERROR_LABEL(finally, code, "Error compiling file \"", Tcl_GetString(v), "\"");
 				break;
 
-			case PART_OPTIONS:			tcc_set_options        (tcc, Tcl_GetString(v)); break;
 			case PART_INCLUDE_PATH:		tcc_add_include_path   (tcc, Tcl_GetString(v)); break;
 			case PART_SYSINCLUDE_PATH:	tcc_add_sysinclude_path(tcc, Tcl_GetString(v)); break;
 			case PART_TCCPATH:			tcc_set_lib_path       (tcc, Tcl_GetString(v)); break;

@@ -78,15 +78,31 @@ namespace eval ::jitc {
 			default	{error "Wrong args"}
 		}
 		set lines	[split $code \n]
-		#set errors	[jitc::capply $::jitclib::parse_tcc_errors parse $errorstr]
-		set errors	[lmap {- fn line msg} [regexp -all -inline -line {^<(.*?)>:([0-9]+):\s+(.*?)$} $errorstr] {
-			list $fn $line $msg
-		}]
+		if {1 && ![info exists ::jitc::_parsing_errors]} {
+			set ::jitc::_parsing_errors	1	;# prevent endless recursion if parse_tcc_errors fails to build
+			try {
+				set errors	[jitc::capply $::jitclib::parse_tcc_errors parse $errorstr]
+			} finally {
+				set ::jitc::_parsing_errors 0
+			}
+		} else {
+			set errors	[lmap {- fn line lvl msg} [regexp -all -inline -line {^<(.*?)>:([0-9]+): (error|warning): +(.*?)$} $errorstr] {
+				list $lvl $fn $line $msg
+			}]
+			lappend errors	{*}[lmap {- fn lvl msg} [regexp -all -inline -line {^(.*?): (error|warning): +(.*?)$} $errorstr] {
+				list $lvl $fn {} $msg
+			}]
+		}
+		puts stderr "errorstr ($errorstr) -> errors ($errors)"
 		set error_report	{}
 		set sep				{}
 		foreach error $errors {
-			lassign $error fn line msg
-			append error_report	$sep [format "In \"%s\", line %d: %s:\n%s" $fn $line $msg [lindex $lines $line-1]]
+			lassign $error lvl fn line msg
+			if {$line ne {}} {
+				append error_report	$sep [format "%s: In \"%s\", line %d: %s:\n%s" [string toupper $lvl] $fn $line $msg [lindex $lines $line-1]]
+			} else {
+				append error_report	$sep [format "%s: In \"%s\": %s" [string toupper $lvl] $fn $msg]
+			}
 			set sep	\n
 		}
 		list [list JITC COMPILE $errors $code] $error_report

@@ -380,7 +380,7 @@ namespace eval ::jitclib {
 			return TCL_OK;
 		}
 	//@end=c@>>> }]
-	variable json_check [list debug /tmp/jitc_json_check options {-Wall -gdwarf-5} use $::jitclib::obstackpool filter {jitc::re2c -i --case-ranges --conditions --tags --utf8} code { //@begin=c@<<<
+	variable json_check [list debug /tmp/jitc_json_check options {-Wall -Werror -gdwarf-5} use $::jitclib::obstackpool filter {jitc::re2c -i --case-ranges --conditions --tags --utf8} code { //@begin=c@<<<
 		static Tcl_Obj* g_true  = NULL;
 		static Tcl_Obj* g_false = NULL;
 
@@ -508,7 +508,7 @@ namespace eval ::jitclib {
 										res = 0;
 										const ptrdiff_t		ofs = s-str-1;
 										//fprintf(stderr, "Invalid JSON character at offset %ld",	ofs);
-										Tcl_Panic("Invalid JSON character at offset %ld",	ofs);
+										//Tcl_Panic("Invalid JSON character at offset %ld",	ofs);
 										goto done;
 									}
 			*/
