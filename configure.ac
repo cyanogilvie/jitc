@@ -19,7 +19,7 @@ dnl	to configure the system for the local environment.
 # so that we create the export library with the dll.
 #-----------------------------------------------------------------------
 
-AC_INIT([jitc],[0.1])
+AC_INIT([jitc], [0.1])
 
 #--------------------------------------------------------------------
 # Call TEA_INIT as the first TEA_ macro to set up initial vars.
@@ -30,6 +30,7 @@ AC_INIT([jitc],[0.1])
 CHECK_TESTMODE
 
 touch generic/jitc.h
+touch library/jitc.tcl
 
 TEA_INIT()
 
@@ -77,12 +78,12 @@ TEA_SETUP_COMPILER
 # and PKG_TCL_SOURCES.
 #-----------------------------------------------------------------------
 
-TEA_ADD_SOURCES([jitc.c jitcStubInit.c])
+TEA_ADD_SOURCES([jitc.c jitcStubInit.c memfs.c])
 TEA_ADD_HEADERS([generic/jitc.h generic/jitcDecls.h])
 TEA_ADD_INCLUDES([-Ilocal/include])
-TEA_ADD_LIBS([-Llocal/lib -l:libtcc.a])
+TEA_ADD_LIBS([-Llocal/lib -l:libtcc.a `pkg-config fuse3 --libs`])
 #TEA_ADD_LIBS([jitc/libtcc.a])
-TEA_ADD_CFLAGS([])
+TEA_ADD_CFLAGS([`pkg-config fuse3 --cflags`])
 TEA_ADD_STUB_SOURCES([jitcStubLib.c])
 TEA_ADD_TCL_SOURCES([library/jitc.tcl])
 
