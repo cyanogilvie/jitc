@@ -1,0 +1,21 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+package require jitc
+
+test memfs-1.1 {hello, world} -body { #<<<
+	list \
+		[exec ls -a [jitc::_memfs_root]] \
+		[exec cat [jitc::_memfs_root]/foo]
+} -result [list ".\n..\nfoo" {hello, world}]
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4
+

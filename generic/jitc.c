@@ -2,7 +2,7 @@
 #include "tip445.h"
 #include <sys/stat.h>
 
-Tcl_Mutex g_tcc_mutex = NULL;
+TCL_DECLARE_MUTEX(g_tcc_mutex);
 
 typedef int (cdef_init)(Tcl_Interp* interp);
 typedef int (cdef_release)(Tcl_Interp* interp);
@@ -25,14 +25,25 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 	struct jitc_intrep*	r = ir->twoPtrValue.ptr1;
 
 	replace_tclobj(&r->symbols, NULL);
-	if (r->s) {
-		Tcl_MutexLock(&g_tcc_mutex);
-		cdef_release*	release = tcc_get_symbol(r->s, "release");
+
+	if (r->handle) {
+		cdef_release*	release = Tcl_FindSymbol(NULL, r->handle, "release");
+
 		if (release) (release)(r->interp);
-		tcc_delete(r->s);
-		r->s = NULL;
-		Tcl_MutexUnlock(&g_tcc_mutex);
+
+		Tcl_InterpState	state = Tcl_SaveInterpState(r->interp, 0);
+		if (TCL_OK != Tcl_FSUnloadFile(r->interp, r->handle)) {
+			fprintf(stderr, "Error unloading jit dll: %s\n", Tcl_GetString(Tcl_GetObjResult(r->interp)));
+		}
+		r->handle = NULL;
+		Tcl_RestoreInterpState(r->interp, state);
 	}
+
+	if (r->execmem) {
+		ckfree(r->execmem);
+		r->execmem = NULL;
+	}
+
 	r->interp = NULL;
 	replace_tclobj(&r->cdef, NULL);
 	if (r->debugfiles) {
@@ -84,6 +95,17 @@ void update_jitc_string_rep(Tcl_Obj* obj) //{{{
 //}}}
 
 // Internal API {{{
+// Interface with GDB JIT API {{{
+TCL_DECLARE_MUTEX(gdb_jit_mutex);
+
+/* GDB puts a breakpoint in this function.  */
+void __attribute__((noinline)) __jit_debug_register_code() { };
+
+/* Make sure to specify the version statically, because the
+   debugger may check the version before we can set it.  */
+struct jit_descriptor __jit_debug_descriptor = { 1, 0, 0, 0 };
+// Interface with GDB JIT API }}}
+
 const char* lit_str[] = {
 	"",
 	"include",
@@ -117,6 +139,7 @@ static void list_symbols_dict(void* ctx, const char* name, const void* val) //{{
 	Tcl_WideInt	w = (Tcl_WideInt)val;
 	int			failed = 1;
 
+	fprintf(stderr, "list_symbols_dict: \"%s\"\n", name);
 	replace_tclobj(&nameobj, Tcl_NewStringObj(name, -1));
 	replace_tclobj(&valobj,  Tcl_NewWideIntObj(w));
 	if (TCL_OK != Tcl_DictObjPut(NULL, symbolsdict, nameobj, valobj)) goto finally;
@@ -492,7 +515,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		_Pragma("GCC diagnostic pop")
 	}
 
-	tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
+	//tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
+	//tcc_set_output_type(tcc, TCC_OUTPUT_OBJ);
+	tcc_set_output_type(tcc, TCC_OUTPUT_DLL);
 	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
 	for (i=0; i<oc; i+=2) {
 		enum partenum	part;
@@ -653,14 +678,85 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	r = ckalloc(sizeof *r);
 	*r = (struct jitc_intrep){
-		.s = tcc,
 		.interp = interp,
 		.exported_symbols = exported_symbols,
 		.exported_headers = exported_headers
 	};
 	exported_headers = exported_symbols = NULL;	// Transfer their refs (if any) to r->export_*
 
-	tcc_relocate(tcc, TCC_RELOCATE_AUTO);
+	//fprintf(stderr, "size before relocate: %d\n", tcc_relocate(tcc, NULL));
+	const size_t relocate_size = tcc_relocate(tcc, NULL);
+	r->execmem = ckalloc(relocate_size);
+	int relocate_res;
+	if ((relocate_res = tcc_relocate(tcc, r->execmem)) < 0) {
+		fprintf(stderr, "Error relocating to execmem: %d\n", relocate_res);
+		code = TCL_ERROR;
+	} else {
+		char	template[] = P_tmpdir "/jitcXXXXXX";
+		int		fd = mkstemp(template);
+
+#define THROW_POSIX_ERR(label, code, msg) do { \
+	int err = Tcl_GetErrno(); \
+	const char* errstr = Tcl_ErrnoId(); \
+	Tcl_SetErrorCode(interp, "POSIX", errstr, Tcl_ErrnoMsg(err), NULL); \
+	THROW_PRINTF_LABEL(label, code, "%s: %s", msg, Tcl_ErrnoMsg(err)); \
+} while(0);
+
+		if (fd == -1) THROW_POSIX_ERR(tmpfiledone, code, "Error opening temporary file for jit dll");
+		size_t		remaining = relocate_size;
+		void*		write_cursor = r->execmem;
+		Tcl_Obj*	tmp_fn = NULL;
+		while (remaining) {
+			const ssize_t wrote = write(fd, write_cursor, remaining);
+			if (wrote == -1) {
+				if (Tcl_GetErrno() == EINTR) continue;
+				THROW_POSIX_ERR(tmpfiledone, code, "Error writing temporary file for jit dll");
+			}
+			remaining -= wrote;
+			write_cursor += wrote;
+		}
+		/* No fsync here - POSIX requires that a read that follows a write
+		 * return the data, and we don't want to wait for the data to make it
+		 * to disk (ideally we don't want it getting to the disk at all).
+		 */
+		replace_tclobj(&tmp_fn, Tcl_NewStringObj(template, -1));
+		TEST_OK_LABEL(tmpfiledone, code, Tcl_LoadFile(interp, tmp_fn, NULL, 0, NULL, &r->handle));
+	tmpfiledone:
+		replace_tclobj(&tmp_fn, NULL);
+		if (fd != -1) {
+			//const int unlink_rc = unlink(template);
+			close(fd);
+			//if (unlink_rc == -1) THROW_POSIX_ERR(finally, code, "Error unlinking jit dll temporary file");
+		}
+		if (code != TCL_OK) goto finally;
+#undef THROW_POSIX_ERR
+
+		r->jit_symbols = (struct jit_code_entry){
+			.next_entry		= __jit_debug_descriptor.first_entry,
+			.symfile_addr	= r->execmem,
+			.symfile_size	= relocate_size
+		};
+
+		Tcl_MutexLock(&gdb_jit_mutex);
+		__jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
+		__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
+		if (__jit_debug_descriptor.first_entry == NULL) {
+			__jit_debug_descriptor.first_entry = __jit_debug_descriptor.relevant_entry;
+		} else {
+			__jit_debug_descriptor.first_entry->prev_entry = __jit_debug_descriptor.relevant_entry;
+		}
+		__jit_debug_register_code();
+		Tcl_MutexUnlock(&gdb_jit_mutex);
+	}
+	//const size_t relocate_size = tcc_relocate(tcc, TCC_RELOCATE_AUTO);
+
+	/*
+	for (int i=0; i<tcc->nb_runtime_mem; i+=2) {
+		const ptrdiff_t rtsize = tcc->runtime_mem[i];
+		void*			rtptr = tcc->runtime_mem[i+1];
+		fprintf(stderr, "Runtime mem: %ld bytes at %p\n", rtsize, rtptr);
+	}
+	*/
 
 	if (compile_errors) goto finally;
 	replace_tclobj(&r->symbols, Tcl_NewDictObj());
@@ -709,11 +805,12 @@ finally:
 		TEST_OK_LABEL(done_compileerror, code, Tcl_ListObjGetElements(interp, res, &resc, &resv));
 		replace_tclobj(&errorcode, resv[0]);
 		replace_tclobj(&errormsg, resv[1]);
-		code = Tcl_RestoreInterpState(interp, state);
+		code = Tcl_RestoreInterpState(interp, state); state = NULL;
 		Tcl_SetObjErrorCode(interp, errorcode);
 		Tcl_SetObjResult(interp, errormsg);
 		code = TCL_ERROR;
 	done_compileerror:
+		if (state) Tcl_DiscardInterpState(state);
 		replace_tclobj(&errorcode, NULL);
 		replace_tclobj(&errormsg, NULL);
 		replace_tclobj(&res, NULL);
@@ -768,6 +865,14 @@ finally:
 		replace_tclobj(&r->cdef, NULL);
 		replace_tclobj(&r->debugfiles, NULL);
 		r->interp = NULL;
+		if (r->execmem) {
+			ckfree(r->execmem);
+			r->execmem = NULL;
+		}
+		if (r->handle) {
+			Tcl_FSUnloadFile(interp, r->handle);
+			r->handle = NULL;
+		}
 		ckfree(r);
 		r = NULL;
 	}
@@ -824,9 +929,12 @@ int Jitc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* cdef, Tcl_Obj* symbol, vo
 {
 	int					code = TCL_OK;
 	struct jitc_intrep*	r = NULL;
-	Tcl_Obj*			valobj = NULL;
 
 	TEST_OK_LABEL(finally, code, get_r_from_obj(interp, cdef, &r));
+
+#if 0
+	Tcl_Obj*			valobj = NULL;
+
 	TEST_OK_LABEL(finally, code, Tcl_DictObjGet(interp, r->symbols, symbol, &valobj));
 	if (valobj) {
 		Tcl_WideInt	w;
@@ -836,7 +944,13 @@ int Jitc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* cdef, Tcl_Obj* symbol, vo
 		Tcl_SetErrorCode(interp, "JITC", "SYMBOL", Tcl_GetString(symbol), NULL);
 		THROW_ERROR_LABEL(finally, code, "Symbol not found: \"", Tcl_GetString(symbol), "\"");
 	}
-
+#else
+	*val = Tcl_FindSymbol(interp, r->handle, Tcl_GetString(symbol));
+	if (*val == NULL) {
+		code = TCL_ERROR;
+		goto finally;
+	}
+#endif
 
 finally:
 	return code;
@@ -987,7 +1101,7 @@ extern const JitcStubs* const jitcConstStubsPtr;
 #ifdef __cplusplus
 extern "C" {
 #endif
-DLLEXPORT int Jitc_Init(Tcl_Interp* interp)
+DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 {
 	int					code = TCL_OK;
 	//Tcl_Namespace*		ns = NULL;
@@ -1020,6 +1134,7 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp)
 		c++;
 	}
 
+	TEST_OK_LABEL(finally, code, Memfs_Init(interp));
 	TEST_OK_LABEL(finally, code, Tcl_PkgProvideEx(interp, PACKAGE_NAME, PACKAGE_VERSION, jitcConstStubsPtr));
 
 finally:
@@ -1028,6 +1143,25 @@ finally:
 	return code;
 }
 
+//}}}
+DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
+{
+	int					code = TCL_OK;
+
+	if (flags == TCL_UNLOAD_DETACH_FROM_PROCESS) {
+		TEST_OK_LABEL(finally, code, Memfs_Unload(interp));
+		fprintf(stderr, "jitc unloading, finalizing mutexes\n");
+		Tcl_MutexFinalize(&gdb_jit_mutex);
+		gdb_jit_mutex = NULL;
+		Tcl_MutexFinalize(&g_tcc_mutex);
+		g_tcc_mutex = NULL;
+	}
+
+finally:
+	return code;
+}
+
+//}}}
 #ifdef __cplusplus
 }
 #endif

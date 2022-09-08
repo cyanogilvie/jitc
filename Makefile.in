@@ -564,6 +564,18 @@ local/lib/dedup%/pkgIndex.tcl:
 	(cd dedup; autoconf && ./configure CFLAGS="-DPURIFY -Og" --prefix= --exec-prefix="`pwd`/../local" --enable-symbols --with-tcl=$(TCL_BIN_DIR))
 	make -C dedup install-binaries install-libraries
 
+#local/lib/libfuse3.a:
+#	mkdir -p local/lib
+#	mkdir -p local/include
+#	git submodule update --init --depth 1 tools/libfuse
+#	mkdir -p build/libfuse
+#	cd build/libfuse && \
+#		meson ../../tools/libfuse && \
+#		meson configure --debug --optimization g --prefix="$(pwd)/../../local" --default-library static && \
+#		ninja lib/libfuse3.a util/fusermount3 && \
+#		cp lib/libfuse3.a ../../local/lib && \
+#		cp -r ../../tools/libfuse/include ../../local/include/fuse3
+
 dedup: local/lib/dedup0.9.3/pkgIndex.tcl
 
 .PHONY: all binaries clean depend distclean doc install libraries test

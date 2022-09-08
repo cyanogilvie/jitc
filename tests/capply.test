@@ -657,6 +657,17 @@ test capply-11.1 {jitclib::load_cdef} -setup { #<<<
 #>>>
 }
 
+test tmp-1.1 {} -body {
+	jitc::capply [list debug /tmp/tmpdebug options {-g -Wall -Werror} library_path /usr/lib/x86_64-linux-gnu code {//@begin=c@
+		#include <signal.h>
+		#include <stdlib.h>
+		OBJCMD(trap) {
+			raise(SIGTRAP);
+			return TCL_OK;
+		}
+	//@end=c@}] trap
+} -result xx
+
 # cleanup
 ::tcltest::cleanupTests
 return
