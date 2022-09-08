@@ -6,6 +6,18 @@ if {[lsearch [namespace children] ::tcltest] == -1} {
 ::tcltest::loadTestedCommands
 package require jitc
 
+proc readfile fn {
+	set h	[open $fn]
+	try {read $h} finally {close $h}
+}
+
+# TODO: figure out how to determine inDebugger for other platforms
+tcltest::testConstraint inDebugger	[expr {
+	$::tcl_platform(os) eq "Linux" &&
+	[regexp {\mTracerPid:\s*([0-9]+)\M} [readfile /proc/self/status] - tracerpid] &&
+	$tracerpid != 0
+}]
+
 # Send debug output via puts so that the test's -output handling can capure it
 set puts_format	{{PUTS_FORMAT(fmt, ...)} {do {					\
 		Tcl_Obj*	cmd = NULL;						\
@@ -176,7 +188,7 @@ test capply-4.2 {mode: raw} -setup { #<<<
 	jitc::capply $cdef msg foo bar
 } -cleanup {
 	unset -nocomplain cdef
-} -returnCodes error -result {In "string", line 2: error: ',' expected (got "cdata"):
+} -returnCodes error -result {ERROR: In "string", line 2: ',' expected (got "cdata"):
 			int msg(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])}
 #>>>
 test capply-5.1 {OBJCMD} -body { #<<<
@@ -592,7 +604,7 @@ test capply-7.2 {filter re2c, sentinel without bounds check} -setup { #<<<
 #>>>
 test capply-8.1 {tcc memory leak when a header is not found, mode raw: no leak} -body { #<<<
 	jitc::capply {mode raw code "#include <nonesuch.h>"} foo
-} -returnCodes error -result {In "string", line 1: error: include file 'nonesuch.h' not found:
+} -returnCodes error -result {ERROR: In "string", line 1: include file 'nonesuch.h' not found:
 #include <nonesuch.h>}
 #>>>
 test capply-8.2 {tcc memory leak when a header is not found, mode tcl: inline functions leak} -constraints tccMemleak -body { #<<<
@@ -656,6 +668,28 @@ test capply-11.1 {jitclib::load_cdef} -setup { #<<<
 }
 #>>>
 }
+test capply-12.1 {Test debug info} -constraints inDebugger -setup { #<<<
+	set tmpdir	[file join [expr {[info exists ::env(TMP)] ? $::env(TMP) : "/tmp"}] jitc_capply-12.1_[format %08x [expr {int(rand()*(2**32))}]]]
+	file mkdir $tmpdir
+} -body {
+	jitc::capply [list debug $tmpdir options {-g -Wall -Werror} code { //@begin=c@
+		#include <signal.h>
+		#include <unistd.h>
+
+		OBJCMD(trap) {
+			raise(SIGTRAP);
+			return TCL_OK;
+		}
+	//@end=c@}] trap
+} -cleanup {
+	if {[info exists tmpdir]} {
+		if {[file exists $tmpdir]} {
+			file delete -force -- $tmpdir
+		}
+	}
+	unset -nocomplain tmpdir
+} -result notreached
+#>>>
 
 # cleanup
 ::tcltest::cleanupTests

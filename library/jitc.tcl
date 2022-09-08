@@ -89,7 +89,7 @@ namespace eval ::jitc {
 			set errors	[lmap {- fn line lvl msg} [regexp -all -inline -line {^<(.*?)>:([0-9]+): (error|warning): +(.*?)$} $errorstr] {
 				list $lvl $fn $line $msg
 			}]
-			lappend errors	{*}[lmap {- fn lvl msg} [regexp -all -inline -line {^(.*?): (error|warning): +(.*?)$} $errorstr] {
+			lappend errors	{*}[lmap {- fn lvl msg} [regexp -all -inline -line {^([^:]*): (error|warning): +(.*?)$} $errorstr] {
 				list $lvl $fn {} $msg
 			}]
 		}
