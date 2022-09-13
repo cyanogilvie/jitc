@@ -78,7 +78,7 @@ namespace eval ::jitc {
 			default	{error "Wrong args"}
 		}
 		set lines	[split $code \n]
-		if {1 && ![info exists ::jitc::_parsing_errors]} {
+		if {0 && ![info exists ::jitc::_parsing_errors]} {
 			set ::jitc::_parsing_errors	1	;# prevent endless recursion if parse_tcc_errors fails to build
 			try {
 				set errors	[jitc::capply $::jitclib::parse_tcc_errors parse $errorstr]
@@ -86,7 +86,7 @@ namespace eval ::jitc {
 				set ::jitc::_parsing_errors 0
 			}
 		} else {
-			set errors	[lmap {- fn line lvl msg} [regexp -all -inline -line {^<(.*?)>:([0-9]+): (error|warning): +(.*?)$} $errorstr] {
+			set errors	[lmap {- fn line lvl msg} [regexp -all -inline -line {^(.*?):([0-9]+): (error|warning): +(.*?)$} $errorstr] {
 				list $lvl $fn $line $msg
 			}]
 			lappend errors	{*}[lmap {- fn lvl msg} [regexp -all -inline -line {^([^:]*): (error|warning): +(.*?)$} $errorstr] {

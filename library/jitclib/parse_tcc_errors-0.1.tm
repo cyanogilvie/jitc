@@ -1,6 +1,7 @@
 namespace eval ::jitclib {
 	variable parse_tcc_errors {
-		filter	{jitc::re2c --case-ranges --tags --utf8}
+		options	{-Wall -Werror -gdwarf-5}
+		filter	{jitc::re2c -i --case-ranges --tags --utf8}
 		code {
 			//@begin=c@
 			#include <stdint.h>
@@ -52,7 +53,7 @@ namespace eval ::jitclib {
 					errmsg		= ([\x20-\u10ffff] \ "\n")+;
 					eol			= "\n";
 					level		= "error" @lvl_err | "warning" @lvl_warn;
-					comperr		= "<" @fn_s fnchar+ @fn_e ">:" @line_s digit+ @line_e ": " level ": " @msg_s errmsg @msg_e;
+					comperr		=  @fn_s ("<" fnchar+ ">" | fnchar+) @fn_e ":" @line_s digit+ @line_e ": " level ": " @msg_s errmsg @msg_e;
 					linkerr		= @fn_s [^:]+ @fn_e ": " level ": " @msg_s errmsg @msg_e;
 
 					eol {
@@ -99,5 +100,12 @@ namespace eval ::jitclib {
 			//@end=c@
 		}
 	}
+	apply [list {} {
+		variable parse_tcc_errors
+
+		package require jitclib::tempdir
+		set debugpath	[jitc::capply $::jitclib::tempdir tempdir jitclib_parse_]
+		lappend parse_tcc_errors debug $debugpath
+	} [namespace current]]
 }
 # vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

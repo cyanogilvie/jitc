@@ -23,8 +23,6 @@
 #   define PTR2UINT(p) ((size_t)(p))
 #endif
 
-extern Tcl_Mutex g_tcc_mutex;
-
 // Interface with GDB JIT API {{{
 typedef enum {
   JIT_NOACTION = 0,

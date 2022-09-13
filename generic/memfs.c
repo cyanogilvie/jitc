@@ -2,6 +2,7 @@
 #define FUSE_USE_VERSION 34
 #include <fuse.h>
 //#include <fuse_lowlevel.h>
+#include <sys/mount.h>
 
 TCL_DECLARE_MUTEX(g_memfs_init_mutex);
 TCL_DECLARE_MUTEX(g_memfs_startup_mutex);
@@ -19,7 +20,7 @@ struct fuse*	fuse = NULL;
 
 static void* memfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) //{{{
 {
-	fprintf(stderr, "memfs_init\n");
+	//fprintf(stderr, "memfs_init\n");
 	return NULL;
 }
 
@@ -28,7 +29,7 @@ static int memfs_getattr(const char* path, struct stat* stbuf, struct fuse_file_
 {
 	int			res = 0;
 
-	fprintf(stderr, "memfs_getattr: (%s)\n", path);
+	//fprintf(stderr, "memfs_getattr: (%s)\n", path);
 	if (strcmp(path, "/") == 0) {
 		*stbuf = (struct stat){
 			.st_mode	= S_IFDIR | 0755,
@@ -50,7 +51,7 @@ static int memfs_getattr(const char* path, struct stat* stbuf, struct fuse_file_
 //}}}
 static int memfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi, enum fuse_readdir_flags flags) //{{{
 {
-	fprintf(stderr, "memfs_readdir: (%s)\n", path);
+	//fprintf(stderr, "memfs_readdir: (%s)\n", path);
 	if (strcmp(path, "/") != 0)
 		return -ENOENT;
 
@@ -64,7 +65,7 @@ static int memfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, of
 //}}}
 static int memfs_open(const char* path, struct fuse_file_info* fi) //{{{
 {
-	fprintf(stderr, "memfs_open: (%s)\n", path);
+	//fprintf(stderr, "memfs_open: (%s)\n", path);
 	if (strcmp(path, "/foo") != 0)
 		return -ENOENT;
 
@@ -79,7 +80,7 @@ static int memfs_read(const char* path, char* buf, size_t size, off_t offset, st
 {
 	const char	contents[] = "hello, world";
 
-	fprintf(stderr, "memfs_read: (%s)\n", path);
+	//fprintf(stderr, "memfs_read: (%s)\n", path);
 	if (strcmp(path, "/foo") != 0)
 		return -ENOENT;
 
@@ -167,7 +168,7 @@ done:
 	fprintf(stderr, "Entering FUSE session loop\n");
 	const int loop_ret = fuse_loop(fuse);
 
-	fprintf(stderr, "FUSE session loop returned: %d", loop_ret);
+	fprintf(stderr, "FUSE session loop returned: %d\n", loop_ret);
 
 err:
 	if (mounted && fuse) {
@@ -191,8 +192,8 @@ err:
 	se = NULL;
 
 	if (mountpoint) {
-		fprintf(stderr, "Unlinking memfs mountpoint: %s\n", mountpoint);
-		if (-1 == unlink(mountpoint)) perror("Removing memfs mountpoint");
+		fprintf(stderr, "Removing memfs mountpoint: %s\n", mountpoint);
+		if (-1 == rmdir(mountpoint)) perror("Error removing memfs mountpoint");
 		mountpoint = NULL;
 	}
 
@@ -252,8 +253,24 @@ int Memfs_Unload(Tcl_Interp* interp) //{{{
 	int				code = TCL_OK;
 
 	if (fuse) {
+#if 0
 		fprintf(stderr, "Calling fuse_exit\n");
 		fuse_exit(fuse);
+#else
+		fprintf(stderr, "Calling umount(\"%s\")\n", mountpoint);
+		const int rc = umount(mountpoint);
+		if (rc == -1) perror("Error from umount");
+		if (rc == -1) {
+			Tcl_Obj* cmd = NULL;
+			replace_tclobj(&cmd, Tcl_ObjPrintf("umount %s", mountpoint));
+			const int sysrc = system(Tcl_GetString(cmd));
+			fprintf(stderr, "Fell back to system(\"%s\")\n", Tcl_GetString(cmd));
+			replace_tclobj(&cmd, NULL);
+			if (sysrc != 0) {
+				fprintf(stderr, "system umount rc: %d\n", sysrc);
+			}
+		}
+#endif
 	}
 
 	int result;

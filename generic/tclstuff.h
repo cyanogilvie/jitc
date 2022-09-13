@@ -36,6 +36,13 @@
 		goto label;															\
 	}
 
+#define THROW_POSIX_LABEL(label, code, msg) do {							\
+	int err = Tcl_GetErrno();											\
+	const char* errstr = Tcl_ErrnoId();									\
+	Tcl_SetErrorCode(interp, "POSIX", errstr, Tcl_ErrnoMsg(err), NULL);	\
+	THROW_PRINTF_LABEL(label, code, "%s: %s %s", msg, errstr, Tcl_ErrnoMsg(err));	\
+} while(0);
+
 // convenience macro to check the number of arguments passed to a function
 // implementing a tcl command against the number expected, and to throw
 // a tcl error if they don't match.  Note that the value of expected does

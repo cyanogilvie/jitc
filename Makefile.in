@@ -266,6 +266,19 @@ test: binaries libraries dedup
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
 		[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]"
 
+research: binaries libraries dedup
+	#unshare --pid --fork --map-root-user --mount --kill-child=SIGKILL --
+	#$(TCLSH_ENV) $(PKG_ENV) unshare --map-current-user --keep-caps --mount --kill-child=SIGKILL -- \
+		$(TCLSH_PROG) `@CYGPATH@ $(srcdir)/research/run.tcl` \
+			-load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
+			[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]" \
+			$(TESTFLAGS)
+	$(TCLSH_ENV) $(PKG_ENV) \
+		$(TCLSH_PROG) `@CYGPATH@ $(srcdir)/research/run.tcl` \
+			-load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
+			[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]" \
+			$(TESTFLAGS)
+
 benchmark: binaries libraries dedup
 	$(TCLSH) `@CYGPATH@ $(srcdir)/bench/run.tcl` $(TESTFLAGS) \
 	    -load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
@@ -276,6 +289,9 @@ shell: binaries libraries
 
 vim-gdb: binaries libraries dedup
 	$(TCLSH_ENV) $(PKG_ENV) vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) tests/all.tcl $(TESTFLAGS) -singleproc 1 -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ source\ [file\ join\ `@CYGPATH@ ./$(srcdir)`\ library/jitc.tcl]]" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
+
+vim-research: binaries libraries dedup
+	$(TCLSH_ENV) $(PKG_ENV) unshare --map-current-user --keep-caps --mount --kill-child=SIGKILL -- vim -c "set number" -c "set mouse=a" -c "set foldlevel=100" -c "Termdebug -ex set\ print\ pretty\ on --args $(TCLSH_PROG) `@CYGPATH@ $(srcdir)/research/run.tcl` -load package\ ifneeded\ $(PACKAGE_NAME)\ $(PACKAGE_VERSION)\ [list\ source\ [file\ join\ `@CYGPATH@ ./$(srcdir)`\ library/jitc.tcl]] $(TESTFLAGS)" -c "2windo set nonumber" -c "1windo set nonumber" generic/jitc.c
 
 vim-valgrind-gdb: binaries libraries dedup
 	-rm -f valgrind_output

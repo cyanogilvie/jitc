@@ -28,15 +28,14 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 
 	if (r->handle) {
 		cdef_release*	release = Tcl_FindSymbol(NULL, r->handle, "release");
-
 		if (release) (release)(r->interp);
 
-		Tcl_InterpState	state = Tcl_SaveInterpState(r->interp, 0);
+		//Tcl_InterpState	state = Tcl_SaveInterpState(r->interp, 0);
 		if (TCL_OK != Tcl_FSUnloadFile(r->interp, r->handle)) {
 			fprintf(stderr, "Error unloading jit dll: %s\n", Tcl_GetString(Tcl_GetObjResult(r->interp)));
 		}
 		r->handle = NULL;
-		Tcl_RestoreInterpState(r->interp, state);
+		//Tcl_RestoreInterpState(r->interp, state);
 	}
 
 	if (r->execmem) {
@@ -647,9 +646,13 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 					int			sc;
 
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sc, &sv));
-					if (sc != 2)
+					if (sc < 1 || sc > 2)
 						THROW_ERROR_LABEL(finally, code, "Definition must be a list: name value: \"", Tcl_GetString(v), "\"");
-					tcc_define_symbol(tcc, Tcl_GetString(sv[0]), Tcl_GetString(sv[1]));
+					if (sc == 1) {
+						tcc_define_symbol(tcc, Tcl_GetString(sv[0]), "");
+					} else {
+						tcc_define_symbol(tcc, Tcl_GetString(sv[0]), Tcl_GetString(sv[1]));
+					}
 				}
 				break;
 
@@ -684,53 +687,51 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	};
 	exported_headers = exported_symbols = NULL;	// Transfer their refs (if any) to r->export_*
 
+#if 1
+#if 0
 	//fprintf(stderr, "size before relocate: %d\n", tcc_relocate(tcc, NULL));
 	const size_t relocate_size = tcc_relocate(tcc, NULL);
 	r->execmem = ckalloc(relocate_size);
 	int relocate_res;
 	if ((relocate_res = tcc_relocate(tcc, r->execmem)) < 0) {
-		fprintf(stderr, "Error relocating to execmem: %d\n", relocate_res);
+#elseif 0
+	const ssize_t	relocate_size = tcc_relocate(tcc, TCC_RELOCATE_AUTO);
+	if (relocate_size < 0) {
+		fprintf(stderr, "Error relocating to execmem: %d\n", relocate_size);
 		code = TCL_ERROR;
 	} else {
-		char	template[] = P_tmpdir "/jitcXXXXXX";
-		int		fd = mkstemp(template);
-
-#define THROW_POSIX_ERR(label, code, msg) do { \
-	int err = Tcl_GetErrno(); \
-	const char* errstr = Tcl_ErrnoId(); \
-	Tcl_SetErrorCode(interp, "POSIX", errstr, Tcl_ErrnoMsg(err), NULL); \
-	THROW_PRINTF_LABEL(label, code, "%s: %s", msg, Tcl_ErrnoMsg(err)); \
-} while(0);
-
-		if (fd == -1) THROW_POSIX_ERR(tmpfiledone, code, "Error opening temporary file for jit dll");
-		size_t		remaining = relocate_size;
-		void*		write_cursor = r->execmem;
+#else
+	{
+#endif
+		char		template[] = P_tmpdir "/jitc_XXXXXX";
+		char*		base = mkdtemp(template);
 		Tcl_Obj*	tmp_fn = NULL;
-		while (remaining) {
-			const ssize_t wrote = write(fd, write_cursor, remaining);
-			if (wrote == -1) {
-				if (Tcl_GetErrno() == EINTR) continue;
-				THROW_POSIX_ERR(tmpfiledone, code, "Error writing temporary file for jit dll");
-			}
-			remaining -= wrote;
-			write_cursor += wrote;
-		}
-		/* No fsync here - POSIX requires that a read that follows a write
-		 * return the data, and we don't want to wait for the data to make it
-		 * to disk (ideally we don't want it getting to the disk at all).
-		 */
-		replace_tclobj(&tmp_fn, Tcl_NewStringObj(template, -1));
+
+		if (base == NULL) THROW_POSIX_LABEL(tmpfiledone, code, "Error creating temporary base directory");
+		Tcl_DString	dllfn;
+		Tcl_DStringInit(&dllfn);
+		Tcl_DStringAppend(&dllfn, base, sizeof(template)-1);
+		Tcl_DStringAppend(&dllfn, "/dll.so", -1);
+		replace_tclobj(&tmp_fn, Tcl_NewStringObj(Tcl_DStringValue(&dllfn), Tcl_DStringLength(&dllfn)));
+
+		const int output_rc = tcc_output_file(tcc, Tcl_DStringValue(&dllfn));
+		if (output_rc == -1) THROW_ERROR_LABEL(tmpfiledone, code, "Couldn't write DLL file");
+
 		TEST_OK_LABEL(tmpfiledone, code, Tcl_LoadFile(interp, tmp_fn, NULL, 0, NULL, &r->handle));
 	tmpfiledone:
-		replace_tclobj(&tmp_fn, NULL);
-		if (fd != -1) {
-			//const int unlink_rc = unlink(template);
-			close(fd);
-			//if (unlink_rc == -1) THROW_POSIX_ERR(finally, code, "Error unlinking jit dll temporary file");
+		if (base) {
+			if (tmp_fn) {
+				const int unlink_rc = unlink(Tcl_GetString(tmp_fn));
+				if (unlink_rc == -1) THROW_POSIX_LABEL(finally, code, "Error unlinking jit dll temporary file");
+			}
+			const int rmdir_rc = rmdir(base);
+			if (rmdir_rc == -1) THROW_POSIX_LABEL(finally, code, "Error removing temporary base directory");
 		}
+		Tcl_DStringFree(&dllfn);
+		replace_tclobj(&tmp_fn, NULL);
 		if (code != TCL_OK) goto finally;
-#undef THROW_POSIX_ERR
 
+#if 0
 		r->jit_symbols = (struct jit_code_entry){
 			.next_entry		= __jit_debug_descriptor.first_entry,
 			.symfile_addr	= r->execmem,
@@ -747,8 +748,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		}
 		__jit_debug_register_code();
 		Tcl_MutexUnlock(&gdb_jit_mutex);
+#endif
 	}
-	//const size_t relocate_size = tcc_relocate(tcc, TCC_RELOCATE_AUTO);
+#else
+	const size_t relocate_size = tcc_relocate(tcc, TCC_RELOCATE_AUTO);
+#endif
 
 	/*
 	for (int i=0; i<tcc->nb_runtime_mem; i+=2) {
@@ -765,7 +769,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	// Avoid a circular reference between cdef and our new jitc intrep obj
 	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
 
-	cdef_init*	init = tcc_get_symbol(tcc, "init");
+	cdef_init*	init = Tcl_FindSymbol(interp, r->handle, "init");
 	if (init)
 		TEST_OK_LABEL(finally, code, (init)(interp));
 

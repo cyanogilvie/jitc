@@ -1,0 +1,580 @@
+proc readfile fn {
+	set h	[open $fn]
+	try {read $h} finally {close $h}
+}
+
+proc writefile {fn dat} {
+	set h	[open $fn w]
+	try {puts -nonewline $h $dat} finally {close $h}
+}
+
+puts "uid_map: [exec ls -l /proc/self/uid_map]"
+#writefile /proc/self/uid_map "0 0 4294967295\n"
+#writefile /proc/self/gid_map "0 0 4294967295\n"
+
+puts "user: [exec id -u]"
+#puts "processes: [exec ps -aux]"
+puts "pid: [pid]"
+puts "from ps: [exec ps -up [pid]]"
+puts "uid_map: ([readfile /proc/self/uid_map])"
+puts "gid_map: ([readfile /proc/self/gid_map])"
+#puts "ls -l /tmp:\n[exec ls -l /tmp]"
+
+package require jitc
+
+puts "hello ($argv0), args: ($argv)"
+
+if 0 {
+set mountinfo	[lmap line [split [readfile /proc/self/mountinfo] \n] {
+	if {![string match /tmp/memfs_* [lindex $line 4]]} continue
+	set line
+}]
+puts "mountinfo: ($mountinfo)"
+set mountpoint	[lindex $mountinfo 0 4]
+lassign [split [lindex $mountinfo 0 2] :] major minor
+set devnum		[expr {($major << 8) + $minor}]
+puts "dev: $major:$minor, num: $devnum"
+
+puts "glob: [timerate {puts "glob: [glob $mountpoint/*]"} 1 1], benchmark: [timerate {glob $mountpoint/*}]"
+puts "readfile: [timerate {puts "readfile: ([readfile $mountpoint/foo])"} 1 1], benchmark: [timerate {readfile $mountpoint/foo}]"
+
+# warmup
+exec ls / $mountpoint
+
+puts "ls: [timerate {
+puts "ls $mountpoint:\n[exec ls -al $mountpoint]"
+} 1 1]"
+puts "cat [timerate {
+puts "cat $mountpoint/foo: ([exec cat $mountpoint/foo])"
+} 1 1]"
+puts "ls /: [timerate {exec ls /} 1 1], benchmark: [timerate {exec ls /}]"
+}
+
+file delete -force -- /tmp/jitc_debugfiles
+file mkdir /tmp/jitc_debugfiles
+proc unshare args {
+	jitc::capply {define _GNU_SOURCE debug /tmp/jitc_debugfiles options {-Wall -Werror -gdwarf-5} code {//@begin=c@
+		#include <stdio.h>
+		#include <sched.h>
+		#include <linux/sched.h>
+
+		OBJCMD(Unshare) {
+			int			code = TCL_OK;
+
+			static const char* flagstr[] = {
+				"CLONE_FILES",
+				"CLONE_FS",
+				"CLONE_NEWCGROUP",
+				"CLONE_NEWIPC",
+				"CLONE_NEWNET",
+				"CLONE_NEWNS",
+				"CLONE_NEWPID",
+				"CLONE_NEWTIME",
+				"CLONE_NEWUSER",
+				"CLONE_NEWUTS",
+				"CLONE_SYSVSEM",
+				"CLONE_THREAD",
+				"CLONE_SIGHAND",
+				"CLONE_VM",
+				NULL
+			};
+			//@end=c@@begin=c@
+			int flagmap[] = {
+				CLONE_FILES,
+				CLONE_FS,
+				CLONE_NEWCGROUP,
+				CLONE_NEWIPC,
+				CLONE_NEWNET,
+				CLONE_NEWNS,
+				CLONE_NEWPID,
+				CLONE_NEWTIME,
+				CLONE_NEWUSER,
+				CLONE_NEWUTS,
+				CLONE_SYSVSEM,
+				CLONE_THREAD,
+				CLONE_SIGHAND,
+				CLONE_VM
+			};
+			//@end=c@@begin=c@
+			int flags = 0;
+
+			for (int i=1; i<objc; i++) {
+				int flagidx;
+
+				TEST_OK_LABEL(done, code, Tcl_GetIndexFromObj(interp, objv[i], flagstr, "flag", TCL_EXACT, &flagidx));
+				
+				fprintf(stderr, "Adding flag: %s: 0x%x\n", flagstr[flagidx], flagmap[flagidx]);
+				flags |= flagmap[flagidx];
+			}
+			//@end=c@@begin=c@
+
+			fprintf(stderr, "Combined flags: 0x%x\n", flags);
+			if (-1 == unshare(flags))
+				THROW_POSIX_LABEL(done, code, "Error calling unshare");
+
+		done:
+			return code;
+		}
+	//@end=c@}} Unshare {*}$args
+}
+
+jitc::capply [list code {//@begin=c@
+#include <linux/fuse.h>
+#include <stdio.h>
+OBJCMD(t) {
+	int			code = TCL_OK;
+	CHECK_ARGS(0, "");
+	fprintf(stderr, "Test command\n");
+done:
+	return code;
+}
+//@end=c@}] t
+
+#unshare CLONE_NEWNS CLONE_NEWUSER
+unshare CLONE_NEWNS
+puts "Called unshare"
+#writefile /proc/self/uid_map "0 0 4294967295\n"
+#writefile /proc/self/gid_map "0 0 4294967295\n"
+puts "Wrote uid_map and gid_map"
+#unshare CLONE_NEWNS
+
+package require Thread
+set fs_tid	[thread::create -preserved {proc cleanup {} {}; thread::wait; cleanup}]
+thread::send $fs_tid $::_threadinit
+thread::send $fs_tid {
+	package require jitc
+
+	proc cleanup {} { #<<<
+		global fd tempdir
+
+		puts stderr "In fs_tid cleanup"
+
+		if {[info exists fd] && $fd in [chan names]} {
+			close $fd
+			unset fd
+		}
+
+		if {[info exists tempdir]} {
+			file delete -force $tempdir
+		}
+	}
+
+	#>>>
+
+	set fd	[open /dev/fuse r+]
+	chan configure $fd -blocking 1 -buffering none -translation binary
+
+	proc readfile fn {
+		set h	[open $fn r]
+		try {read $h} finally {close $h}
+	}
+
+	set lookup_fd	{options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
+		#include <sys/mount.h>
+		#include <stdio.h>
+
+		OBJCMD(native) {
+			int			code = TCL_OK;
+			Tcl_Obj*	fsargs = NULL;
+			ClientData	fd_cdata;
+			Tcl_Channel	chan;
+
+			CHECK_ARGS(1, "chan");
+
+			int mode;
+			chan = Tcl_GetChannel(interp, Tcl_GetString(objv[1]), &mode);
+			if (chan == NULL) goto done;
+			if (mode & TCL_READABLE == 0 || mode & TCL_WRITABLE == 0)
+				THROW_ERROR_LABEL(done, code, "chan must be readable and writable");
+
+			TEST_OK_LABEL(done, code, Tcl_GetChannelHandle(chan, TCL_READABLE, &fd_cdata));
+			Tcl_SetObjResult(interp, Tcl_NewWideIntObj((Tcl_WideInt)fd_cdata));
+
+		done:
+			replace_tclobj(&fsargs, NULL);
+			return code;
+		}
+	//@end=c@>>>}}
+
+	set fusecmds	{options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
+		#include <unistd.h>
+		#include <linux/fuse.h>
+		#include <errno.h>
+		#include <stdio.h>
+		#include <string.h>
+
+		enum lit_objs {
+			LIT_OPCODE,
+			LIT_UNIQUE,
+			LIT_NODEID,
+			LIT_UID,
+			LIT_GID,
+			LIT_PID,
+			LIT_TAIL,
+			LIT_CUSE_INIT,
+			LIT_MAJOR,
+			LIT_MINOR,
+			LIT_MAX_READAHEAD,
+			LIT_FLAGS,
+			_LIT_SIZE
+		};
+		//@end=c@@begin=c@
+		const char*	lit_strs[] = {
+			"opcode",
+			"unique",
+			"nodeid",
+			"uid",
+			"gid",
+			"pid",
+			"tail",
+			"CUSE_INIT",
+			"major",
+			"minor",
+			"max_readahead",
+			"flags",
+			NULL
+		};
+
+		//@end=c@@begin=c@
+		#define fuse_opcode_max (FUSE_SYNCFS+1)
+		Tcl_Obj*		lit[_LIT_SIZE] = {0};
+		Tcl_Obj*		opcodes[fuse_opcode_max] = {0};
+		Tcl_Obj*		g_cuse_init = NULL;
+		#define fuse_default_readbuf_size	FUSE_MIN_READ_BUFFER
+		size_t			readbufsize = fuse_default_readbuf_size;
+		static uint8_t	static_readbuf[fuse_default_readbuf_size] = {0};
+		static void*	readbuf = static_readbuf;
+
+		typedef int (opcode_decoder)(Tcl_Interp* interp, uint32_t opcode, void* payload, Tcl_Obj* msg);
+		opcode_decoder*	decode[fuse_opcode_max] = {0};
+
+		static int decode_fuse_init(Tcl_Interp* interp, uint32_t opcode, void* payload, Tcl_Obj* msg) //<<<
+		{
+			int						code = TCL_OK;
+			struct fuse_init_in*	p = payload;
+
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MAJOR], Tcl_NewWideIntObj(p->major)));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MINOR], Tcl_NewWideIntObj(p->minor)));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MAX_READAHEAD], Tcl_NewWideIntObj(p->max_readahead)));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_FLAGS], Tcl_NewWideIntObj(p->flags)));
+
+		done:
+			return code;
+		}
+
+		//>>>
+
+		//@end=c@@begin=c@
+		INIT { //<<<
+			#define MAP_OPCODE(name) replace_tclobj(&opcodes[name], Tcl_NewStringObj(#name, -1));
+			MAP_OPCODE(FUSE_LOOKUP);
+			MAP_OPCODE(FUSE_FORGET);
+			MAP_OPCODE(FUSE_GETATTR);
+			MAP_OPCODE(FUSE_SETATTR);
+			MAP_OPCODE(FUSE_READLINK);
+			MAP_OPCODE(FUSE_SYMLINK);
+			MAP_OPCODE(FUSE_MKNOD);
+			MAP_OPCODE(FUSE_MKDIR);
+			MAP_OPCODE(FUSE_UNLINK);
+			MAP_OPCODE(FUSE_RMDIR);
+			MAP_OPCODE(FUSE_RENAME);
+			MAP_OPCODE(FUSE_LINK);
+			MAP_OPCODE(FUSE_OPEN);
+			MAP_OPCODE(FUSE_READ);
+			MAP_OPCODE(FUSE_WRITE);
+			MAP_OPCODE(FUSE_STATFS);
+			MAP_OPCODE(FUSE_RELEASE);
+			MAP_OPCODE(FUSE_FSYNC);
+			MAP_OPCODE(FUSE_SETXATTR);
+			MAP_OPCODE(FUSE_GETXATTR);
+			MAP_OPCODE(FUSE_LISTXATTR);
+			MAP_OPCODE(FUSE_REMOVEXATTR);
+			MAP_OPCODE(FUSE_FLUSH);
+			MAP_OPCODE(FUSE_INIT);
+			MAP_OPCODE(FUSE_OPENDIR);
+			MAP_OPCODE(FUSE_READDIR);
+			MAP_OPCODE(FUSE_RELEASEDIR);
+			MAP_OPCODE(FUSE_FSYNCDIR);
+			MAP_OPCODE(FUSE_GETLK);
+			MAP_OPCODE(FUSE_SETLK);
+			MAP_OPCODE(FUSE_SETLKW);
+			MAP_OPCODE(FUSE_ACCESS);
+			MAP_OPCODE(FUSE_CREATE);
+			MAP_OPCODE(FUSE_INTERRUPT);
+			MAP_OPCODE(FUSE_BMAP);
+			MAP_OPCODE(FUSE_DESTROY);
+			MAP_OPCODE(FUSE_IOCTL);
+			MAP_OPCODE(FUSE_POLL);
+			MAP_OPCODE(FUSE_NOTIFY_REPLY);
+			MAP_OPCODE(FUSE_BATCH_FORGET);
+			MAP_OPCODE(FUSE_FALLOCATE);
+			MAP_OPCODE(FUSE_READDIRPLUS);
+			MAP_OPCODE(FUSE_RENAME2);
+			MAP_OPCODE(FUSE_LSEEK);
+			MAP_OPCODE(FUSE_COPY_FILE_RANGE);
+			MAP_OPCODE(FUSE_SETUPMAPPING);
+			MAP_OPCODE(FUSE_REMOVEMAPPING);
+			MAP_OPCODE(FUSE_SYNCFS);
+			#undef MAP_OPCODE
+
+			for (int i=0; lit_strs[i]; i++)
+				replace_tclobj(&lit[i], Tcl_NewStringObj(lit_strs[i], -1));
+
+
+			decode[FUSE_INIT] = decode_fuse_init;
+
+			return TCL_OK;
+		}
+
+		//@end=c@@begin=c@ >>>
+		RELEASE { //<<<
+			for (int i=0; i<fuse_opcode_max; i++) replace_tclobj(&opcodes[i], NULL);
+			for (int i=0; lit_strs[i]; i++) replace_tclobj(&lit[i], NULL);
+			if (readbuf != static_readbuf) {
+				ckfree(readbuf);
+				readbuf = static_readbuf;
+				readbufsize = fuse_default_readbuf_size;
+			}
+		}
+
+		//@end=c@@begin=c@ >>>
+		static int get_fd_from_obj(Tcl_Interp* interp, Tcl_Obj* chan, int modereq, int* fd) //<<<
+		{
+			int			code = TCL_OK;
+			int			mode;
+			ClientData	fd_cdata;
+
+			Tcl_Channel channel = Tcl_GetChannel(interp, Tcl_GetString(chan), &mode);
+			if (channel == NULL) goto done;
+			if (mode & modereq == 0)
+				THROW_ERROR_LABEL(done, code, "chan mode doesn't meet requirements");
+
+			TEST_OK_LABEL(done, code, Tcl_GetChannelHandle(channel, modereq, &fd_cdata));
+			*fd = (Tcl_WideInt)fd_cdata;
+
+		done:
+			return code;
+		}
+
+		//@end=c@@begin=c@ >>>
+		static int lookup_opcode(Tcl_Interp* interp, uint32_t opcode, Tcl_Obj** opcodeObj) //<<<
+		{
+			int			code = TCL_OK;
+
+			if (opcode < fuse_opcode_max) {
+				replace_tclobj(opcodeObj, opcodes[opcode]);
+			} else if (opcode == CUSE_INIT) {
+				replace_tclobj(opcodeObj, lit[LIT_CUSE_INIT]);
+			} else {
+				replace_tclobj(opcodeObj, Tcl_NewWideIntObj(opcode));
+			}
+
+		done:
+			return code;
+		}
+
+		//@end=c@@begin=c@ >>>
+		OBJCMD(read_fuse_req) { //<<<
+			int						code = TCL_OK;
+			int						fd;
+			uint8_t*				tailbuf = NULL;
+			Tcl_Obj*				msg = NULL;
+			Tcl_Obj*				opcodeObj = NULL;
+			ssize_t					got_header;
+			struct fuse_in_header*	req_header = NULL;
+
+			CHECK_ARGS(1, "chan");
+
+			TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv[1], TCL_READABLE, &fd));
+			fprintf(stderr, "Preparing to read from fuse fd: %d\n", fd);
+
+			do {
+				got_header = read(fd, readbuf, readbufsize);
+
+				if (got_header < sizeof *req_header) {
+					if (got_header == -1) {
+						if (errno == EINTR) continue;
+						THROW_POSIX_LABEL(done, code, "Error calling read on fuse fd");
+					}
+					//@end=c@@begin=c@
+					THROW_PRINTF_LABEL(done, code, "Asked for %d bytes, but got %d\n", sizeof *req_header, got_header);
+				}
+			} while(0);
+			//@end=c@@begin=c@
+
+			req_header = readbuf;
+			if (got_header < req_header->len) {
+				const ssize_t	taillen = req_header->len - sizeof *req_header;
+				ssize_t			remain = req_header->len - got_header;
+
+				if (remain > readbufsize) {
+					const size_t newsize = req_header->len > FUSE_MIN_READ_BUFFER ? req_header->len : FUSE_MIN_READ_BUFFER;
+					if (readbuf == static_readbuf) {
+						uint8_t* newreadbuf = ckalloc(newsize);
+						memcpy(newreadbuf, readbuf, got_header);
+						readbuf = newreadbuf;
+					} else {
+						readbuf = ckrealloc(readbuf, newsize);
+					}
+					readbufsize = newsize;
+				}
+
+			}
+
+			const ssize_t	taillen = req_header->len - sizeof *req_header;
+
+			if (req_header->len-got_header > 0) {
+				do {
+					const ssize_t got_tail = read(fd, readbuf+got_header, readbufsize-got_header);
+					fprintf(stderr, "got_tail: %ld, asked for: %ld, got_header: %ld, taillen: %ld, sizeof req_header: %ld\n", got_tail, readbufsize-got_header, got_header, taillen, sizeof *req_header);
+
+					if (got_tail <= taillen) {
+						if (got_tail == -1) {
+							if (errno = EINTR) continue;
+							THROW_POSIX_LABEL(done, code, "Error calling read on fuse fd");
+						}
+						THROW_PRINTF_LABEL(done, code, "Asked for %d bytes, but got %d\n", taillen, got_tail);
+					}
+				} while(0);
+			}
+
+			if (req_header->opcode = FUSE_INIT) {
+				struct fuse_init_in*	fuse_init = readbuf+sizeof *req_header;
+				fprintf(stderr, "FUSE_INIT, major: %d, minor: %d, max_readahead: %d, flags: 0x%08x\n",
+					fuse_init->major, fuse_init->minor, fuse_init->max_readahead, fuse_init->flags);
+			}
+
+			replace_tclobj(&msg, Tcl_NewDictObj());
+
+			TEST_OK_LABEL(done, code, lookup_opcode(interp, req_header->opcode, &opcodeObj));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_OPCODE], opcodeObj));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_UNIQUE], Tcl_NewWideIntObj(req_header->unique)));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_NODEID], Tcl_NewWideIntObj(req_header->nodeid)));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_UID], Tcl_NewWideIntObj(req_header->uid)));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_GID], Tcl_NewWideIntObj(req_header->gid)));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_PID], Tcl_NewWideIntObj(req_header->pid)));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_TAIL], Tcl_NewByteArrayObj(readbuf+sizeof *req_header, taillen)));
+
+			if (opcode < fuse_opcode_max && decode[opcode])
+				TEST_OK_LABEL(done, code, (decode[opcode])(interp, opcode, readbuf+sizeof *req_header, msg));
+
+			Tcl_SetObjResult(interp, msg);
+
+		done:
+			if (tailbuf) {
+				ckfree(tailbuf);
+				tailbuf = NULL;
+			}
+
+			replace_tclobj(&msg, NULL);
+			replace_tclobj(&opcodeObj, NULL);
+
+			return code;
+		}
+
+		//>>>
+	//@end=c@>>>}}
+
+	chan event $fd readable [list apply {fd {
+		set native_fd	[jitc::capply $::lookup_fd native $fd]
+		puts stderr "Got readable on /dev/fuse fd: $native_fd (Tcl chan $fd)"
+		puts stderr [exec ls -l /proc/self/fd/$native_fd]
+		puts stderr [readfile /proc/self/fdinfo/$native_fd]
+
+		puts "read fuse msg: [timerate {
+		set msg	[jitc::capply $fusecmds read_fuse_req $fd]
+		} 1 1]"
+
+		puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
+			puts [format {%8s: (%s)} $v [dict get $msg $v]]
+		}] \n\t]"
+		puts stderr "payload: [regexp -all -inline .. [binary encode hex [dict get $msg tail]]]"
+
+		#set i [read $fd 4]
+		#binary scan $i n len
+		#puts stderr "Read len: $len"
+		#set rest	[read $fd [expr {$len-4}]]
+		#binary scan $rest nmmnnnna* opcode unique nodeid uid gid pid padding tail
+		#foreach v {opcode unique nodeid uid gid pid} {
+		#	puts stderr "$v: $v"
+		#}
+		#puts stderr "payload: [regexp -all -inline .. [binary encode hex $tail]]"
+		close $fd
+	}} $fd]
+
+	package require jitclib::tempdir
+
+	set tempdir	[jitc::capply $::jitclib::tempdir tempdir fuseraw_test_]
+
+	file delete -force /tmp/dbg
+	file mkdir /tmp/dbg
+	if 1 {
+		jitc::capply {debug /tmp/dbg options {-Wall -Werror -gdwarf-5} code {//@begin=c@
+			#include <sys/mount.h>
+			#include <stdio.h>
+			#include <unistd.h>
+			#include <fcntl.h>
+
+			OBJCMD(do_mount) {
+				int			code = TCL_OK;
+				Tcl_Obj*	fsargs = NULL;
+				Tcl_WideInt	fdw;
+				int fd;
+				ClientData fd_cdata;
+				Tcl_Channel	chan;
+
+				CHECK_ARGS(2, "chan mountpoint");
+
+				int mode;
+				chan = Tcl_GetChannel(interp, Tcl_GetString(objv[1]), &mode);
+				if (chan == NULL) goto done;
+				if (mode & TCL_READABLE == 0 || mode & TCL_WRITABLE == 0)
+					THROW_ERROR_LABEL(done, code, "chan must be readable and writable");
+				int mountpoint_len;
+				const char* mountpoint = Tcl_GetStringFromObj(objv[2], &mountpoint_len);
+
+				TEST_OK_LABEL(done, code, Tcl_GetChannelHandle(chan, TCL_READABLE, &fd_cdata));
+				fdw = (Tcl_WideInt)fd_cdata;
+				fd = fdw;
+				fcntl(fd, F_SETFD, 0);
+
+				replace_tclobj(&fsargs, Tcl_ObjPrintf("fd=%d,rootmode=%o,user_id=1000,group_id=1000", fd, S_IFDIR));
+
+				fprintf(stderr, "Calling mount(), mountpoint: (%s), fsargs: (%s)\n", mountpoint, Tcl_GetString(fsargs));
+				//const int mount_rc = mount("fuseraw", mountpoint, "fuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
+				const int mount_rc = mount("fuse", mountpoint, "fuse", 0, Tcl_GetString(fsargs));
+				if (mount_rc == -1)
+					THROW_POSIX_LABEL(done, code, "Error calling mount");
+
+			done:
+				replace_tclobj(&fsargs, NULL);
+				return code;
+			}
+		//@end=c@}} do_mount $fd $tempdir
+		update
+		#puts stderr "Calling glob $tempdir/*"
+		#puts stderr [glob $tempdir/*]
+	} else {
+		set native_fd	[jitc::capply $lookup_fd native $fd]
+		puts stderr "native_fd: ($native_fd)"
+		try {
+			exec mount.fuse3 fuseraw#foo -o fd=$native_fd $tempdir
+		} on error {errmsg options} {
+			puts stderr "mount error: $options"
+		}
+	}
+
+	try {
+		exec umount $tempdir
+	} on error {errmsg options} {
+		puts stderr "umount err: $options"
+	}
+}
+
+thread::release $fs_tid
+
+#puts stderr "Unmounting ($mountpoint)"
+#exec umount $mountpoint
+#puts stderr "Unmounted"
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4 syn sync minlines=1000
