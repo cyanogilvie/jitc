@@ -52,7 +52,7 @@ puts "ls /: [timerate {exec ls /} 1 1], benchmark: [timerate {exec ls /}]"
 
 file delete -force -- /tmp/jitc_debugfiles
 file mkdir /tmp/jitc_debugfiles
-proc unshare args {
+proc unshare args { #<<<
 	jitc::capply {define _GNU_SOURCE debug /tmp/jitc_debugfiles options {-Wall -Werror -gdwarf-5} code {//@begin=c@
 		#include <stdio.h>
 		#include <sched.h>
@@ -118,6 +118,8 @@ proc unshare args {
 	//@end=c@}} Unshare {*}$args
 }
 
+#>>>
+
 jitc::capply [list code {//@begin=c@
 #include <linux/fuse.h>
 #include <stdio.h>
@@ -130,6 +132,7 @@ done:
 }
 //@end=c@}] t
 
+if 0 {
 #unshare CLONE_NEWNS CLONE_NEWUSER
 unshare CLONE_NEWNS
 puts "Called unshare"
@@ -137,12 +140,15 @@ puts "Called unshare"
 #writefile /proc/self/gid_map "0 0 4294967295\n"
 puts "Wrote uid_map and gid_map"
 #unshare CLONE_NEWNS
+}
 
 package require Thread
 set fs_tid	[thread::create -preserved {proc cleanup {} {}; thread::wait; cleanup}]
 thread::send $fs_tid $::_threadinit
 thread::send $fs_tid {
 	package require jitc
+	package require parse_args
+	namespace import ::parse_args::*
 
 	proc cleanup {} { #<<<
 		global fd tempdir
@@ -196,7 +202,237 @@ thread::send $fs_tid {
 		}
 	//@end=c@>>>}}
 
-	set fusecmds	{options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
+	proc gen_flag_map args { #<<<
+		parse_args $args {
+			-headers	{-default {} -# {Headers to include that contain the required definitions}}
+			-type		{-default int -# {The type of the mapped value}}
+			-flags		{-required -# {A list of flags to generate mappings for}}
+			-name		{-required -# {The map name}}
+		}
+		# TODO: validate that each element of $flags is a valid c identifier (syntactically)
+		# TODO: validate that each element of $headers is a valid filename (syntactically)
+		# TODO: validate that type and name are valid c symbols (syntactically)
+
+		set code	{}
+
+		set size	[llength $flags]
+
+		set exported_symbols	{}
+		set exported_headers	{}
+
+		foreach header $headers {
+			append code	"#include <$header>\n"
+		}
+		append code \n
+
+		append code [subst {static const char* strs\[\] = {[join [lmap f $flags {
+			format {"%s"} $f
+		}] ,\n\t],\n\tNULL\n};}] \n
+		append code [subst {static const $type map\[\] = {[join [lmap f $flags {
+			format {%s} $f
+		}] ,\n\t]\n};}] \n
+		append code [subst {static Tcl_Obj* objs\[$size\] = {0};}] \n
+
+		set i	-1
+		append code "INIT \{\n[join [lmap f $flags {
+			format {replace_tclobj(&objs[%d], Tcl_NewStringObj("%s", %d));} [incr i] $f [string length $f]
+		}] \n\t]\}\n\n"
+		append code [subst {RELEASE {\n\tfor (int i=0; i<$size; i++) replace_tclobj(&objs\[i\], NULL);\n}}] \n\n
+
+		append code [subst {int get_${name}_from_list(Tcl_Interp* interp, Tcl_Obj* list, $type* res) {
+	int code = TCL_OK;
+	int idx;
+	Tcl_Obj**	ov = NULL;
+	int			oc;
+	$type		acc = 0;
+	TEST_OK_LABEL(done, code, Tcl_ListObjGetElements(interp, list, &oc, &ov));
+	for (int i=0; i<oc; i++) {
+		TEST_OK_LABEL(done, code, Tcl_GetIndexFromObj(interp, ov[i], strs, "$name", TCL_EXACT, &idx));
+		acc |= map[idx];
+	}
+	*res = acc;
+
+done:
+	return code;
+}}] \n\n
+		lappend exported_symbols get_${name}_from_list
+		append exported_headers "int get_${name}_from_list(Tcl_Interp* interp, Tcl_Obj* list, $type* res);\n"
+
+		append code [subst {int get_list_from_${name}(Tcl_Interp* interp, $type flags, Tcl_Obj** list)
+	int			code = TCL_OK;
+	Tcl_Obj*	acc = NULL;
+
+	replace_tclobj(&acc, Tcl_NewListObj());
+
+	for (int i=0; i<$size; i++)
+		if (flags & map[i] == map[i])
+			TEST_OK_LABEL(done, code, Tcl_ListObjAppendElement(interp, acc, objs[i]));
+
+	replace_tclobj(list, acc);
+done:
+	replace_tclobj(&acc, NULL);
+	return code;
+}}] \n\n
+		lappend exported_aymbols get_list_from_$name
+		append exported_headers "int get_list_from_${name}(Tcl_Interp* interp, $type flags, Tcl_Obj** list);\n"
+
+		list options {-Wall -Werror -gdwarf-5} code $code export [list symbols $exported_symbols headers $exported_headers]
+	}
+
+	#>>>
+	proc gen_enum_map args { #<<<
+		parse_args $args {
+			-headers	{-default {} -# {Headers to include that contain the required definitions}}
+			-type		{-default int -# {The type of the mapped value}}
+			-vals		{-required -# {A list of enum values to generate mappings for}}
+			-name		{-required -# {The map name}}
+		}
+		# TODO: validate that each element of $vals is a valid c identifier (syntactically)
+		# TODO: validate that each element of $headers is a valid filename (syntactically)
+		# TODO: validate that type and name are valid c symbols (syntactically)
+
+		set code	{}
+
+		set size	[llength $flags]
+
+		set exported_symbols	{}
+		set exported_headers	{}
+
+		foreach header $headers {
+			append code	"#include <$header>\n"
+		}
+		append code \n
+
+		append code [subst {static const char* strs\[\] = {[join [lmap f $flags {
+			format {"%s"} $f
+		}] ,\n\t],\n\tNULL\n};}] \n
+		append code [subst {static const $type map\[\] = {[join [lmap f $flags {
+			format {%s} $f
+		}] ,\n\t]\n};}] \n
+		append code [subst {static Tcl_Obj* objs\[$size\] = {0};}] \n
+
+		set i	-1
+		append code "INIT \{\n[join [lmap f $flags {
+			format {replace_tclobj(&objs[%d], Tcl_NewStringObj("%s", %d));} [incr i] $f [string length $f]
+		}] \n\t]\}\n\n"
+		append code [subst {RELEASE {\n\tfor (int i=0; i<$size; i++) replace_tclobj(&objs\[i\], NULL);\n}}] \n\n
+
+		append code [subst {int get_${name}_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, $type* res) {
+	int code = TCL_OK;
+	int idx;
+	TEST_OK_LABEL(done, code, Tcl_GetIndexFromObj(interp, obj, strs, "$name", TCL_EXACT, &idx));
+	*res = map[idx];
+
+done:
+	return code;
+}}] \n\n
+		lappend exported_symbols get_${name}_from_obj
+		append exported_headers "int get_${name}_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, $type* res);\n"
+
+		append code [subst {int get_obj_from_${name}(Tcl_Interp* interp, $type val, Tcl_Obj** obj)
+	int			code = TCL_OK;
+
+	replace_tclobj(&acc, Tcl_NewListObj());
+
+	for (int i=0; i<$size; i++) {
+		if (map[i] == val) {
+			replace_tclobj(&obj, objs[i]);
+			goto done;
+		}
+	}
+
+	// TODO: determine printf format for $type
+	THROW_PRINTF_LABEL(done, code, "Unhandled $type value: %d\n", val);
+
+done:
+	return code;
+}}] \n\n
+		lappend exported_aymbols get_obj_from_$name
+		append exported_headers "int get_obj_from_${name}(Tcl_Interp* interp, $type val, Tcl_Obj** obj);\n"
+
+		list options {-Wall -Werror -gdwarf-5} code $code export [list symbols $exported_symbols headers $exported_headers]
+	}
+
+	#>>>
+
+	# flagmap_initflag <<<
+	set flagmap_initflag	[gen_flag_map -name initflag -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+		FUSE_ASYNC_READ
+		FUSE_POSIX_LOCKS
+		FUSE_FILE_OPS
+		FUSE_ATOMIC_O_TRUNC
+		FUSE_EXPORT_SUPPORT
+		FUSE_BIG_WRITES
+		FUSE_DONT_MASK
+		FUSE_SPLICE_WRITE
+		FUSE_SPLICE_MOVE
+		FUSE_SPLICE_READ
+		FUSE_FLOCK_LOCKS
+		FUSE_HAS_IOCTL_DIR
+		FUSE_AUTO_INVAL_DATA
+		FUSE_DO_READDIRPLUS
+		FUSE_READDIRPLUS_AUTO
+		FUSE_ASYNC_DIO
+		FUSE_WRITEBACK_CACHE
+		FUSE_NO_OPEN_SUPPORT
+		FUSE_PARALLEL_DIROPS
+		FUSE_HANDLE_KILLPRIV
+		FUSE_POSIX_ACL
+		FUSE_ABORT_ERROR
+		FUSE_MAX_PAGES
+		FUSE_CACHE_SYMLINKS
+		FUSE_NO_OPENDIR_SUPPORT
+		FUSE_EXPLICIT_INVAL_DATA
+		FUSE_MAP_ALIGNMENT
+		FUSE_SUBMOUNTS
+		FUSE_HANDLE_KILLPRIV_V2
+		FUSE_SETXATTR_EXT
+	}]
+	#>>>
+	# enummap_errno <<<
+	set enummap_errno	[gen_enum_map -name errno -headers errno.h -vals {
+		EPERM
+		ENOENT
+		ESRCH
+		EINTR
+		EIO
+		ENXIO
+		E2BIG
+		ENOEXEC
+		EBADF
+		ECHILD
+		EAGAIN
+		ENOMEM
+		EACCES
+		EFAULT
+		EBUSY
+		EEXIST
+		EXDEV
+		ENODEV
+		ENOTDIR
+		EISDIR
+		ENFILE
+		EMFILE
+		ENOTTY
+		EFBIG
+		ENOSPC
+		ESPIPE
+		EROFS
+		EMLINK
+		EPIPE
+		EDOM
+		EDEADLK
+		ENAMETOOLONG
+		ENOLCK
+		ENOSYS
+		ENOTEMPTY
+		EINVAL
+		ERANGE
+		EILSEQ
+	}]
+	#>>>
+
+	set fusecmds	[list use $flagmap_initflag use $enummap_errno options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
 		#include <unistd.h>
 		#include <linux/fuse.h>
 		#include <errno.h>
@@ -252,13 +488,16 @@ thread::send $fs_tid {
 		{
 			int						code = TCL_OK;
 			struct fuse_init_in*	p = payload;
+			Tcl_Obj*				kernflags = NULL;
 
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MAJOR], Tcl_NewWideIntObj(p->major)));
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MINOR], Tcl_NewWideIntObj(p->minor)));
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MAX_READAHEAD], Tcl_NewWideIntObj(p->max_readahead)));
-			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_FLAGS], Tcl_NewWideIntObj(p->flags)));
+			TEST_OK_LABEL(done, code, get_list_from_initflags(interp, p->flags, &kernflags));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_FLAGS], kernflags));
 
 		done:
+			replace_tclobj(&kernflags, NULL);
 			return code;
 		}
 
@@ -455,8 +694,8 @@ thread::send $fs_tid {
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_PID], Tcl_NewWideIntObj(req_header->pid)));
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_TAIL], Tcl_NewByteArrayObj(readbuf+sizeof *req_header, taillen)));
 
-			if (opcode < fuse_opcode_max && decode[opcode])
-				TEST_OK_LABEL(done, code, (decode[opcode])(interp, opcode, readbuf+sizeof *req_header, msg));
+			if (req_header->opcode < fuse_opcode_max && decode[req_header->opcode])
+				TEST_OK_LABEL(done, code, (decode[req_header->opcode])(interp, req_header->opcode, readbuf+sizeof *req_header, msg));
 
 			Tcl_SetObjResult(interp, msg);
 
@@ -473,39 +712,123 @@ thread::send $fs_tid {
 		}
 
 		//>>>
-	//@end=c@>>>}}
+		static int fuse_write(Tcl_Interp* interp, int fd, void* buf, size_t len) //<<<
+		{
+			int		code = TCL_OK;
+			ssize_t	written = 0;
 
-	chan event $fd readable [list apply {fd {
-		set native_fd	[jitc::capply $::lookup_fd native $fd]
-		puts stderr "Got readable on /dev/fuse fd: $native_fd (Tcl chan $fd)"
-		puts stderr [exec ls -l /proc/self/fd/$native_fd]
-		puts stderr [readfile /proc/self/fdinfo/$native_fd]
+			do {
+				const ssize_t wrote = write(fd, (void*)buf+written, len - written);
+				if (wrote == -1) {
+					if (errno = EINTR) continue;
+					THROW_POSIX_LABEL(done, code, "Error calling write on fuse fd");
+				}
+				written += wrote;
+				if (written < len) continue;
+			} while(0);
 
-		puts "read fuse msg: [timerate {
-		set msg	[jitc::capply $fusecmds read_fuse_req $fd]
-		} 1 1]"
-
-		set seen	{}
-		puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
-			dict set seen $v 1
-			format {%8s: (%s)} $v [dict get $msg $v]
-		}] \n\t]"
-		puts stderr "payload: [regexp -all -inline .. [binary encode hex [dict get $msg tail]]]"
-		dict for {k v} $msg {
-			if {[dict exists $seen $k]} continue
-			puts [format {%12s: (%s)} $k [dict get $msg $k]]
+		done:
+			return code;
 		}
 
-		#set i [read $fd 4]
-		#binary scan $i n len
-		#puts stderr "Read len: $len"
-		#set rest	[read $fd [expr {$len-4}]]
-		#binary scan $rest nmmnnnna* opcode unique nodeid uid gid pid padding tail
-		#foreach v {opcode unique nodeid uid gid pid} {
-		#	puts stderr "$v: $v"
-		#}
-		#puts stderr "payload: [regexp -all -inline .. [binary encode hex $tail]]"
-		close $fd
+		//>>>
+		OBJCMD(write_error) { //<<<
+			int				code = TCL_OK;
+			Tcl_WideInt		unique;
+			int				err;
+			int				fd;
+
+			CHECK_ARGS(3, "fd unique errno");
+
+			TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv[1], TCL_WRITABLE, &fd));
+			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[2], &unique))
+			TEST_OK_LABEL(done, code, get_errno_from_obj(interp, objv[3], &err));
+
+			struct fuse_out_header	hdr = {
+				.len		= sizeof hdr,
+				.error		= err,
+				.unique		= unique
+			};
+
+			TEST_OK_LABEL(done, code, fuse_write(interp, fd, &hdr, sizeof hdr));
+
+		done:
+			return TCL_OK;
+		}
+
+		//>>>
+	//@end=c@>>>}]
+
+	chan event $fd readable [list apply {fd {
+		global fusecmds
+
+		try {
+			puts "read fuse msg: [timerate {
+			set msg	[jitc::capply $fusecmds read_fuse_req $fd]
+			} 1 1]"
+
+			set seen	{}
+			puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
+				dict set seen $v 1
+				format {%8s: (%s)} $v [dict get $msg $v]
+			}] \n\t]"
+			puts stderr "payload: [regexp -all -inline .. [binary encode hex [dict get $msg tail]]]"
+			dict set seen tail 1
+			dict for {k v} $msg {
+				if {[dict exists $seen $k]} continue
+				puts [format {%12s: (%s)} $k [dict get $msg $k]]
+			}
+
+			switch -exact -- [dict get $msg opcode] {
+				FUSE_INIT {
+					if {[dict get $msg major] > 7} {
+						# TODO: reply with just major 7
+						error "Major protocol version mismatch and negotiation not supported"
+					} elseif {[dict get $msg major] < 7} {
+						error "Major protocol version from kernel is too old"
+					} elseif {[dict get $msg minor] < 34} {
+						error "Minor version too old"
+					}
+					jitc::capply $fusecmds write_fuse_init [dict create \
+						unique					[dict get $msg unique] \
+						major					7 \
+						minor					34 \
+						max_readahead			[expr {4*1048576}] \
+						flags					{
+							FUSE_ATOMIC_O_TRUNC
+							FUSE_BIG_WRITES
+						} \
+						max_background			8 \
+						congestion_threshold	4 \
+						max_read				0 \
+						max_write				[expr {4*1048576}] \
+					]
+				}
+				
+
+				default {
+					error "opcode ([dict get $msg opcode]) not handled"
+				}
+			}
+
+			#set i [read $fd 4]
+			#binary scan $i n len
+			#puts stderr "Read len: $len"
+			#set rest	[read $fd [expr {$len-4}]]
+			#binary scan $rest nmmnnnna* opcode unique nodeid uid gid pid padding tail
+			#foreach v {opcode unique nodeid uid gid pid} {
+			#	puts stderr "$v: $v"
+			#}
+			#puts stderr "payload: [regexp -all -inline .. [binary encode hex $tail]]"
+		} on error {errmsg options} {
+			puts "fuse fd readable error [dict get $options -errorcode]: [dict get $options -errorinfo]"
+			if {[info exists msg] && [dict exists $msg unique]} {
+				puts stderr "Writing error reply"
+				jitc::capply $fusecmds write_error $fd [dict get $msg unique] EINVAL
+			}
+			close $fd
+			return
+		}
 	}} $fd]
 
 	package require jitclib::tempdir
