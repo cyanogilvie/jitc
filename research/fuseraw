@@ -485,10 +485,16 @@ thread::send $fs_tid {
 		set msg	[jitc::capply $fusecmds read_fuse_req $fd]
 		} 1 1]"
 
+		set seen	{}
 		puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
-			puts [format {%8s: (%s)} $v [dict get $msg $v]]
+			dict set seen $v 1
+			format {%8s: (%s)} $v [dict get $msg $v]
 		}] \n\t]"
 		puts stderr "payload: [regexp -all -inline .. [binary encode hex [dict get $msg tail]]]"
+		dict for {k v} $msg {
+			if {[dict exists $seen $k]} continue
+			puts [format {%12s: (%s)} $k [dict get $msg $k]]
+		}
 
 		#set i [read $fd 4]
 		#binary scan $i n len
@@ -577,4 +583,5 @@ thread::release $fs_tid
 #exec umount $mountpoint
 #puts stderr "Unmounted"
 
-# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4 syn sync minlines=1000
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4
+# TODO: syn sync minlines=1000
