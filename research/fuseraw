@@ -202,6 +202,60 @@ thread::send $fs_tid {
 		}
 	//@end=c@>>>}}
 
+	# fuse_io <<<
+	set fuse_io	{options {-Wall -Werror -gdwarf-5} export {
+		symbols	{fuse_write get_fd_from_obj}
+		headers	{
+			int fuse_write(Tcl_Interp* interp, int fd, void* buf, size_t buflen);
+			int get_fd_from_obj(Tcl_Interp* interp, Tcl_Obj* chan, int modereq, int* fd);
+		}
+		code {//@begin=c@
+			#include <linux/fuse.h>
+			#include <unistd.h>
+
+			int fuse_write(Tcl_Interp* interp, int fd, void* buf, size_t len) //<<<
+			{
+				int		code = TCL_OK;
+				ssize_t	written = 0;
+
+				do {
+					const ssize_t wrote = write(fd, (void*)buf+written, len - written);
+					if (wrote == -1) {
+						if (errno = EINTR) continue;
+						THROW_POSIX_LABEL(done, code, "Error calling write on fuse fd");
+					}
+					written += wrote;
+					if (written < len) continue;
+				} while(0);
+
+			done:
+				return code;
+			}
+
+			//>>>@end=c@@begin=c@
+			int get_fd_from_obj(Tcl_Interp* interp, Tcl_Obj* chan, int modereq, int* fd) //<<<
+			{
+				int			code = TCL_OK;
+				int			mode;
+				ClientData	fd_cdata;
+
+				Tcl_Channel channel = Tcl_GetChannel(interp, Tcl_GetString(chan), &mode);
+				if (channel == NULL) goto done;
+				if (mode & modereq == 0)
+					THROW_ERROR_LABEL(done, code, "chan mode doesn't meet requirements");
+
+				TEST_OK_LABEL(done, code, Tcl_GetChannelHandle(channel, modereq, &fd_cdata));
+				*fd = (Tcl_WideInt)fd_cdata;
+
+			done:
+				return code;
+			}
+
+			//>>>
+		//@end=c@}
+	}
+	# fuse_io >>>
+
 	proc gen_flag_map args { #<<<
 		parse_args $args {
 			-headers	{-default {} -# {Headers to include that contain the required definitions}}
@@ -354,9 +408,132 @@ done:
 	}
 
 	#>>>
+	proc gen_fuse_writer args { #<<<
+		global fuse_io
+
+		parse_args $args {
+			-name		{-required}
+			-fields		{-required}
+		}
+
+		set exported_symbols	{}
+		set exported_headers	{}
+		set code				{}
+		set use_extra			{}
+
+		append code [subst {
+			[join [lmap {type field} $fields {subst {
+				Tcl_Obj*	f_$field = NULL;
+			}}] \n]
+
+			INIT {
+				[join [lmap {type field} $fields {subst {
+					replace_tclobj(&f_$field, Tcl_NewStringObj("$field", [string length $field]));
+				}}] \n]
+				return TCL_OK;
+			}
+
+			RELEASE {
+				[join [lmap {type field} $fields {subst {
+					replace_tclobj(&f_$field, NULL);
+				}}] \n]
+			}
+
+			OBJCODE(fuse_write_$name) {
+				int				code = TCL_OK;
+				int				fd;
+				Tcl_WideInt		unique;
+				Tcl_Obj*		k = NULL;
+				Tcl_Obj*		v = NULL;
+				int				done;
+				const size_t	buflen = sizeof struct fuse_out_header + sizeof fuse_${name}_out;
+				uint8_t			buf\[buflen\];
+				struct fuse_out_header*		hdr = buf;
+				struct fuse_${name}_out*	reply = ((void*)buf)+sizeof fuse_out_header;
+
+				CHECK_ARGS(3, "fd unique msg");
+
+				TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv\[1\], &fd));
+				TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv\[2\], &unique));
+
+				*hdr = (struct fuse_out_header){
+					.len	= buflen,
+					.unique	= unique
+				};
+				*reply = (struct fuse_${name}_out){0};
+
+				[join [lmap {type field} $fields {
+					switch -glob -- $type {
+						int32_t -
+						uint32_t {subst {
+							{
+								int			l_$field;
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, objv\[3\], f_$name, &v));
+								if (v) {
+									TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, v, &l_$field));
+									reply->$field = l_$field;
+								}
+							}
+						}}
+						uint64_t {subst {
+							{
+								Tcl_WideInt	l_$field;
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, objv\[3\], f_$name, &v));
+								if (v) {
+									TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, v, &l_$field));
+									reply->$field = l_$field;
+								}
+							}
+						}}
+						{uint64_t flags *} -
+						{uint32_t flags *} {
+							lassign $type coretype - flags
+							lappend use_extra	[set flagmap_$::flags]
+							subst {
+							{
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, objv\[3\], f_$name, &v));
+								if (v)
+									TEST_OK_LABEL(done, code, get_${flags}_from_list(interp, v, &reply->$field));
+							}
+							}
+						}
+						{struct fuseattr} {
+						}
+						{struct fuse_ksstatfs} {
+						}
+						{struct fise_file_lock} {
+						}
+						{char[]} {
+						}
+						default {
+							error "Unhandled type \"$type\""
+						}
+					}
+				}] \n]
+
+				TEST_OK_LABEL(done, code, fuse_write(interp, fd, buf, buflen));
+
+			done:
+				return code;
+			}
+		}]
+		lappend exported_symbols	fuse_write_$name
+		append exported_headers		"OBJCODE(fuse_write_$name);\n"
+
+		list \
+			options {-Wall -Werror -gdwarf-5} \
+			use		$fuse_io {*}$use_extra \
+			export	[list symbols $exported_symbols headers $exported_headers] \
+			code	$code
+	}
+
+	#>>>
 
 	# flagmap_initflag <<<
-	set flagmap_initflag	[gen_flag_map -name initflag -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+	set flagmap_initflags	[gen_flag_map -name initflags -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
 		FUSE_ASYNC_READ
 		FUSE_POSIX_LOCKS
 		FUSE_FILE_OPS
@@ -431,8 +608,22 @@ done:
 		EILSEQ
 	}]
 	#>>>
+	# fuse_write_init <<<
+	set fuse_write_init	[gen_fuse_writer -name init -fields {
+		uint32_t					major
+		uint32_t					minor
+		uint32_t					max_readahead
+		{uint32_t flags initflag}	flags
+		uint16_t					max_background
+		uint16_t					congestion_threshold
+		uint32_t					max_write
+		uint32_t					time_gran
+		uint16_t					max_pages
+		uint16_t					map_alignment
+	}]
+	# fuse_write_init >>>
 
-	set fusecmds	[list use $flagmap_initflag use $enummap_errno options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
+	set fusecmds	[list use $fuse_io use $flagmap_initflags use $enummap_errno use $fuse_write_init options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
 		#include <unistd.h>
 		#include <linux/fuse.h>
 		#include <errno.h>
@@ -577,25 +768,6 @@ done:
 		}
 
 		//@end=c@@begin=c@ >>>
-		static int get_fd_from_obj(Tcl_Interp* interp, Tcl_Obj* chan, int modereq, int* fd) //<<<
-		{
-			int			code = TCL_OK;
-			int			mode;
-			ClientData	fd_cdata;
-
-			Tcl_Channel channel = Tcl_GetChannel(interp, Tcl_GetString(chan), &mode);
-			if (channel == NULL) goto done;
-			if (mode & modereq == 0)
-				THROW_ERROR_LABEL(done, code, "chan mode doesn't meet requirements");
-
-			TEST_OK_LABEL(done, code, Tcl_GetChannelHandle(channel, modereq, &fd_cdata));
-			*fd = (Tcl_WideInt)fd_cdata;
-
-		done:
-			return code;
-		}
-
-		//@end=c@@begin=c@ >>>
 		static int lookup_opcode(Tcl_Interp* interp, uint32_t opcode, Tcl_Obj** opcodeObj) //<<<
 		{
 			int			code = TCL_OK;
@@ -712,26 +884,6 @@ done:
 		}
 
 		//>>>
-		static int fuse_write(Tcl_Interp* interp, int fd, void* buf, size_t len) //<<<
-		{
-			int		code = TCL_OK;
-			ssize_t	written = 0;
-
-			do {
-				const ssize_t wrote = write(fd, (void*)buf+written, len - written);
-				if (wrote == -1) {
-					if (errno = EINTR) continue;
-					THROW_POSIX_LABEL(done, code, "Error calling write on fuse fd");
-				}
-				written += wrote;
-				if (written < len) continue;
-			} while(0);
-
-		done:
-			return code;
-		}
-
-		//>>>
 		OBJCMD(write_error) { //<<<
 			int				code = TCL_OK;
 			Tcl_WideInt		unique;
@@ -789,8 +941,7 @@ done:
 					} elseif {[dict get $msg minor] < 34} {
 						error "Minor version too old"
 					}
-					jitc::capply $fusecmds write_fuse_init [dict create \
-						unique					[dict get $msg unique] \
+					jitc::capply $fusecmds write_fuse_init $fd [dict get $msg unique] [dict create \
 						major					7 \
 						minor					34 \
 						max_readahead			[expr {4*1048576}] \
@@ -802,6 +953,7 @@ done:
 						congestion_threshold	4 \
 						max_read				0 \
 						max_write				[expr {4*1048576}] \
+						time_gran				1000 \
 					]
 				}
 				
