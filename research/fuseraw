@@ -614,6 +614,11 @@ done:
 		FUSE_SETXATTR_EXT
 	}]
 	#>>>
+	# flagmap_getattr <<<
+	set flagmap_getattr	[gen_flag_map -name getattr -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+		FUSE_GETATTR_FH
+	}]
+	#>>>
 	# enummap_errno <<<
 	file delete -force /tmp/enummap_errno; file mkdir /tmp/enummap_errno
 	set enummap_errno	[gen_enum_map -name errno -headers errno.h -debug /tmp/enummap_errno -vals {
@@ -674,7 +679,16 @@ done:
 	# write_fuse_init >>>
 
 	file delete -force /tmp/fusecmds; file mkdir /tmp/fusecmds
-	set fusecmds	[list debug /tmp/fusecmds use $fuse_io use $flagmap_initflags use $enummap_errno use $write_fuse_init options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
+	set fusecmds	[list \
+		debug /tmp/fusecmds \
+		use $fuse_io \
+		use $flagmap_initflags \
+		use $flagmap_getattr \
+		use $enummap_errno \
+		use $write_fuse_init \
+		options {-Wall -Werror -gdwarf-5} \
+		code \
+	{//@begin=c@<<<
 		#include <unistd.h>
 		#include <linux/fuse.h>
 		#include <errno.h>
@@ -694,6 +708,8 @@ done:
 			LIT_MINOR,
 			LIT_MAX_READAHEAD,
 			LIT_FLAGS,
+			LIT_GETATTR_FLAGS,
+			LIT_FH,
 			_LIT_SIZE
 		};
 		//@end=c@@begin=c@
@@ -710,6 +726,8 @@ done:
 			"minor",
 			"max_readahead",
 			"flags",
+			"getattr_flags",
+			"fh",
 			NULL
 		};
 
@@ -718,7 +736,8 @@ done:
 		Tcl_Obj*		lit[_LIT_SIZE] = {0};
 		Tcl_Obj*		opcodes[fuse_opcode_max] = {0};
 		Tcl_Obj*		g_cuse_init = NULL;
-		#define fuse_default_readbuf_size	FUSE_MIN_READ_BUFFER
+		//#define fuse_default_readbuf_size	FUSE_MIN_READ_BUFFER
+		#define fuse_default_readbuf_size	5*1048576
 		size_t			readbufsize = fuse_default_readbuf_size;
 		static uint8_t	static_readbuf[fuse_default_readbuf_size] = {0};
 		static void*	readbuf = static_readbuf;
@@ -740,6 +759,22 @@ done:
 
 		done:
 			replace_tclobj(&kernflags, NULL);
+			return code;
+		}
+
+		//>>>
+		static int decode_fuse_getattr(Tcl_Interp* interp, uint32_t opcode, void* payload, Tcl_Obj* msg) //<<<
+		{
+			int						code = TCL_OK;
+			struct fuse_getattr_in*	p = payload;
+			Tcl_Obj*				flags = NULL;
+
+			TEST_OK_LABEL(done, code, get_list_from_initflags(interp, p->getattr_flags, &flags));
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_GETATTR_FLAGS], flags);
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_FH], Tcl_NewWideIntObj(p->fh)));
+
+		done:
+			replace_tclobj(&flags, NULL);
 			return code;
 		}
 
@@ -803,6 +838,7 @@ done:
 
 
 			decode[FUSE_INIT] = decode_fuse_init;
+			decode[FUSE_GETATTR] = decode_fuse_getattr;
 
 			return TCL_OK;
 		}
@@ -917,12 +953,6 @@ done:
 				} while(0);
 			}
 
-			if (req_header->opcode = FUSE_INIT) {
-				struct fuse_init_in*	fuse_init = readbuf+sizeof *req_header;
-				fprintf(stderr, "FUSE_INIT, major: %d, minor: %d, max_readahead: %d, flags: 0x%08x\n",
-					fuse_init->major, fuse_init->minor, fuse_init->max_readahead, fuse_init->flags);
-			}
-
 			replace_tclobj(&msg, Tcl_NewDictObj());
 
 			TEST_OK_LABEL(done, code, lookup_opcode(interp, req_header->opcode, &opcodeObj));
@@ -977,6 +1007,7 @@ done:
 	chan event $fd readable [list apply {fd {
 		global fusecmds
 
+		puts stderr "fuse fd readable"
 		try {
 			puts "read fuse msg: [timerate {
 			set msg	[jitc::capply $fusecmds read_fuse_req $fd]
@@ -1053,6 +1084,7 @@ done:
 			cleanup
 			return -options $options $errmsg
 		}
+		puts stderr "Leaving fuse fd readable cb"
 	}} $fd]
 
 	package require jitclib::tempdir
@@ -1117,9 +1149,11 @@ done:
 	set tempdir
 }]
 
-#puts stderr "Calling glob $tempdir/*"
-#puts stderr [glob $tempdir/*]
+puts stderr "Calling glob $tempdir/*"
+puts stderr [glob $tempdir/*]
+puts stderr "Mainthread waiting"
 after 3000
+puts stderr "Mainthread releasing fs_tid"
 
 thread::release $fs_tid
 
