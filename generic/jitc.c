@@ -230,7 +230,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, cdef, &oc, &ov));
 	if (oc % 2 == 1)
-		THROW_ERROR_LABEL(finally, code, "cdef must be a list with an even number of elements");
+		THROW_PRINTF_LABEL(finally, code, "cdef must be a list with an even number of elements (got %d): %s", oc, Tcl_GetString(cdef));
 
 	// First pass through the parts to check for a debugpath setting
 	for (i=0; i<oc; i+=2) {

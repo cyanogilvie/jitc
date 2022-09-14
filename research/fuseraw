@@ -225,6 +225,7 @@ set tempdir	[thread::send $fs_tid {
 	set fuse_io	{debug /tmp/fuse_io options {-Wall -Werror -gdwarf-5} export {
 			symbols	{fuse_write get_fd_from_obj}
 			header	{
+				#include <unistd.h>
 				int fuse_write(Tcl_Interp* interp, int fd, void* buf, size_t buflen);
 				int get_fd_from_obj(Tcl_Interp* interp, Tcl_Obj* chan, int modereq, int* fd);
 			}
@@ -299,7 +300,6 @@ set tempdir	[thread::send $fs_tid {
 		foreach header $headers {
 			append exported_headers	"#include <$header>\n"
 		}
-		append code \n
 
 		append code [subst {static const char* strs\[\] = {[join [lmap f $flags {
 			format {"%s"} $f
@@ -386,7 +386,6 @@ done:
 		foreach header $headers {
 			append exported_headers	"#include <$header>\n"
 		}
-		append code \n
 
 		append code [subst {static const char* strs\[\] = {[join [lmap v $vals {
 			format {"%s"} $v
@@ -445,12 +444,13 @@ done:
 	}
 
 	#>>>
-	proc gen_fuse_writer args { #<<<
+	proc gen_struct_converter args { #<<<
 		global fuse_io
 
 		parse_args $args {
 			-name		{-required}
 			-debug		{}
+			-headers	{-default {}}
 			-fields		{-required}
 		}
 
@@ -458,6 +458,19 @@ done:
 		set exported_headers	{}
 		set code				{}
 		set use_extra			{}
+
+		foreach header $headers {
+			append exported_headers	"#include <$header>\n"
+		}
+
+		set requirements_seen	{}
+		set require {var {
+			upvar 1 requirements_seen requirements_seen  use_extra use_extra
+			if {![dict exists $requirements_seen $var]} {
+				lappend use_extra	use [set $var]
+				dict set requirements_seen $var 1
+			}
+		}}
 
 		append code [subst {
 			[join [lmap {type field} $fields {subst {
@@ -477,17 +490,188 @@ done:
 				}}] \n]
 			}
 
+			int dict_to_struct_${name}(Tcl_Interp* interp, Tcl_Obj* dict, struct $name* out)
+			{
+				int				code = TCL_OK;
+				Tcl_Obj*		k = NULL;
+				Tcl_Obj*		v = NULL;
+				const size_t	buflen = sizeof(struct $name);
+				uint8_t			buf\[buflen\];
+
+				[join [lmap {type field} $fields {
+					switch -glob -- $type {
+						uint16_t -
+						int32_t -
+						uint32_t {subst {
+							{
+								int			l;
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								if (v) {
+									TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, v, &l));
+									out->$field = l;
+								}
+							}
+						}}
+						uint64_t {subst {
+							{
+								Tcl_WideInt	l;
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								if (v) {
+									TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, v, &l));
+									out->$field = l;
+								}
+							}
+						}}
+						{uint64_t flags *} -
+						{uint32_t flags *} {
+							lassign $type coretype - flags
+							apply $require ::flagmap_$flags
+							subst {
+							{
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								if (v)
+									TEST_OK_LABEL(done, code, get_${flags}_from_list(interp, v, &out->$field));
+							}
+							}
+						}
+						{struct *} {
+							set structname	[lindex $type 1]
+							apply $require ::struct_$structname
+							subst {
+							{
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								if (v)
+									TEST_OK_LABEL(done, code, dict_to_struct_${structname}(interp, v, &out->$field));
+							}
+							}
+						}
+						{string *} {
+							set lenfield	[lindex $type 1]
+							subst {
+							{
+								Tcl_Obj*	v = NULL;
+								int			len;
+
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								out->$field = Tcl_GetStringFromObj(v, &len);
+								out->$lenfield = len;
+							}
+						}}
+						default {
+							error "Unhandled type \"$type\""
+						}
+					}
+				}] \n]
+
+			done:
+				return code;
+			}
+
+			int struct_${name}_to_dict(Tcl_Interp* interp, struct $name* s, Tcl_Obj** out)
+			{
+				int				code = TCL_OK;
+				Tcl_Obj*		d = NULL;
+
+				replace_tclobj(&d, Tcl_NewDictObj());
+
+				[join [lmap {type field} $fields {
+					switch -glob -- $type {
+						int16_t - uint16_t - uint32_t - int32_t - int64_t - uint64_t {subst {
+							TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, d, f_$field, Tcl_NewWideIntObj(s->$field)));
+						}}
+						{uint64_t flags *} -
+						{uint32_t flags *} {
+							lassign $type coretype - flags
+							apply $require ::flagmap_$flags
+							subst {
+							{
+								Tcl_Obj*	t = NULL;
+								TEST_OK_LABEL(done$field, code, get_list_from_${flags}(interp, s->$field, &t));
+								TEST_OK_LABEL(done$field, code, Tcl_DictObjPut(interp, d, f_$field, t));
+							done$field:
+								replace_tclobj(&t, NULL);
+								if (code != TCL_OK) goto done;
+							}
+							}
+						}
+						{struct *} {
+							set structname	[lindex $type 1]
+							apply $require ::struct_$structname
+							subst {
+							{
+								Tcl_Obj*	t = NULL;
+								TEST_OK_LABEL(done$field, code, struct_${structname}_to_dict(interp, &s->$field, &t));
+								TEST_OK_LABEL(done$field, code, Tcl_DictObjPut(interp, d, f_$field, t));
+							done$field:
+								replace_tclobj(&t, NULL);
+								if (code != TCL_OK) goto done;
+							}
+							}
+						}
+						{string *} {
+							set lenfield	[lindex $type 1]
+							subst {
+							TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, d, f_$field, Tcl_NewStringObj(s->$field, s->$lenfield)));
+							}
+						}
+						default {
+							error "Unhandled type \"$type\""
+						}
+					}
+				}] \n]
+				replace_tclobj(out, d);
+
+			done:
+				replace_tclobj(&d, NULL);
+				return code;
+			}
+		}]
+		lappend exported_symbols	dict_to_struct_$name struct_${name}_to_dict
+		append exported_headers		"int dict_to_struct_${name}(Tcl_Interp* interp, Tcl_Obj* dict, struct $name* out);\n"
+		append exported_headers		"int struct_${name}_to_dict(Tcl_Interp* interp, struct $name* s, Tcl_Obj** out);\n"
+
+		if {[info exists debug]} {
+			set debug	[list debug $debug]
+		} else {
+			set debug	{}
+		}
+
+		list \
+			{*}$debug \
+			options {-Wall -Werror -gdwarf-5} \
+			{*}$use_extra \
+			export	[list symbols $exported_symbols header $exported_headers] \
+			code	$code
+	}
+
+	#>>>
+	proc gen_fuse_writer args { #<<<
+		global fuse_io
+
+		parse_args $args {
+			-name			{-required}
+			-debug			{}
+			-replystruct	{-required}
+		}
+
+		set exported_symbols	{}
+		set exported_headers	{}
+		set code				{}
+		set use_extra			{}
+
+		append code [subst {
 			OBJCMD(write_fuse_$name) {
 				int				code = TCL_OK;
 				int				fd;
 				Tcl_WideInt		unique;
-				Tcl_Obj*		k = NULL;
-				Tcl_Obj*		v = NULL;
-				int				done;
-				const size_t	buflen = sizeof(struct fuse_out_header) + sizeof(struct fuse_${name}_out);
+				const size_t	buflen = sizeof(struct fuse_out_header) + sizeof(struct $replystruct);
 				uint8_t			buf\[buflen\];
-				struct fuse_out_header*		hdr = (void*)buf;
-				struct fuse_${name}_out*	reply = ((void*)buf)+sizeof(struct fuse_out_header);
+				struct fuse_out_header*	hdr = (void*)buf;
+				struct $replystruct*	reply = ((void*)buf)+sizeof(struct fuse_out_header);
 
 				CHECK_ARGS(3, "fd unique msg");
 
@@ -498,62 +682,10 @@ done:
 					.len	= buflen,
 					.unique	= unique
 				};
-				*reply = (struct fuse_${name}_out){0};
+				*reply = (struct $replystruct){0};
+				TEST_OK_LABEL(done, code, dict_to_struct_${replystruct}(interp, objv\[3\], reply));
 
-				[join [lmap {type field} $fields {
-					switch -glob -- $type {
-						uint16_t -
-						int32_t -
-						uint32_t {subst {
-							{
-								int			l;
-								Tcl_Obj*	v = NULL;
-								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, objv\[3\], f_$field, &v));
-								if (v) {
-									TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, v, &l));
-									reply->$field = l;
-								}
-							}
-						}}
-						uint64_t {subst {
-							{
-								Tcl_WideInt	l;
-								Tcl_Obj*	v = NULL;
-								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, objv\[3\], f_$field, &v));
-								if (v) {
-									TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, v, &l));
-									reply->$field = l;
-								}
-							}
-						}}
-						{uint64_t flags *} -
-						{uint32_t flags *} {
-							lassign $type coretype - flags
-							lappend use_extra	use [set ::flagmap_$flags]
-							subst {
-							{
-								Tcl_Obj*	v = NULL;
-								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, objv\[3\], f_$field, &v));
-								if (v)
-									TEST_OK_LABEL(done, code, get_${flags}_from_list(interp, v, &reply->$field));
-							}
-							}
-						}
-						{struct fuseattr} {
-						}
-						{struct fuse_ksstatfs} {
-						}
-						{struct fise_file_lock} {
-						}
-						{char[]} {
-						}
-						default {
-							error "Unhandled type \"$type\""
-						}
-					}
-				}] \n]
-
-				fprintf(stderr, "Writing fuse_${name}_out: %ld bytes\\n", buflen);
+				fprintf(stderr, "Writing $replystruct: %ld bytes\\n", buflen);
 				TEST_OK_LABEL(done, code, fuse_write(interp, fd, buf, buflen));
 
 			done:
@@ -572,14 +704,15 @@ done:
 		list \
 			{*}$debug \
 			options {-Wall -Werror -gdwarf-5} \
-			use		$fuse_io {*}$use_extra \
+			use		$fuse_io \
+			use		[set ::struct_$replystruct] \
 			export	[list symbols $exported_symbols header $exported_headers] \
 			code	$code
 	}
 
 	#>>>
 
-	# flagmap_initflag <<<
+	# flagmap_initflags <<<
 	file delete -force /tmp/flagmap_initflags; file mkdir /tmp/flagmap_initflags
 	set flagmap_initflags	[gen_flag_map -name initflags -headers {stdint.h linux/fuse.h} -debug /tmp/flagmap_initflags -type uint32_t -flags {
 		FUSE_ASYNC_READ
@@ -617,6 +750,11 @@ done:
 	# flagmap_getattr <<<
 	set flagmap_getattr	[gen_flag_map -name getattr -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
 		FUSE_GETATTR_FH
+	}]
+	#>>>
+	# flagmap_attr <<<
+	set flagmap_attr	[gen_flag_map -name attr -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+		FUSE_ATTR_SUBMOUNT
 	}]
 	#>>>
 	# enummap_errno <<<
@@ -662,9 +800,42 @@ done:
 		EILSEQ
 	}]
 	#>>>
-	# write_fuse_init <<<
-	file delete -force /tmp/write_fuse_init; file mkdir /tmp/write_fuse_init
-	set write_fuse_init	[gen_fuse_writer -name init -debug /tmp/write_fuse_init -fields {
+	# struct fuse_getattr_in converter <<<
+	file delete -force /tmp/fuse_struct_getattr_in; file mkdir /tmp/fuse_struct_getattr_in
+	set struct_fuse_getattr_in	[gen_struct_converter -debug /tmp/fuse_struct_getattr_in -name fuse_getattr_in -headers {stdint.h linux/fuse.h} -fields {
+		{uint32_t flags getattr}	getattr_flags
+		uint64_t					fh
+	}]
+	#>>>
+	# struct fuse_attr converter <<<
+	set struct_fuse_attr	[gen_struct_converter -name fuse_attr -headers {stdint.h linux/fuse.h} -fields {
+		uint64_t					ino
+		uint64_t					size
+		uint64_t					blocks
+		uint64_t					atime
+		uint64_t					mtime
+		uint64_t					ctime
+		uint32_t					atimensec
+		uint32_t					mtimensec
+		uint32_t					ctimensec
+		uint32_t					mode
+		uint32_t					nlink
+		uint32_t					uid
+		uint32_t					gid
+		uint32_t					rdev
+		uint32_t					blksize
+		{uint32_t flags attr}		flags
+	}]
+	#>>>
+	# struct fuse_attr_out converter <<<
+	set struct_fuse_attr_out	[gen_struct_converter -name fuse_attr_out -headers {stdint.h linux/fuse.h} -fields {
+		uint64_t					attr_valid
+		uint32_t					attr_valid_nsec
+		{struct fuse_attr}			attr
+	}]
+	#>>>
+	# struct fuse_init_out converter <<<
+	set struct_fuse_init_out	[gen_struct_converter -name fuse_init_out -headers {stdint.h linux/fuse.h} -fields {
 		uint32_t					major
 		uint32_t					minor
 		uint32_t					max_readahead
@@ -676,17 +847,20 @@ done:
 		uint16_t					max_pages
 		uint16_t					map_alignment
 	}]
-	# write_fuse_init >>>
+	#>>>
 
 	file delete -force /tmp/fusecmds; file mkdir /tmp/fusecmds
 	set fusecmds	[list \
-		debug /tmp/fusecmds \
-		use $fuse_io \
-		use $flagmap_initflags \
-		use $flagmap_getattr \
-		use $enummap_errno \
-		use $write_fuse_init \
-		options {-Wall -Werror -gdwarf-5} \
+		debug	/tmp/fusecmds \
+		use		$fuse_io \
+		use		$flagmap_initflags \
+		use		$flagmap_getattr \
+		use		$flagmap_attr \
+		use		$enummap_errno \
+		use		$struct_fuse_getattr_in \
+		use		[gen_fuse_writer -name init		-replystruct fuse_init_out] \
+		use		[gen_fuse_writer -name attr_out	-replystruct fuse_attr_out] \
+		options	{-Wall -Werror -gdwarf-5} \
 		code \
 	{//@begin=c@<<<
 		#include <unistd.h>
@@ -708,8 +882,9 @@ done:
 			LIT_MINOR,
 			LIT_MAX_READAHEAD,
 			LIT_FLAGS,
-			LIT_GETATTR_FLAGS,
-			LIT_FH,
+			//LIT_GETATTR_FLAGS,
+			//LIT_FH,
+			LIT_IN,
 			_LIT_SIZE
 		};
 		//@end=c@@begin=c@
@@ -726,8 +901,9 @@ done:
 			"minor",
 			"max_readahead",
 			"flags",
-			"getattr_flags",
-			"fh",
+			//"getattr_flags",
+			//"fh",
+			"in",
 			NULL
 		};
 
@@ -742,14 +918,16 @@ done:
 		static uint8_t	static_readbuf[fuse_default_readbuf_size] = {0};
 		static void*	readbuf = static_readbuf;
 
-		typedef int (opcode_decoder)(Tcl_Interp* interp, uint32_t opcode, void* payload, Tcl_Obj* msg);
+		typedef int (opcode_decoder)(Tcl_Interp* interp, void* payload, Tcl_Obj** in);
 		opcode_decoder*	decode[fuse_opcode_max] = {0};
 
-		static int decode_fuse_init(Tcl_Interp* interp, uint32_t opcode, void* payload, Tcl_Obj* msg) //<<<
+		static int decode_fuse_init(Tcl_Interp* interp, struct fuse_init_in* p, Tcl_Obj** in) //<<<
 		{
 			int						code = TCL_OK;
-			struct fuse_init_in*	p = payload;
 			Tcl_Obj*				kernflags = NULL;
+			Tcl_Obj*				msg = NULL;
+
+			replace_tclobj(&msg, Tcl_NewDictObj());
 
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MAJOR], Tcl_NewWideIntObj(p->major)));
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MINOR], Tcl_NewWideIntObj(p->minor)));
@@ -757,12 +935,16 @@ done:
 			TEST_OK_LABEL(done, code, get_list_from_initflags(interp, p->flags, &kernflags));
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_FLAGS], kernflags));
 
+			replace_tclobj(in, msg);
+
 		done:
+			replace_tclobj(&msg, NULL);
 			replace_tclobj(&kernflags, NULL);
 			return code;
 		}
 
 		//>>>
+		#if 0
 		static int decode_fuse_getattr(Tcl_Interp* interp, uint32_t opcode, void* payload, Tcl_Obj* msg) //<<<
 		{
 			int						code = TCL_OK;
@@ -770,7 +952,7 @@ done:
 			Tcl_Obj*				flags = NULL;
 
 			TEST_OK_LABEL(done, code, get_list_from_initflags(interp, p->getattr_flags, &flags));
-			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_GETATTR_FLAGS], flags);
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_GETATTR_FLAGS], flags));
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_FH], Tcl_NewWideIntObj(p->fh)));
 
 		done:
@@ -779,6 +961,7 @@ done:
 		}
 
 		//>>>
+		#endif
 
 		//@end=c@@begin=c@
 		INIT { //<<<
@@ -837,8 +1020,8 @@ done:
 				replace_tclobj(&lit[i], Tcl_NewStringObj(lit_strs[i], -1));
 
 
-			decode[FUSE_INIT] = decode_fuse_init;
-			decode[FUSE_GETATTR] = decode_fuse_getattr;
+			decode[FUSE_INIT]		= (opcode_decoder*)decode_fuse_init;
+			decode[FUSE_GETATTR]	= (opcode_decoder*)struct_fuse_getattr_in_to_dict;
 
 			return TCL_OK;
 		}
@@ -912,7 +1095,6 @@ done:
 
 			req_header = readbuf;
 			if (got_header < req_header->len) {
-				const ssize_t	taillen = req_header->len - sizeof *req_header;
 				ssize_t			remain = req_header->len - got_header;
 
 				if (remain > readbufsize) {
@@ -964,8 +1146,14 @@ done:
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_PID], Tcl_NewWideIntObj(req_header->pid)));
 			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_TAIL], Tcl_NewByteArrayObj(readbuf+sizeof *req_header, req_header->len-sizeof(*req_header))));
 
-			if (req_header->opcode < fuse_opcode_max && decode[req_header->opcode])
-				TEST_OK_LABEL(done, code, (decode[req_header->opcode])(interp, req_header->opcode, readbuf+sizeof *req_header, msg));
+			if (req_header->opcode < fuse_opcode_max && decode[req_header->opcode]) {
+				Tcl_Obj*	in = NULL;
+				TEST_OK_LABEL(donein, code, (decode[req_header->opcode])(interp, readbuf+sizeof *req_header, &in));
+				TEST_OK_LABEL(donein, code, Tcl_DictObjPut(interp, msg, lit[LIT_IN], in));
+			donein:
+				replace_tclobj(&in, NULL);
+				if (code != TCL_OK) goto done;
+			}
 
 			Tcl_SetObjResult(interp, msg);
 
@@ -986,7 +1174,7 @@ done:
 			CHECK_ARGS(3, "fd unique errno");
 
 			TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv[1], TCL_WRITABLE, &fd));
-			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[2], &unique))
+			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[2], &unique));
 			TEST_OK_LABEL(done, code, get_errno_from_obj(interp, objv[3], &err));
 
 			struct fuse_out_header	hdr = {
@@ -1035,12 +1223,12 @@ done:
 				FUSE_INIT {
 					if {[incr ::fuse_init_count] > 2} {error "FUSE_INIT loop, bailing"}
 
-					if {[dict get $msg major] > 7} {
+					if {[dict get $msg in major] > 7} {
 						# TODO: reply with just major 7
 						error "Major protocol version mismatch and negotiation not supported"
-					} elseif {[dict get $msg major] < 7} {
+					} elseif {[dict get $msg in major] < 7} {
 						error "Major protocol version from kernel is too old"
-					} elseif {[dict get $msg minor] < 34} {
+					} elseif {[dict get $msg in minor] < 34} {
 						error "Minor version too old"
 					}
 					jitc::capply $fusecmds write_fuse_init $fd [dict get $msg unique] [dict create \
@@ -1059,7 +1247,36 @@ done:
 						time_gran				1000 \
 					]
 				}
-				
+
+				FUSE_GETATTR {
+					set now_us	[clock microseconds]
+					set now_s	[expr {$now_us/1000000}]
+					set now_ns	[expr {($now_us%1000000) * 1000}]
+					if {[dict get $msg nodeid] == 1} { # Root
+						jitc::capply $fusecmds write_fuse_attr_out $fd [dict get $msg unique] [dict create \
+							attr_valid		2 \
+							attr_valid_nsec	500 \
+							attr [list \
+								ino			[dict get $msg nodeid] \
+								size		4096 \
+								blocks		8 \
+								atime		$now_s \
+								mtime		$now_s \
+								ctime		$now_s \
+								atimensec	$now_ns \
+								mtimensec	$now_ns \
+								ctimensec	$now_ns \
+								mode		0o40755 \
+								nlink		2 \
+								uid			1000 \
+								gid			1000 \
+								blksize		4096 \
+								flags {
+								} \
+							] \
+						]
+					}
+				}
 
 				default {
 					error "opcode ([dict get $msg opcode]) not handled"
