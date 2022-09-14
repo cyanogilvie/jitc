@@ -273,7 +273,7 @@ research: binaries libraries dedup
 			-load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
 			[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]" \
 			$(TESTFLAGS)
-	$(TCLSH_ENV) $(PKG_ENV) \
+	$(TCLSH_ENV) $(PKG_ENV) unshare --map-current-user --keep-caps --mount --kill-child=SIGKILL -- \
 		$(TCLSH_PROG) `@CYGPATH@ $(srcdir)/research/run.tcl` \
 			-load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
 			[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]" \
