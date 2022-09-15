@@ -343,7 +343,7 @@ done:
 	replace_tclobj(&acc, Tcl_NewListObj(0, NULL));
 
 	for (int i=0; i<$size; i++)
-		if (flags & map\[i\] == map\[i\])
+		if ((flags & map\[i\]) == map\[i\])
 			TEST_OK_LABEL(done, code, Tcl_ListObjAppendElement(interp, acc, objs\[i\]));
 
 	replace_tclobj(list, acc);
@@ -768,7 +768,9 @@ done:
 	}]
 	#>>>
 	# flagmap_open <<<
-	set flagmap_open	[gen_flag_map -name open -headers {fcntl.h sys/stat.h} -flags {
+	set debugdir	/tmp/flagmap_open
+	file delete -force $debugdir; file mkdir $debugdir
+	set flagmap_open	[gen_flag_map -debug $debugdir -name open -headers {fcntl.h sys/stat.h} -flags {
 		O_APPEND
 		O_ASYNC
 		O_CLOEXEC
@@ -817,6 +819,11 @@ done:
 	# flagmap_fuse_open <<<
 	set flagmap_fuse_open	[gen_flag_map -name fuse_open -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
 		FUSE_OPEN_KILL_SUIDGID
+	}]
+	#>>>
+	# flagmap_fuse_read <<<
+	set flagmap_fuse_read	[gen_flag_map -name fuse_read -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+		FUSE_READ_LOCKOWNER
 	}]
 	#>>>
 	# enummap_errno <<<
@@ -870,7 +877,9 @@ done:
 	}]
 	#>>>
 	# struct fuse_open_in converter <<<
-	set struct_fuse_open_in	[gen_struct_converter -name fuse_open_in -headers {stdint.h linux/fuse.h} -fields {
+	set debugdir	/tmp/struct_fuse_open_in
+	file delete -force $debugdir; file mkdir $debugdir
+	set struct_fuse_open_in	[gen_struct_converter -debug $debugdir -name fuse_open_in -headers {stdint.h linux/fuse.h} -fields {
 		{uint32_t flags open}	flags
 		{uint32_t flags fopen}	open_flags
 	}]
@@ -922,21 +931,34 @@ done:
 		uint16_t					map_alignment
 	}]
 	#>>>
+	# struct fuse_read_in converter <<<
+	file delete -force /tmp/fuse_read_in; file mkdir /tmp/fuse_read_in
+	set struct_fuse_read_in	[gen_struct_converter -debug /tmp/fuse_read_in -name fuse_read_in -headers stdint.h -fields {
+		uint64_t					fh
+		uint64_t					offset
+		uint32_t					size
+		{uint32_t flags fuse_read}	read_flags
+		uint64_t					lock_owner
+		uint32_t					flags
+	}]
+	#>>>
+
+	package require jitclib::obstackpool
 
 	file delete -force /tmp/fusecmds; file mkdir /tmp/fusecmds
-	set fusecmds	[list \
+	interp alias {} fusecmds {} ::jitc::capply [list \
 		debug	/tmp/fusecmds \
+		options	{-Wall -Werror -gdwarf-5} \
 		use		$fuse_io \
 		use		$flagmap_initflags \
-		use		$flagmap_getattr \
-		use		$flagmap_attr \
 		use		$enummap_errno \
 		use		$struct_fuse_getattr_in \
 		use		$struct_fuse_open_in \
-		use		[gen_fuse_writer -name init		-replystruct fuse_init_out] \
+		use		$struct_fuse_read_in \
+		use		$jitclib::obstackpool \
+		use		[gen_fuse_writer -name init_out	-replystruct fuse_init_out] \
 		use		[gen_fuse_writer -name attr_out	-replystruct fuse_attr_out] \
 		use		[gen_fuse_writer -name open_out	-replystruct fuse_open_out] \
-		options	{-Wall -Werror -gdwarf-5} \
 		code \
 	{//@begin=c@<<<
 		#include <unistd.h>
@@ -959,8 +981,6 @@ done:
 			LIT_MINOR,
 			LIT_MAX_READAHEAD,
 			LIT_FLAGS,
-			//LIT_GETATTR_FLAGS,
-			//LIT_FH,
 			LIT_IN,
 			LIT_BLOCKED,
 			LIT_EOF,
@@ -982,8 +1002,6 @@ done:
 			"minor",
 			"max_readahead",
 			"flags",
-			//"getattr_flags",
-			//"fh",
 			"in",
 			"_state blocked",
 			"_state eof",
@@ -1029,24 +1047,6 @@ done:
 		}
 
 		//>>>
-		#if 0
-		static int decode_fuse_getattr(Tcl_Interp* interp, uint32_t opcode, void* payload, Tcl_Obj* msg) //<<<
-		{
-			int						code = TCL_OK;
-			struct fuse_getattr_in*	p = payload;
-			Tcl_Obj*				flags = NULL;
-
-			TEST_OK_LABEL(done, code, get_list_from_initflags(interp, p->getattr_flags, &flags));
-			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_GETATTR_FLAGS], flags));
-			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_FH], Tcl_NewWideIntObj(p->fh)));
-
-		done:
-			replace_tclobj(&flags, NULL);
-			return code;
-		}
-
-		//>>>
-		#endif
 
 		//@end=c@@begin=c@
 		INIT { //<<<
@@ -1107,6 +1107,7 @@ done:
 			decode[FUSE_INIT]		= (opcode_decoder*)decode_fuse_init;
 			decode[FUSE_GETATTR]	= (opcode_decoder*)struct_fuse_getattr_in_to_dict;
 			decode[FUSE_OPENDIR]	= (opcode_decoder*)struct_fuse_open_in_to_dict;
+			decode[FUSE_READDIR]	= (opcode_decoder*)struct_fuse_read_in_to_dict;
 
 			return TCL_OK;
 		}
@@ -1277,7 +1278,7 @@ done:
 			TEST_OK_LABEL(done, code, fuse_write(interp, fd, &hdr, sizeof hdr));
 
 		done:
-			return TCL_OK;
+			return code;
 		}
 
 		//>>>
@@ -1292,9 +1293,83 @@ done:
 		}
 
 		//>>>
-	//@end=c@>>>}]
+		OBJCMD(write_fuse_readdir_out) { //<<<
+			int						code = TCL_OK;
+			struct obstack*			ob = NULL;
+			struct fuse_out_header*	hdr = NULL;
+			Tcl_Obj**				dv = NULL;
+			int						dc;
+			Tcl_WideInt				unique, size, off;
+			int						i;
+			int						fd;
 
-	interp alias {} fusecmds {} ::jitc::capply $fusecmds
+			CHECK_ARGS(5, "fd unique off size dirents");
+
+			TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv[1], TCL_WRITABLE, &fd));
+			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[2], &unique));
+			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[3], &off));
+			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[4], &size));
+			TEST_OK_LABEL(done, code, Tcl_ListObjGetElements(interp, objv[5], &dc, &dv));
+
+			ob = obstack_pool_get(OBSTACK_POOL_MEDIUM);
+
+			obstack_blank(ob, sizeof(*hdr));
+
+			for (i=off; i<dc; i++) {
+				int			namelen;
+				Tcl_WideInt	inode;
+				Tcl_WideInt	type;
+				Tcl_Obj**	dentv = NULL;
+				int			dentc;
+
+				TEST_OK_LABEL(done, code, Tcl_ListObjGetElements(interp, dv[i], &dentc, &dentv));
+				if (dentc != 3) THROW_ERROR_LABEL(done, code, "dirent must be a list of elements: name, inode, type");
+
+				const char*			name = Tcl_GetStringFromObj(dentv[0], &namelen);
+				TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, dentv[1], &inode));
+				TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, dentv[2], &type));
+
+				const int			sizenow = obstack_object_size(ob);
+				const int			padding = FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET + namelen);
+				const int			dentsize = sizeof(struct fuse_dirent) + namelen + padding;
+
+				if (sizenow + dentsize > size) break;
+
+				struct fuse_dirent d = {
+					.ino		= inode,
+					.off		= i,
+					.namelen	= namelen,
+					.type		= (type & S_IFMT) >> 12
+				};
+
+				obstack_grow(ob, &d, sizeof(d));
+				obstack_grow(ob, name, namelen+1);	// +1 - copy the null terminator too
+				obstack_blank(ob, padding-1);
+			}
+
+			const int	len = obstack_object_size(ob);
+			hdr = obstack_finish(ob);
+			*hdr = (struct fuse_out_header){
+				.len	= len,
+				.unique	= unique
+			};
+
+			TEST_OK_LABEL(done, code, fuse_write(interp, fd, &hdr, hdr->len));
+
+			fprintf(stderr, "Wrote %ld bytes out, %d entries, is all? %d\n", hdr->len, i, i==dc);
+
+			Tcl_SetObjResult(interp, i == dc ? lit[LIT_TRUE] : lit[LIT_FALSE]);
+
+		done:
+			if (ob) {
+				obstack_pool_release(ob);
+				ob = NULL;
+			}
+			return code;
+		}
+
+		//>>>
+	//@end=c@>>>}]
 
 	proc fstime usec {list [expr {$usec/1000000}] [expr {($usec%1000000) * 1000}]}
 
@@ -1306,8 +1381,12 @@ done:
 	proc fopen {inode mode} { #<<<
 		global nodes handles fh_seq
 		set fh	[incr fh_seq]
-		if {![dict exists nodes $inode]} {throw fuse_posix ENOENT}
+		if {![dict exists $nodes $inode]} {throw fuse_posix ENOENT}
 		# TODO: check mode
+		dict set handles $fh [dict create \
+			inode	$inode \
+			offset	0 \
+		]
 		set fh
 	}
 
@@ -1323,6 +1402,7 @@ done:
 	lassign [fstime [clock microseconds]] now_s now_ns
 	dict set nodes 1 [list \
 		ino			1 \
+		parent		1 \
 		size		4096 \
 		blocks		8 \
 		atime		$now_s \
@@ -1392,7 +1472,7 @@ done:
 						} elseif {[dict get $msg in minor] < 34} {
 							error "Minor version too old"
 						}
-						fusecmds write_fuse_init $fd [dict get $msg unique] [dict create \
+						fusecmds write_fuse_init_out $fd [dict get $msg unique] [dict create \
 							major					7 \
 							minor					34 \
 							max_readahead			[expr {4*1048576}] \
@@ -1437,11 +1517,39 @@ done:
 					}
 
 					FUSE_OPENDIR {
+						puts stderr "handling FUSE_OPENDIR"
 						set fh	[fopen [dict get $msg nodeid] 0]
+						puts stderr "assigned fh: ($fh)"
 						fusecmds write_fuse_open_out $fd [dict get $msg unique] [dict create \
 							fh			$fh \
 							open_flags	{} \
 						]
+					}
+
+					FUSE_READDIR {
+						puts stderr "Handling FUSE_READDIR"
+						set fh		[dict get $msg in fh]
+						if {![dict exists $handles $fh]} {throw fuse_posix EBADF}
+						set inode	[dict get $handles $fh inode]
+						if {![dict exists $nodes $inode]} {throw fuse_posix ENOENT}
+						set off		[dict get $msg in offset]
+						set size	[dict get $msg in size]
+						set dir		[dict get $nodes $inode]
+						if {![fusecmds is_dir [dict get $dir mode]]} {throw fuse_posix ENOTDIR}
+						set parent	[dict get $dir parent]
+						if {$off == 0 || ![dict exists $handles $fh dirents]} {
+							dict set handles $fh dirents [list \
+								[list .  $inode  [dict get $dir mode]] \
+								[list .. $parent [dict get $nodes $parent mode]] \
+								{*}[lmap {name ino} [dict get $dir children] {
+									list $name $ino [dict get $nodes $ino mode]
+								}] \
+							]
+						}
+						if {[fusecmds write_fuse_readdir_out $fd [dict get $msg unique] $off $size [dict get $handles $fh dirents]]} {
+							# Used all entries
+							dict unset handles $fh dirents
+						}
 					}
 
 					default {
@@ -1458,8 +1566,9 @@ done:
 				#	puts stderr "$v: $v"
 				#}
 				#puts stderr "payload: [regexp -all -inline .. [binary encode hex $tail]]"
-			} trap fuse_posix {errmsg options} {
-				fusecmds write_error $fd [dict get $msg unique] $errmsg
+			} trap fuse_posix {errno options} {
+				puts stderr "Throwing posix exception: $errno"
+				fusecmds write_error $fd [dict get $msg unique] $errno
 			} on error {errmsg options} {
 				puts "fuse fd readable error [dict get $options -errorcode]: [dict get $options -errorinfo]"
 				if {[info exists msg] && [dict exists $msg unique]} {
@@ -1536,7 +1645,8 @@ done:
 }]
 
 puts stderr "Calling glob $tempdir/*"
-puts stderr [glob $tempdir/*]
+#puts stderr "Glob: ([glob -types hidden $tempdir/*])"
+puts stderr "ls: [exec ls -a $tempdir]"
 puts stderr "Mainthread waiting"
 after 3000
 puts stderr "Mainthread releasing fs_tid"
