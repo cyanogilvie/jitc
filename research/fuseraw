@@ -888,6 +888,12 @@ done:
 		FUSE_READ_LOCKOWNER
 	}]
 	#>>>
+	# flagmap_fuse_read <<<
+	set flagmap_fuse_release	[gen_flag_map -name fuse_release -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+		FUSE_RELEASE_FLUSH
+		FUSE_RELEASE_FLOCK_UNLOCK
+	}]
+	#>>>
 	# enummap_errno <<<
 	file delete -force /tmp/enummap_errno; file mkdir /tmp/enummap_errno
 	set enummap_errno	[gen_enum_map -name errno -headers errno.h -debug /tmp/enummap_errno -vals {
@@ -1004,6 +1010,14 @@ done:
 		uint32_t					flags
 	}]
 	#>>>
+	# struct fuse_release_in converter <<<
+	set struct_fuse_release_in	[gen_struct_converter -name fuse_release_in -headers stdint.h -fields {
+		uint64_t						fh
+		uint32_t						flags
+		{uint32_t flags fuse_release}	release_flags
+		uint64_t						lock_owner
+	}]
+	#>>>
 
 	package require jitclib::obstackpool
 
@@ -1019,6 +1033,7 @@ done:
 		use		$struct_fuse_getattr_in \
 		use		$struct_fuse_open_in \
 		use		$struct_fuse_read_in \
+		use		$struct_fuse_release_in \
 		use		$jitclib::obstackpool \
 		use		[gen_fuse_writer -name init_out	-replystruct fuse_init_out] \
 		use		[gen_fuse_writer -name attr_out	-replystruct fuse_attr_out] \
@@ -1174,6 +1189,7 @@ done:
 			decode[FUSE_GETATTR]	= (opcode_decoder*)struct_fuse_getattr_in_to_dict;
 			decode[FUSE_OPENDIR]	= (opcode_decoder*)struct_fuse_open_in_to_dict;
 			decode[FUSE_READDIR]	= (opcode_decoder*)struct_fuse_read_in_to_dict;
+			decode[FUSE_RELEASEDIR]	= (opcode_decoder*)struct_fuse_release_in_to_dict;
 
 			return TCL_OK;
 		}
@@ -1338,6 +1354,28 @@ done:
 			struct fuse_out_header	hdr = {
 				.len		= sizeof hdr,
 				.error		= err,
+				.unique		= unique
+			};
+
+			TEST_OK_LABEL(done, code, fuse_write(interp, fd, &hdr, sizeof hdr));
+
+		done:
+			return code;
+		}
+
+		//>>>
+		OBJCMD(write_empty) { //<<<
+			int				code = TCL_OK;
+			Tcl_WideInt		unique;
+			int				fd;
+
+			CHECK_ARGS(2, "fd unique");
+
+			TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
+			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[2], &unique));
+
+			struct fuse_out_header	hdr = {
+				.len		= sizeof hdr,
 				.unique		= unique
 			};
 
@@ -1661,6 +1699,12 @@ done:
 						}
 					}
 
+					FUSE_RELEASEDIR {
+						set fh		[dict get $msg in fh]
+						fclose $fh
+						fusecmds write_empty $fd [dict get $msg unique]
+					}
+
 					default {
 						error "opcode ([dict get $msg opcode]) not handled"
 					}
@@ -1693,26 +1737,8 @@ done:
 
 	set fd	[fusecmds open_fuse]
 
-	proc poll {} {
-		global fd
-		puts stderr "poll"
-		try {
-			readable $fd
-		} on error {errmsg options} {
-			puts stderr "Error from readable: [dict get $options -errorinfo]"
-		} on ok {} {
-			after 5000 poll
-		}
-	}
-
-	#after 5000 poll
-
 	package require jitclib::tempdir
 	set tempdir	[jitc::capply $::jitclib::tempdir tempdir fuseraw_test_]
-	#catch {exec umount -f /tmp/fuseraw_test_manual}
-	#file delete -force /tmp/fuseraw_test_manual
-	#file mkdir /tmp/fuseraw_test_manual
-	#set tempdir /tmp/fuseraw_test_manual
 
 	file delete -force /tmp/dbg
 	file mkdir /tmp/dbg
@@ -1752,8 +1778,6 @@ done:
 	}}
 
 	#>>>
-	puts stderr "compiling mount"
-	puts stderr "mount symbols: [jitc::symbols $mount]"
 
 	if 1 {
 		puts stderr "Calling mount ([info exists mount]) on $tempdir: [exec ls -ald $tempdir]"
