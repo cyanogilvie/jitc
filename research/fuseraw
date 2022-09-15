@@ -49,7 +49,6 @@ puts "cat $mountpoint/foo: ([exec cat $mountpoint/foo])"
 } 1 1]"
 puts "ls /: [timerate {exec ls /} 1 1], benchmark: [timerate {exec ls /}]"
 }
-
 file delete -force -- /tmp/jitc_debugfiles
 file mkdir /tmp/jitc_debugfiles
 proc unshare args { #<<<
@@ -145,15 +144,61 @@ puts "Wrote uid_map and gid_map"
 package require Thread
 set fs_tid	[thread::create -joinable -preserved {proc cleanup {} {}; thread::wait; cleanup}]
 thread::send $fs_tid $::_threadinit
+thread::send $fs_tid [list set ::_threadinit $::_threadinit]
 set tempdir	[thread::send $fs_tid {
 	package require jitc
 	package require parse_args
 	namespace import ::parse_args::*
 
+	set mount {debug /tmp/dbg options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
+		#include <sys/mount.h>
+		#include <stdio.h>
+		#include <unistd.h>
+		#include <fcntl.h>
+
+		OBJCMD(do_mount) {
+			int			code = TCL_OK;
+			Tcl_Obj*	fsargs = NULL;
+			int			fd;
+
+			CHECK_ARGS(2, "fd mountpoint");
+
+			TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
+			int mountpoint_len;
+			const char* mountpoint = Tcl_GetStringFromObj(objv[2], &mountpoint_len);
+
+			fcntl(fd, F_SETFD, 0);
+
+			replace_tclobj(&fsargs, Tcl_ObjPrintf("fd=%d,rootmode=%o,user_id=1000,group_id=1000", fd, S_IFDIR));
+
+			fprintf(stderr, "Calling mount(), mountpoint: (%s), fsargs: (%s)\n", mountpoint, Tcl_GetString(fsargs));
+			//const int mount_rc = mount("fuseraw", mountpoint, "fuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
+			const int mount_rc = mount("fuse", mountpoint, "fuse", 0, Tcl_GetString(fsargs));
+			if (mount_rc == -1)
+				THROW_POSIX_LABEL(done, code, "Error calling mount");
+
+		done:
+			replace_tclobj(&fsargs, NULL);
+			return code;
+		}
+
+		//@end=c@
+	}}
+
+	#>>>
+	puts stderr "compiling mount"
+	puts stderr "mount symbols: [jitc::symbols $mount]"
+
 	proc cleanup {} { #<<<
-		global fd tempdir
+		global fd tempdir epoll_tid
 
 		puts stderr "In fs_tid cleanup"
+
+		if {[info exists epoll_tid]} {
+			thread::send -async $epoll_tid [list set running 0]
+			thread::release $epoll_tid
+			unset epoll_tid
+		}
 
 		set mountpoint_busy	0
 		try {
@@ -170,9 +215,9 @@ set tempdir	[thread::send $fs_tid {
 		#puts stderr "Processing event queue after umount"
 		#update
 
-		if {[info exists fd] && $fd in [chan names]} {
+		if {[info exists fd]} {
 			puts stderr "Closing fd"
-			close $fd
+			fusecmds close_fuse $fd
 			unset fd
 		}
 
@@ -185,49 +230,92 @@ set tempdir	[thread::send $fs_tid {
 
 	#>>>
 
-	set fd	[open /dev/fuse r+]
-	chan configure $fd -blocking 0 -buffering none -translation binary
+	# epoll thread <<<
+	set epoll_tid	[thread::create -preserved]
+	thread::send $epoll_tid	$::_threadinit
+	thread::send $epoll_tid {
+		package require jitc
+
+		interp alias {} poll_fd {} jitc::capply [list \
+			options		{-Wall -Werror -gdwarf-5} \
+			code {//@begin=c@
+				#include <sys/epoll.h>
+
+				OBJCMD(waitfor_fd) //<<<
+				{
+					int				code = TCL_OK;
+					int				timeout;
+					int				epollfd = 0;
+					int				fd;
+
+					CHECK_ARGS(2, "fd timeout_ms");
+
+					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
+					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[2], timeout));
+
+					epollfd = epoll_create1(EPOLL_CLOEXEC);
+					if (epollfd == -1) THROW_POSIX_LABEL(done, code, "Error creating epollfd");
+					constint			max_events = 100;
+					struct epoll_event	events[max_events];
+					struct epoll_event	ev;
+
+					ev,events = EPOLLIN | EPOLLET;
+					ev.data.ptr = NULL;
+					epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &ev);
+
+					for (;;) {
+						const int nfds = epoll_wait(epollfd, events, max_events, timeout);
+						if (-1 == nfds) {
+							if (errno == EINTR) continue;
+							THROW_POSIX_LABEL(done, code, "Error from epoll_wait");
+						}
+
+						// Return true if we timed out
+						Tcl_SetObjResult(interp, nfds == 0 ? lit[LIT_TRUE] : lit[LIT_FALSE]);
+						goto done;
+					}
+
+				done:
+					if (epollfd) {
+						close(epollfd);
+						epollfd = 0;
+					}
+					return code;
+				}
+
+				//>>>
+			//@end=c@} \
+		]
+
+		proc poll {fd cb} {
+			global running
+
+			set timeout	[poll_fd $fd]
+			puts stderr "epoll thread epoll_fd returned: $timeout"
+			if {!$timeout && $running} {
+				uplevel #0 $cb
+			}
+			if {$running} {
+				after idle [list poll $fd $cb]
+			}
+		}
+
+		set running 1
+	}
+	# epoll thread >>>
 
 	proc readfile fn {
 		set h	[open $fn r]
 		try {read $h} finally {close $h}
 	}
 
-	set lookup_fd	{options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
-		#include <sys/mount.h>
-		#include <stdio.h>
-
-		OBJCMD(native) {
-			int			code = TCL_OK;
-			Tcl_Obj*	fsargs = NULL;
-			ClientData	fd_cdata;
-			Tcl_Channel	chan;
-
-			CHECK_ARGS(1, "chan");
-
-			int mode;
-			chan = Tcl_GetChannel(interp, Tcl_GetString(objv[1]), &mode);
-			if (chan == NULL) goto done;
-			if (mode & TCL_READABLE == 0 || mode & TCL_WRITABLE == 0)
-				THROW_ERROR_LABEL(done, code, "chan must be readable and writable");
-
-			TEST_OK_LABEL(done, code, Tcl_GetChannelHandle(chan, TCL_READABLE, &fd_cdata));
-			Tcl_SetObjResult(interp, Tcl_NewWideIntObj((Tcl_WideInt)fd_cdata));
-
-		done:
-			replace_tclobj(&fsargs, NULL);
-			return code;
-		}
-	//@end=c@>>>}}
-
 	# fuse_io <<<
 	file delete -force /tmp/fuse_io; file mkdir /tmp/fuse_io
 	set fuse_io	{debug /tmp/fuse_io options {-Wall -Werror -gdwarf-5} export {
-			symbols	{fuse_write get_fd_from_obj}
+			symbols	{fuse_write}
 			header	{
 				#include <unistd.h>
 				int fuse_write(Tcl_Interp* interp, int fd, void* buf, size_t buflen);
-				int get_fd_from_obj(Tcl_Interp* interp, Tcl_Obj* chan, int modereq, int* fd);
 			}
 		}
 		code {//@begin=c@
@@ -255,25 +343,6 @@ set tempdir	[thread::send $fs_tid {
 			}
 
 			//>>>@end=c@@begin=c@
-			int get_fd_from_obj(Tcl_Interp* interp, Tcl_Obj* chan, int modereq, int* fd) //<<<
-			{
-				int			code = TCL_OK;
-				int			mode;
-				ClientData	fd_cdata;
-
-				Tcl_Channel channel = Tcl_GetChannel(interp, Tcl_GetString(chan), &mode);
-				if (channel == NULL) goto done;
-				if (mode & modereq == 0)
-					THROW_ERROR_LABEL(done, code, "chan mode doesn't meet requirements");
-
-				TEST_OK_LABEL(done, code, Tcl_GetChannelHandle(channel, modereq, &fd_cdata));
-				*fd = (Tcl_WideInt)fd_cdata;
-
-			done:
-				return code;
-			}
-
-			//>>>
 		//@end=c@}
 	}
 	# fuse_io >>>
@@ -676,7 +745,7 @@ done:
 				fprintf(stderr, "In write_fuse_$name\\n");
 				CHECK_ARGS(3, "fd unique msg");
 
-				TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv\[1\], TCL_WRITABLE, &fd));
+				TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv\[1\], &fd));
 				TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv\[2\], &unique));
 
 				*hdr = (struct fuse_out_header){
@@ -947,6 +1016,8 @@ done:
 
 	file delete -force /tmp/fusecmds; file mkdir /tmp/fusecmds
 	interp alias {} fusecmds {} ::jitc::capply [list \
+		define	_GNU_SOURCE \
+		define	{DEBUG 1} \
 		debug	/tmp/fusecmds \
 		options	{-Wall -Werror -gdwarf-5} \
 		use		$fuse_io \
@@ -967,6 +1038,8 @@ done:
 		#include <stdio.h>
 		#include <string.h>
 		#include <sys/stat.h>
+		#include <sys/types.h>
+		#include <fcntl.h>
 
 		enum lit_objs {
 			LIT_OPCODE,
@@ -1151,7 +1224,7 @@ done:
 
 			CHECK_ARGS(1, "chan");
 
-			TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv[1], TCL_READABLE, &fd));
+			TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
 			fprintf(stderr, "Preparing to read from fuse fd: %d\n", fd);
 
 			do {
@@ -1265,7 +1338,7 @@ done:
 
 			CHECK_ARGS(3, "fd unique errno");
 
-			TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv[1], TCL_WRITABLE, &fd));
+			TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
 			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[2], &unique));
 			TEST_OK_LABEL(done, code, get_errno_from_obj(interp, objv[3], &err));
 
@@ -1305,7 +1378,7 @@ done:
 
 			CHECK_ARGS(5, "fd unique off size dirents");
 
-			TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv[1], TCL_WRITABLE, &fd));
+			TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
 			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[2], &unique));
 			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[3], &off));
 			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[4], &size));
@@ -1315,6 +1388,7 @@ done:
 
 			obstack_blank(ob, sizeof(*hdr));
 
+			int	last = obstack_object_size(ob);
 			for (i=off; i<dc; i++) {
 				int			namelen;
 				Tcl_WideInt	inode;
@@ -1345,6 +1419,9 @@ done:
 				obstack_grow(ob, &d, sizeof(d));
 				obstack_grow(ob, name, namelen+1);	// +1 - copy the null terminator too
 				obstack_blank(ob, padding-1);
+
+				fprintf(stderr, "obstack dirent size: %d\n", obstack_object_size(ob) - last);
+				last = obstack_object_size(ob);
 			}
 
 			const int	len = obstack_object_size(ob);
@@ -1365,6 +1442,37 @@ done:
 				obstack_pool_release(ob);
 				ob = NULL;
 			}
+			return code;
+		}
+
+		//>>>
+		OBJCMD(open_fuse) { //<<<
+			int			code = TCL_OK;
+			int			fd;
+
+			CHECK_ARGS(0, "");
+
+			fd = open("/dev/fuse", O_CLOEXEC | O_RDWR);
+			if (-1 == fd) THROW_POSIX_LABEL(done, code, "Error opening /dev/fuse");
+
+			Tcl_SetObjResult(interp, Tcl_NewIntObj(fd));
+
+		done:
+			return code;
+		}
+
+		//>>>
+		OBJCMD(close_fuse) { //<<<
+			int			code = TCL_OK;
+			int			fd;
+
+			CHECK_ARGS(1, "fd");
+
+			TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
+			const int rc = close(fd);
+			if (-1 == rc) THROW_POSIX_LABEL(done, code, "Error closing /dev/fuse");
+
+		done:
 			return code;
 		}
 
@@ -1421,7 +1529,7 @@ done:
 		children	{} \
 	]	;# Root
 
-	chan event $fd readable [list apply {fd {
+	proc readable fd {
 		global nodes handles
 
 		puts stderr "fuse fd readable"
@@ -1547,8 +1655,11 @@ done:
 							]
 						}
 						if {[fusecmds write_fuse_readdir_out $fd [dict get $msg unique] $off $size [dict get $handles $fh dirents]]} {
+							puts stderr "Wrote readdir response, all entries consumed, releasing dirents"
 							# Used all entries
 							dict unset handles $fh dirents
+						} else {
+							puts stderr "Write readdir response, not all entries consumed, hanging on to dirents"
 						}
 					}
 
@@ -1580,7 +1691,24 @@ done:
 			}
 		}
 		puts stderr "Leaving fuse fd readable cb"
-	}} $fd]
+	}
+
+	set fd	[fusecmds open_fuse]
+	thread::send -async $epoll_tid [list poll $fd [list thread::send -async [thread::id] [list readable $fd]]]
+
+	proc poll {} {
+		global fd
+		puts stderr "poll"
+		try {
+			readable $fd
+		} on error {errmsg options} {
+			puts stderr "Error from readable: [dict get $options -errorinfo]"
+		} on ok {} {
+			after 5000 poll
+		}
+	}
+
+	#after 5000 poll
 
 	package require jitclib::tempdir
 
@@ -1589,53 +1717,10 @@ done:
 	file delete -force /tmp/dbg
 	file mkdir /tmp/dbg
 	if 1 {
-		jitc::capply {debug /tmp/dbg options {-Wall -Werror -gdwarf-5} code {//@begin=c@
-			#include <sys/mount.h>
-			#include <stdio.h>
-			#include <unistd.h>
-			#include <fcntl.h>
-
-			OBJCMD(do_mount) {
-				int			code = TCL_OK;
-				Tcl_Obj*	fsargs = NULL;
-				Tcl_WideInt	fdw;
-				int fd;
-				ClientData fd_cdata;
-				Tcl_Channel	chan;
-
-				CHECK_ARGS(2, "chan mountpoint");
-
-				int mode;
-				chan = Tcl_GetChannel(interp, Tcl_GetString(objv[1]), &mode);
-				if (chan == NULL) goto done;
-				if (mode & TCL_READABLE == 0 || mode & TCL_WRITABLE == 0)
-					THROW_ERROR_LABEL(done, code, "chan must be readable and writable");
-				int mountpoint_len;
-				const char* mountpoint = Tcl_GetStringFromObj(objv[2], &mountpoint_len);
-
-				TEST_OK_LABEL(done, code, Tcl_GetChannelHandle(chan, TCL_READABLE, &fd_cdata));
-				fdw = (Tcl_WideInt)fd_cdata;
-				fd = fdw;
-				fcntl(fd, F_SETFD, 0);
-
-				replace_tclobj(&fsargs, Tcl_ObjPrintf("fd=%d,rootmode=%o,user_id=1000,group_id=1000", fd, S_IFDIR));
-
-				fprintf(stderr, "Calling mount(), mountpoint: (%s), fsargs: (%s)\n", mountpoint, Tcl_GetString(fsargs));
-				//const int mount_rc = mount("fuseraw", mountpoint, "fuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
-				const int mount_rc = mount("fuse", mountpoint, "fuse", 0, Tcl_GetString(fsargs));
-				if (mount_rc == -1)
-					THROW_POSIX_LABEL(done, code, "Error calling mount");
-
-			done:
-				replace_tclobj(&fsargs, NULL);
-				return code;
-			}
-		//@end=c@}} do_mount $fd $tempdir
+		jitc::capply $mount do_mount $fd $tempdir
 	} else {
-		set native_fd	[jitc::capply $lookup_fd native $fd]
-		puts stderr "native_fd: ($native_fd)"
 		try {
-			exec mount.fuse3 fuseraw#foo -o fd=$native_fd $tempdir
+			exec mount.fuse3 fuseraw#foo -o fd=$fd $tempdir
 		} on error {errmsg options} {
 			puts stderr "mount error: $options"
 		}

@@ -138,7 +138,7 @@ static void list_symbols_dict(void* ctx, const char* name, const void* val) //{{
 	Tcl_WideInt	w = (Tcl_WideInt)val;
 	int			failed = 1;
 
-	fprintf(stderr, "list_symbols_dict: \"%s\"\n", name);
+	//fprintf(stderr, "list_symbols_dict: \"%s\"\n", name);
 	replace_tclobj(&nameobj, Tcl_NewStringObj(name, -1));
 	replace_tclobj(&valobj,  Tcl_NewWideIntObj(w));
 	if (TCL_OK != Tcl_DictObjPut(NULL, symbolsdict, nameobj, valobj)) goto finally;
