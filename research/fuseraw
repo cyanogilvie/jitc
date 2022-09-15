@@ -186,7 +186,7 @@ set tempdir	[thread::send $fs_tid {
 	#>>>
 
 	set fd	[open /dev/fuse r+]
-	chan configure $fd -blocking 1 -buffering none -translation binary
+	chan configure $fd -blocking 0 -buffering none -translation binary
 
 	proc readfile fn {
 		set h	[open $fn r]
@@ -673,6 +673,7 @@ done:
 				struct fuse_out_header*	hdr = (void*)buf;
 				struct $replystruct*	reply = ((void*)buf)+sizeof(struct fuse_out_header);
 
+				fprintf(stderr, "In write_fuse_$name\\n");
 				CHECK_ARGS(3, "fd unique msg");
 
 				TEST_OK_LABEL(done, code, get_fd_from_obj(interp, objv\[1\], TCL_WRITABLE, &fd));
@@ -757,6 +758,67 @@ done:
 		FUSE_ATTR_SUBMOUNT
 	}]
 	#>>>
+	# flagmap_fopen <<<
+	set flagmap_fopen	[gen_flag_map -name fopen -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+		FOPEN_DIRECT_IO
+		FOPEN_KEEP_CACHE
+		FOPEN_NONSEEKABLE
+		FOPEN_CACHE_DIR
+		FOPEN_STREAM
+	}]
+	#>>>
+	# flagmap_open <<<
+	set flagmap_open	[gen_flag_map -name open -headers {fcntl.h sys/stat.h} -flags {
+		O_APPEND
+		O_ASYNC
+		O_CLOEXEC
+		O_CREAT
+		O_DIRECTORY
+		O_DSYNC
+		O_EXCL
+		O_NOCTTY
+		O_NOFOLLOW
+		O_NONBLOCK
+		O_NDELAY
+		O_SYNC
+		O_TRUNC
+	}]
+	#>>>
+	# flagmap_mode <<<
+	set flagmap_mode	[gen_flag_map -name mode -headers sys/stat.h -flags {
+		S_IFMT
+		S_IFSOCK
+		S_IFLNK
+		S_IFREG
+		S_IFBLK
+		S_IFDIR
+		S_IFCHR
+		S_IFOFO
+		S_ISUID
+		S_ISGID
+		S_ISVTX
+
+		S_IRWXU
+		S_IRUSR
+		S_IWUSR
+		S_IXUSR
+
+		S_IRWXG
+		S_IRGRP
+		S_IWGRP
+		S_IXGRP
+
+		S_IRWXO
+		S_IROTH
+		S_IWOTH
+		S_IXOTH
+	}]
+	#>>>
+	# flagmap_fuse_open <<<
+	set flagmap_fuse_open	[gen_flag_map -name fuse_open -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+		FUSE_OPEN_KILL_SUIDGID
+	}]
+	#>>>
 	# enummap_errno <<<
 	file delete -force /tmp/enummap_errno; file mkdir /tmp/enummap_errno
 	set enummap_errno	[gen_enum_map -name errno -headers errno.h -debug /tmp/enummap_errno -vals {
@@ -805,6 +867,18 @@ done:
 	set struct_fuse_getattr_in	[gen_struct_converter -debug /tmp/fuse_struct_getattr_in -name fuse_getattr_in -headers {stdint.h linux/fuse.h} -fields {
 		{uint32_t flags getattr}	getattr_flags
 		uint64_t					fh
+	}]
+	#>>>
+	# struct fuse_open_in converter <<<
+	set struct_fuse_open_in	[gen_struct_converter -name fuse_open_in -headers {stdint.h linux/fuse.h} -fields {
+		{uint32_t flags open}	flags
+		{uint32_t flags fopen}	open_flags
+	}]
+	#>>>
+	# struct fuse_open_out converter <<<
+	set struct_fuse_open_out	[gen_struct_converter -name fuse_open_out -headers {stdint.h linux/fuse.h} -fields {
+		uint64_t				fh
+		{uint32_t flags fopen}	open_flags
 	}]
 	#>>>
 	# struct fuse_attr converter <<<
@@ -858,8 +932,10 @@ done:
 		use		$flagmap_attr \
 		use		$enummap_errno \
 		use		$struct_fuse_getattr_in \
+		use		$struct_fuse_open_in \
 		use		[gen_fuse_writer -name init		-replystruct fuse_init_out] \
 		use		[gen_fuse_writer -name attr_out	-replystruct fuse_attr_out] \
+		use		[gen_fuse_writer -name open_out	-replystruct fuse_open_out] \
 		options	{-Wall -Werror -gdwarf-5} \
 		code \
 	{//@begin=c@<<<
@@ -868,6 +944,7 @@ done:
 		#include <errno.h>
 		#include <stdio.h>
 		#include <string.h>
+		#include <sys/stat.h>
 
 		enum lit_objs {
 			LIT_OPCODE,
@@ -885,6 +962,10 @@ done:
 			//LIT_GETATTR_FLAGS,
 			//LIT_FH,
 			LIT_IN,
+			LIT_BLOCKED,
+			LIT_EOF,
+			LIT_TRUE,
+			LIT_FALSE,
 			_LIT_SIZE
 		};
 		//@end=c@@begin=c@
@@ -904,6 +985,10 @@ done:
 			//"getattr_flags",
 			//"fh",
 			"in",
+			"_state blocked",
+			"_state eof",
+			"1",
+			"0",
 			NULL
 		};
 
@@ -1019,9 +1104,9 @@ done:
 			for (int i=0; lit_strs[i]; i++)
 				replace_tclobj(&lit[i], Tcl_NewStringObj(lit_strs[i], -1));
 
-
 			decode[FUSE_INIT]		= (opcode_decoder*)decode_fuse_init;
 			decode[FUSE_GETATTR]	= (opcode_decoder*)struct_fuse_getattr_in_to_dict;
+			decode[FUSE_OPENDIR]	= (opcode_decoder*)struct_fuse_open_in_to_dict;
 
 			return TCL_OK;
 		}
@@ -1078,10 +1163,16 @@ done:
 					fprintf(stderr, "got_header: %ld < sizeof *req_header: %ld\n", got_header, sizeof *req_header);
 					if (got_header == -1) {
 						if (errno == EINTR) continue;
+						if (errno == EAGAIN) {
+							// Signal idle state
+							Tcl_SetObjResult(interp, lit[LIT_BLOCKED]);
+							goto done;
+						}
 						fprintf(stderr, "got_header == -1, errno: %d\n", errno);
 						THROW_POSIX_LABEL(done, code, "Error calling read on fuse fd");
 					} else if (got_header == 0) {
 						// EOF
+						Tcl_SetObjResult(interp, lit[LIT_EOF]);
 						goto done;
 					}
 					//@end=c@@begin=c@
@@ -1190,116 +1281,194 @@ done:
 		}
 
 		//>>>
+		OBJCMD(is_dir) { //<<<
+			int			code = TCL_OK;
+			CHECK_ARGS(1, "mode");
+			Tcl_WideInt	mode;
+			TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv[1], &mode));
+			Tcl_SetObjResult(interp, mode & S_IFDIR ? lit[LIT_TRUE] : lit[LIT_FALSE]);
+		done:
+			return code;
+		}
+
+		//>>>
 	//@end=c@>>>}]
 
+	interp alias {} fusecmds {} ::jitc::capply $fusecmds
+
+	proc fstime usec {list [expr {$usec/1000000}] [expr {($usec%1000000) * 1000}]}
+
+	set inode_seq	0
+	set fh_seq		0
+	set nodes		{}
+	set handles		{}
+
+	proc fopen {inode mode} { #<<<
+		global nodes handles fh_seq
+		set fh	[incr fh_seq]
+		if {![dict exists nodes $inode]} {throw fuse_posix ENOENT}
+		# TODO: check mode
+		set fh
+	}
+
+	#>>>
+	proc fclose fh { #<<<
+		global handles
+		if {![dict exists $handles $fh]} {throw fuse_posix EBADF}
+		dict unset $handles $fh
+	}
+
+	#>>>
+
+	lassign [fstime [clock microseconds]] now_s now_ns
+	dict set nodes 1 [list \
+		ino			1 \
+		size		4096 \
+		blocks		8 \
+		atime		$now_s \
+		mtime		$now_s \
+		ctime		$now_s \
+		atimensec	$now_ns \
+		mtimensec	$now_ns \
+		ctimensec	$now_ns \
+		mode		0o40755 \
+		nlink		2 \
+		uid			1000 \
+		gid			1000 \
+		blksize		4096 \
+		flags {
+		} \
+		children	{} \
+	]	;# Root
+
 	chan event $fd readable [list apply {fd {
-		global fusecmds
+		global nodes handles
 
 		puts stderr "fuse fd readable"
-		try {
-			puts "read fuse msg: [timerate {
-			set msg	[jitc::capply $fusecmds read_fuse_req $fd]
-			} 1 1]"
+		while 1 {
+			try {
+				puts "read fuse msg: [timerate {
+				set msg	[fusecmds read_fuse_req $fd]
+				} 1 1]"
 
-			if {[dict size $msg] == 0} {
-				# eof
-				cleanup
-				return
-			}
-
-			set seen	{}
-			puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
-				dict set seen $v 1
-				format {%8s: (%s)} $v [dict get $msg $v]
-			}] \n\t]"
-			puts stderr "payload: [regexp -all -inline .. [binary encode hex [dict get $msg tail]]]"
-			dict set seen tail 1
-			dict for {k v} $msg {
-				if {[dict exists $seen $k]} continue
-				puts [format {%12s: (%s)} $k [dict get $msg $k]]
-			}
-
-			switch -exact -- [dict get $msg opcode] {
-				FUSE_INIT {
-					if {[incr ::fuse_init_count] > 2} {error "FUSE_INIT loop, bailing"}
-
-					if {[dict get $msg in major] > 7} {
-						# TODO: reply with just major 7
-						error "Major protocol version mismatch and negotiation not supported"
-					} elseif {[dict get $msg in major] < 7} {
-						error "Major protocol version from kernel is too old"
-					} elseif {[dict get $msg in minor] < 34} {
-						error "Minor version too old"
+				if {[dict exists $msg _state]} {
+					switch -exact -- [dict get $msg _state] {
+						eof {
+							puts stderr "Got EOF on fuse fd"
+							cleanup
+							return
+						}
+						blocked {
+							puts stderr "Got EAGAIN on fuse fd"
+							return
+						}
+						default {
+							error "Unhandled _state signalled by read_fuse_req: ([dict get $msg _state])"
+						}
 					}
-					jitc::capply $fusecmds write_fuse_init $fd [dict get $msg unique] [dict create \
-						major					7 \
-						minor					34 \
-						max_readahead			[expr {4*1048576}] \
-						flags					{
-							FUSE_ATOMIC_O_TRUNC
-							FUSE_BIG_WRITES
-							FUSE_ABORT_ERROR
-						} \
-						max_background			8 \
-						congestion_threshold	4 \
-						max_read				0 \
-						max_write				[expr {4*1048576}] \
-						time_gran				1000 \
-					]
 				}
 
-				FUSE_GETATTR {
-					set now_us	[clock microseconds]
-					set now_s	[expr {$now_us/1000000}]
-					set now_ns	[expr {($now_us%1000000) * 1000}]
-					if {[dict get $msg nodeid] == 1} { # Root
-						jitc::capply $fusecmds write_fuse_attr_out $fd [dict get $msg unique] [dict create \
-							attr_valid		2 \
-							attr_valid_nsec	500 \
-							attr [list \
-								ino			[dict get $msg nodeid] \
-								size		4096 \
-								blocks		8 \
-								atime		$now_s \
-								mtime		$now_s \
-								ctime		$now_s \
-								atimensec	$now_ns \
-								mtimensec	$now_ns \
-								ctimensec	$now_ns \
-								mode		0o40755 \
-								nlink		2 \
-								uid			1000 \
-								gid			1000 \
-								blksize		4096 \
-								flags {
-								} \
-							] \
+				set seen	{}
+				puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
+					dict set seen $v 1
+					format {%8s: (%s)} $v [dict get $msg $v]
+				}] \n\t]"
+				puts stderr "payload: [regexp -all -inline .. [binary encode hex [dict get $msg tail]]]"
+				dict set seen tail 1
+				dict for {k v} $msg {
+					if {[dict exists $seen $k]} continue
+					puts [format {%12s: (%s)} $k [dict get $msg $k]]
+				}
+
+				switch -exact -- [dict get $msg opcode] {
+					FUSE_INIT {
+						if {[incr ::fuse_init_count] > 2} {error "FUSE_INIT loop, bailing"}
+
+						if {[dict get $msg in major] > 7} {
+							# TODO: reply with just major 7
+							error "Major protocol version mismatch and negotiation not supported"
+						} elseif {[dict get $msg in major] < 7} {
+							error "Major protocol version from kernel is too old"
+						} elseif {[dict get $msg in minor] < 34} {
+							error "Minor version too old"
+						}
+						fusecmds write_fuse_init $fd [dict get $msg unique] [dict create \
+							major					7 \
+							minor					34 \
+							max_readahead			[expr {4*1048576}] \
+							flags					{
+								FUSE_ATOMIC_O_TRUNC
+								FUSE_BIG_WRITES
+								FUSE_ABORT_ERROR
+							} \
+							max_background			8 \
+							congestion_threshold	4 \
+							max_read				0 \
+							max_write				[expr {4*1048576}] \
+							time_gran				1000 \
 						]
 					}
+
+					FUSE_GETATTR {
+						set unique	[dict get $msg unique]
+						if {"FUSE_GETATTR_FH" in [dict get $msg in getattr_flags]} {
+							if {![dict exists $handles [dict get $msg in fh]]} {
+								throw fuse_posix EBADF
+							}
+							set nodeid	[dict get $handles [dict get $msg fh] inode]
+						} else {
+							set nodeid	[dict get $msg nodeid]
+						}
+
+						if {[dict exists $nodes $nodeid]} {
+							set attrs	[dict get $nodes $nodeid]
+							if {[fusecmds is_dir [dict get $attrs mode]]} {
+								fusecmds write_fuse_attr_out $fd $unique [dict create \
+									attr_valid		2 \
+									attr_valid_nsec	500 \
+									attr			$attrs \
+								]
+							} else {
+								throw fuse_posix ENOTDIR
+							}
+						} else {
+							throw fuse_posix ENOENT
+						}
+					}
+
+					FUSE_OPENDIR {
+						set fh	[fopen [dict get $msg nodeid] 0]
+						fusecmds write_fuse_open_out $fd [dict get $msg unique] [dict create \
+							fh			$fh \
+							open_flags	{} \
+						]
+					}
+
+					default {
+						error "opcode ([dict get $msg opcode]) not handled"
+					}
 				}
 
-				default {
-					error "opcode ([dict get $msg opcode]) not handled"
+				#set i [read $fd 4]
+				#binary scan $i n len
+				#puts stderr "Read len: $len"
+				#set rest	[read $fd [expr {$len-4}]]
+				#binary scan $rest nmmnnnna* opcode unique nodeid uid gid pid padding tail
+				#foreach v {opcode unique nodeid uid gid pid} {
+				#	puts stderr "$v: $v"
+				#}
+				#puts stderr "payload: [regexp -all -inline .. [binary encode hex $tail]]"
+			} trap fuse_posix {errmsg options} {
+				fusecmds write_error $fd [dict get $msg unique] $errmsg
+			} on error {errmsg options} {
+				puts "fuse fd readable error [dict get $options -errorcode]: [dict get $options -errorinfo]"
+				if {[info exists msg] && [dict exists $msg unique]} {
+					puts stderr "Writing error reply"
+					fusecmds write_error $fd [dict get $msg unique] EINVAL
 				}
+				cleanup
+				return -options $options $errmsg
 			}
-
-			#set i [read $fd 4]
-			#binary scan $i n len
-			#puts stderr "Read len: $len"
-			#set rest	[read $fd [expr {$len-4}]]
-			#binary scan $rest nmmnnnna* opcode unique nodeid uid gid pid padding tail
-			#foreach v {opcode unique nodeid uid gid pid} {
-			#	puts stderr "$v: $v"
-			#}
-			#puts stderr "payload: [regexp -all -inline .. [binary encode hex $tail]]"
-		} on error {errmsg options} {
-			puts "fuse fd readable error [dict get $options -errorcode]: [dict get $options -errorinfo]"
-			if {[info exists msg] && [dict exists $msg unique]} {
-				puts stderr "Writing error reply"
-				jitc::capply $fusecmds write_error $fd [dict get $msg unique] EINVAL
-			}
-			cleanup
-			return -options $options $errmsg
 		}
 		puts stderr "Leaving fuse fd readable cb"
 	}} $fd]

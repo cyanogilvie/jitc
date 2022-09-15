@@ -836,7 +836,7 @@ finally:
 		chan = NULL;
 	}
 
-	if (debugfiles) {
+	if (0 && debugfiles) {
 		Tcl_Obj**	fv;
 		int			fc;
 		if (TCL_OK == Tcl_ListObjGetElements(NULL, debugfiles, &fc, &fv)) {
