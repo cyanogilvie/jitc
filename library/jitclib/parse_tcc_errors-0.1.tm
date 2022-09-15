@@ -100,12 +100,5 @@ namespace eval ::jitclib {
 			//@end=c@
 		}
 	}
-	apply [list {} {
-		variable parse_tcc_errors
-
-		package require jitclib::tempdir
-		set debugpath	[jitc::capply $::jitclib::tempdir tempdir jitclib_parse_]
-		lappend parse_tcc_errors debug $debugpath
-	} [namespace current]]
 }
 # vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

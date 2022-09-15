@@ -38,11 +38,6 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 		//Tcl_RestoreInterpState(r->interp, state);
 	}
 
-	if (r->execmem) {
-		ckfree(r->execmem);
-		r->execmem = NULL;
-	}
-
 	r->interp = NULL;
 	replace_tclobj(&r->cdef, NULL);
 	if (r->debugfiles) {
@@ -514,6 +509,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		_Pragma("GCC diagnostic pop")
 	}
 
+	//fprintf(stderr, "compiling: %s\n", Tcl_GetString(cdef));
 	//tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
 	//tcc_set_output_type(tcc, TCC_OUTPUT_OBJ);
 	tcc_set_output_type(tcc, TCC_OUTPUT_DLL);
@@ -687,22 +683,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	};
 	exported_headers = exported_symbols = NULL;	// Transfer their refs (if any) to r->export_*
 
-#if 1
-#if 0
-	//fprintf(stderr, "size before relocate: %d\n", tcc_relocate(tcc, NULL));
-	const size_t relocate_size = tcc_relocate(tcc, NULL);
-	r->execmem = ckalloc(relocate_size);
-	int relocate_res;
-	if ((relocate_res = tcc_relocate(tcc, r->execmem)) < 0) {
-#elseif 0
-	const ssize_t	relocate_size = tcc_relocate(tcc, TCC_RELOCATE_AUTO);
-	if (relocate_size < 0) {
-		fprintf(stderr, "Error relocating to execmem: %d\n", relocate_size);
-		code = TCL_ERROR;
-	} else {
-#else
 	{
-#endif
 		char		template[] = P_tmpdir "/jitc_XXXXXX";
 		char*		base = mkdtemp(template);
 		Tcl_Obj*	tmp_fn = NULL;
@@ -731,28 +712,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		replace_tclobj(&tmp_fn, NULL);
 		if (code != TCL_OK) goto finally;
 
-#if 0
-		r->jit_symbols = (struct jit_code_entry){
-			.next_entry		= __jit_debug_descriptor.first_entry,
-			.symfile_addr	= r->execmem,
-			.symfile_size	= relocate_size
-		};
-
-		Tcl_MutexLock(&gdb_jit_mutex);
-		__jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
-		__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
-		if (__jit_debug_descriptor.first_entry == NULL) {
-			__jit_debug_descriptor.first_entry = __jit_debug_descriptor.relevant_entry;
-		} else {
-			__jit_debug_descriptor.first_entry->prev_entry = __jit_debug_descriptor.relevant_entry;
-		}
-		__jit_debug_register_code();
-		Tcl_MutexUnlock(&gdb_jit_mutex);
-#endif
 	}
-#else
-	const size_t relocate_size = tcc_relocate(tcc, TCC_RELOCATE_AUTO);
-#endif
 
 	/*
 	for (int i=0; i<tcc->nb_runtime_mem; i+=2) {
@@ -777,6 +737,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	replace_tclobj(&debugfiles, NULL);
 
 finally:
+	if (tcc) {
+		tcc_delete(tcc);
+		tcc = NULL;
+	}
+
 	if (mutexheld) {
 		mutexheld = 0;
 		Tcl_MutexUnlock(&g_tcc_mutex);
@@ -823,12 +788,6 @@ finally:
 	if (code == TCL_OK) {
 		*rPtr = r;
 		r = NULL;
-		tcc = NULL;
-	}
-
-	if (tcc) {
-		tcc_delete(tcc);
-		tcc = NULL;
 	}
 
 	if (chan) {
@@ -869,10 +828,6 @@ finally:
 		replace_tclobj(&r->cdef, NULL);
 		replace_tclobj(&r->debugfiles, NULL);
 		r->interp = NULL;
-		if (r->execmem) {
-			ckfree(r->execmem);
-			r->execmem = NULL;
-		}
 		if (r->handle) {
 			Tcl_FSUnloadFile(interp, r->handle);
 			r->handle = NULL;

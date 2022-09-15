@@ -56,7 +56,6 @@ struct jitc_intrep {
 	Tcl_Obj*				exported_symbols;
 	Tcl_Obj*				exported_headers;
 	Tcl_LoadHandle			handle;
-	void*					execmem;
 	struct jit_code_entry	jit_symbols;
 };
 

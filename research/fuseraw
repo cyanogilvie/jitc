@@ -52,7 +52,7 @@ puts "ls /: [timerate {exec ls /} 1 1], benchmark: [timerate {exec ls /}]"
 file delete -force -- /tmp/jitc_debugfiles
 file mkdir /tmp/jitc_debugfiles
 proc unshare args { #<<<
-	jitc::capply {define _GNU_SOURCE debug /tmp/jitc_debugfiles options {-Wall -Werror -gdwarf-5} code {//@begin=c@
+	jitc::capply {define _GNU_SOURCE debug /tmp/jitc_debugfiles options {-Wall -Werror -g} code {//@begin=c@
 		#include <stdio.h>
 		#include <sched.h>
 		#include <linux/sched.h>
@@ -150,45 +150,6 @@ set tempdir	[thread::send $fs_tid {
 	package require parse_args
 	namespace import ::parse_args::*
 
-	set mount {debug /tmp/dbg options {-Wall -Werror -gdwarf-5} code {//@begin=c@<<<
-		#include <sys/mount.h>
-		#include <stdio.h>
-		#include <unistd.h>
-		#include <fcntl.h>
-
-		OBJCMD(do_mount) {
-			int			code = TCL_OK;
-			Tcl_Obj*	fsargs = NULL;
-			int			fd;
-
-			CHECK_ARGS(2, "fd mountpoint");
-
-			TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
-			int mountpoint_len;
-			const char* mountpoint = Tcl_GetStringFromObj(objv[2], &mountpoint_len);
-
-			fcntl(fd, F_SETFD, 0);
-
-			replace_tclobj(&fsargs, Tcl_ObjPrintf("fd=%d,rootmode=%o,user_id=1000,group_id=1000", fd, S_IFDIR));
-
-			fprintf(stderr, "Calling mount(), mountpoint: (%s), fsargs: (%s)\n", mountpoint, Tcl_GetString(fsargs));
-			//const int mount_rc = mount("fuseraw", mountpoint, "fuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
-			const int mount_rc = mount("fuse", mountpoint, "fuse", 0, Tcl_GetString(fsargs));
-			if (mount_rc == -1)
-				THROW_POSIX_LABEL(done, code, "Error calling mount");
-
-		done:
-			replace_tclobj(&fsargs, NULL);
-			return code;
-		}
-
-		//@end=c@
-	}}
-
-	#>>>
-	puts stderr "compiling mount"
-	puts stderr "mount symbols: [jitc::symbols $mount]"
-
 	proc cleanup {} { #<<<
 		global fd tempdir epoll_tid
 
@@ -236,10 +197,42 @@ set tempdir	[thread::send $fs_tid {
 	thread::send $epoll_tid {
 		package require jitc
 
+		file delete -force /tmp/fuse_epoll_fd; file mkdir /tmp/fuse_epoll_fd
 		interp alias {} poll_fd {} jitc::capply [list \
-			options		{-Wall -Werror -gdwarf-5} \
+			debug		/tmp/fuse_epoll_fd \
+			options		{-Wall -Werror -g} \
 			code {//@begin=c@
 				#include <sys/epoll.h>
+				#include <unistd.h>
+				#include <errno.h>
+
+				enum {
+					LIT_TRUE,
+					LIT_FALSE,
+					_LIT_END
+				};
+				//@end=c@@begin=c@
+				static const char*	litstrs[] = {
+					"1",
+					"0",
+					NULL
+				};
+
+				//@end=c@@begin=c@
+				static Tcl_Obj*	lit[_LIT_END] = {0};
+
+				//@end=c@@begin=c@
+				INIT {
+					for (int i=0; litstrs[i]; i++)
+						replace_tclobj(&lit[i], Tcl_NewStringObj(litstrs[i], -1));
+
+					return TCL_OK;
+				}
+
+				RELEASE {
+					for (int i=0; litstrs[i]; i++)
+						replace_tclobj(&lit[i], NULL);
+				}
 
 				OBJCMD(waitfor_fd) //<<<
 				{
@@ -251,15 +244,15 @@ set tempdir	[thread::send $fs_tid {
 					CHECK_ARGS(2, "fd timeout_ms");
 
 					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
-					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[2], timeout));
+					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[2], &timeout));
 
 					epollfd = epoll_create1(EPOLL_CLOEXEC);
 					if (epollfd == -1) THROW_POSIX_LABEL(done, code, "Error creating epollfd");
-					constint			max_events = 100;
+					const int			max_events = 100;
 					struct epoll_event	events[max_events];
 					struct epoll_event	ev;
 
-					ev,events = EPOLLIN | EPOLLET;
+					ev.events = EPOLLIN | EPOLLET;
 					ev.data.ptr = NULL;
 					epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &ev);
 
@@ -290,7 +283,7 @@ set tempdir	[thread::send $fs_tid {
 		proc poll {fd cb} {
 			global running
 
-			set timeout	[poll_fd $fd]
+			set timeout	[poll_fd waitfor_fd $fd 5000]
 			puts stderr "epoll thread epoll_fd returned: $timeout"
 			if {!$timeout && $running} {
 				uplevel #0 $cb
@@ -311,7 +304,7 @@ set tempdir	[thread::send $fs_tid {
 
 	# fuse_io <<<
 	file delete -force /tmp/fuse_io; file mkdir /tmp/fuse_io
-	set fuse_io	{debug /tmp/fuse_io options {-Wall -Werror -gdwarf-5} export {
+	set fuse_io	{debug /tmp/fuse_io options {-Wall -Werror -g} export {
 			symbols	{fuse_write}
 			header	{
 				#include <unistd.h>
@@ -429,7 +422,7 @@ done:
 			set debug	{}
 		}
 
-		list {*}$debug options {-Wall -Werror -gdwarf-5} code $code export [list symbols $exported_symbols header $exported_headers]
+		list {*}$debug options {-Wall -Werror -g} code $code export [list symbols $exported_symbols header $exported_headers]
 	}
 
 	#>>>
@@ -509,7 +502,7 @@ done:
 			set debug	{}
 		}
 
-		list {*}$debug options {-Wall -Werror -gdwarf-5} code $code export [list symbols $exported_symbols header $exported_headers]
+		list {*}$debug options {-Wall -Werror -g} code $code export [list symbols $exported_symbols header $exported_headers]
 	}
 
 	#>>>
@@ -711,7 +704,7 @@ done:
 
 		list \
 			{*}$debug \
-			options {-Wall -Werror -gdwarf-5} \
+			options {-Wall -Werror -g} \
 			{*}$use_extra \
 			export	[list symbols $exported_symbols header $exported_headers] \
 			code	$code
@@ -773,7 +766,7 @@ done:
 
 		list \
 			{*}$debug \
-			options {-Wall -Werror -gdwarf-5} \
+			options {-Wall -Werror -g} \
 			use		$fuse_io \
 			use		[set ::struct_$replystruct] \
 			export	[list symbols $exported_symbols header $exported_headers] \
@@ -1019,7 +1012,7 @@ done:
 		define	_GNU_SOURCE \
 		define	{DEBUG 1} \
 		debug	/tmp/fusecmds \
-		options	{-Wall -Werror -gdwarf-5} \
+		options	{-Wall -Werror -g0} \
 		use		$fuse_io \
 		use		$flagmap_initflags \
 		use		$enummap_errno \
@@ -1375,6 +1368,7 @@ done:
 			Tcl_WideInt				unique, size, off;
 			int						i;
 			int						fd;
+			char					zeros[32] = {0};
 
 			CHECK_ARGS(5, "fd unique off size dirents");
 
@@ -1404,23 +1398,27 @@ done:
 				TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, dentv[2], &type));
 
 				const int			sizenow = obstack_object_size(ob);
-				const int			padding = FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET + namelen);
-				const int			dentsize = sizeof(struct fuse_dirent) + namelen + padding;
+				const int			dentlen = FUSE_NAME_OFFSET + namelen;
+				const int			padding = FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET + namelen) - dentlen;
+				const int			dentsize = dentlen + padding;
 
 				if (sizenow + dentsize > size) break;
 
 				struct fuse_dirent d = {
 					.ino		= inode,
-					.off		= i,
+					.off		= i+1,
 					.namelen	= namelen,
 					.type		= (type & S_IFMT) >> 12
 				};
 
 				obstack_grow(ob, &d, sizeof(d));
-				obstack_grow(ob, name, namelen+1);	// +1 - copy the null terminator too
-				obstack_blank(ob, padding-1);
+				obstack_grow(ob, name, namelen);
+				obstack_grow(ob, zeros, padding);
 
-				fprintf(stderr, "obstack dirent size: %d\n", obstack_object_size(ob) - last);
+				fprintf(stderr, "obstack dirent size: %d, namelen: %d, padding: %d\n",
+					obstack_object_size(ob) - last,
+					namelen,
+					padding);
 				last = obstack_object_size(ob);
 			}
 
@@ -1431,9 +1429,9 @@ done:
 				.unique	= unique
 			};
 
-			TEST_OK_LABEL(done, code, fuse_write(interp, fd, &hdr, hdr->len));
+			TEST_OK_LABEL(done, code, fuse_write(interp, fd, hdr, hdr->len));
 
-			fprintf(stderr, "Wrote %ld bytes out, %d entries, is all? %d\n", hdr->len, i, i==dc);
+			fprintf(stderr, "Wrote %ld bytes out, %d entries, is all? %d, unique: %ld\n", hdr->len, i-off, i==dc, hdr->unique);
 
 			Tcl_SetObjResult(interp, i == dc ? lit[LIT_TRUE] : lit[LIT_FALSE]);
 
@@ -1452,7 +1450,7 @@ done:
 
 			CHECK_ARGS(0, "");
 
-			fd = open("/dev/fuse", O_CLOEXEC | O_RDWR);
+			fd = open("/dev/fuse", O_CLOEXEC | O_RDWR | O_NONBLOCK);
 			if (-1 == fd) THROW_POSIX_LABEL(done, code, "Error opening /dev/fuse");
 
 			Tcl_SetObjResult(interp, Tcl_NewIntObj(fd));
@@ -1694,7 +1692,6 @@ done:
 	}
 
 	set fd	[fusecmds open_fuse]
-	thread::send -async $epoll_tid [list poll $fd [list thread::send -async [thread::id] [list readable $fd]]]
 
 	proc poll {} {
 		global fd
@@ -1711,12 +1708,55 @@ done:
 	#after 5000 poll
 
 	package require jitclib::tempdir
-
 	set tempdir	[jitc::capply $::jitclib::tempdir tempdir fuseraw_test_]
+	#catch {exec umount -f /tmp/fuseraw_test_manual}
+	#file delete -force /tmp/fuseraw_test_manual
+	#file mkdir /tmp/fuseraw_test_manual
+	#set tempdir /tmp/fuseraw_test_manual
 
 	file delete -force /tmp/dbg
 	file mkdir /tmp/dbg
+	set mount {debug /tmp/dbg options {-Wall -Werror -g} code {//@begin=c@<<<
+		#include <sys/mount.h>
+		#include <stdio.h>
+		#include <unistd.h>
+		#include <fcntl.h>
+
+		OBJCMD(do_mount) {
+			int			code = TCL_OK;
+			Tcl_Obj*	fsargs = NULL;
+			int			fd;
+
+			CHECK_ARGS(2, "fd mountpoint");
+
+			TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
+			int mountpoint_len;
+			const char* mountpoint = Tcl_GetStringFromObj(objv[2], &mountpoint_len);
+
+			fcntl(fd, F_SETFD, 0);
+
+			replace_tclobj(&fsargs, Tcl_ObjPrintf("fd=%d,rootmode=%o,user_id=1000,group_id=1000", fd, S_IFDIR));
+
+			fprintf(stderr, "Calling mount(), mountpoint: (%s), fsargs: (%s)\n", mountpoint, Tcl_GetString(fsargs));
+			//const int mount_rc = mount("fuseraw", mountpoint, "fuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
+			const int mount_rc = mount("fuse", mountpoint, "fuse", 0, Tcl_GetString(fsargs));
+			if (mount_rc == -1)
+				THROW_POSIX_LABEL(done, code, "Error calling mount");
+
+		done:
+			replace_tclobj(&fsargs, NULL);
+			return code;
+		}
+
+		//@end=c@
+	}}
+
+	#>>>
+	puts stderr "compiling mount"
+	puts stderr "mount symbols: [jitc::symbols $mount]"
+
 	if 1 {
+		puts stderr "Calling mount ([info exists mount]) on $tempdir: [exec ls -ald $tempdir]"
 		jitc::capply $mount do_mount $fd $tempdir
 	} else {
 		try {
@@ -1725,6 +1765,7 @@ done:
 			puts stderr "mount error: $options"
 		}
 	}
+	thread::send -async $epoll_tid [list poll $fd [list thread::send [thread::id] [list readable $fd]]]
 
 	set tempdir
 }]
