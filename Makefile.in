@@ -267,12 +267,6 @@ test: binaries libraries dedup
 		[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]"
 
 research: binaries libraries dedup
-	#unshare --pid --fork --map-root-user --mount --kill-child=SIGKILL --
-	#$(TCLSH_ENV) $(PKG_ENV) unshare --map-current-user --keep-caps --mount --kill-child=SIGKILL -- \
-		$(TCLSH_PROG) `@CYGPATH@ $(srcdir)/research/run.tcl` \
-			-load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \
-			[list source [file join `@CYGPATH@ $(srcdir)` library/jitc.tcl]]" \
-			$(TESTFLAGS)
 	$(TCLSH_ENV) $(PKG_ENV) unshare --map-current-user --keep-caps --mount --kill-child=SIGKILL -- \
 		$(TCLSH_PROG) `@CYGPATH@ $(srcdir)/research/run.tcl` \
 			-load "package ifneeded $(PACKAGE_NAME) $(PACKAGE_VERSION) \

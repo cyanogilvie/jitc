@@ -49,10 +49,8 @@ puts "cat $mountpoint/foo: ([exec cat $mountpoint/foo])"
 } 1 1]"
 puts "ls /: [timerate {exec ls /} 1 1], benchmark: [timerate {exec ls /}]"
 }
-file delete -force -- /tmp/jitc_debugfiles
-file mkdir /tmp/jitc_debugfiles
 proc unshare args { #<<<
-	jitc::capply {define _GNU_SOURCE debug /tmp/jitc_debugfiles options {-Wall -Werror -g} code {//@begin=c@
+	jitc::capply {define _GNU_SOURCE options {-Wall -Werror -g} code {//@begin=c@
 		#include <stdio.h>
 		#include <sched.h>
 		#include <linux/sched.h>
@@ -102,12 +100,10 @@ proc unshare args { #<<<
 
 				TEST_OK_LABEL(done, code, Tcl_GetIndexFromObj(interp, objv[i], flagstr, "flag", TCL_EXACT, &flagidx));
 				
-				fprintf(stderr, "Adding flag: %s: 0x%x\n", flagstr[flagidx], flagmap[flagidx]);
 				flags |= flagmap[flagidx];
 			}
 			//@end=c@@begin=c@
 
-			fprintf(stderr, "Combined flags: 0x%x\n", flags);
 			if (-1 == unshare(flags))
 				THROW_POSIX_LABEL(done, code, "Error calling unshare");
 
@@ -163,16 +159,25 @@ set tempdir	[thread::send $fs_tid {
 
 		set mountpoint_busy	0
 		try {
-			puts stderr "Calling umount $tempdir"
-			exec umount -f $tempdir
-		} trap CHILDSTATUS {errmsg options} {
-			lassign [dict get $options -errorcode] - pid rc
-			if {$rc == 32} {
-				set mountpoint_busy	1
-			}
+			jitc::capply $::mount do_umount $tempdir
 		} on error {errmsg options} {
-			puts stderr "umount err: $options"
+			puts stderr "jitc umount: $options"
+			try {
+				puts stderr "Calling umount $tempdir"
+				exec umount -f $tempdir
+			} trap CHILDSTATUS {errmsg options} {
+				lassign [dict get $options -errorcode] - pid rc
+				puts stderr "Umount error: $options"
+				if {$rc == 32} {
+					set mountpoint_busy	1
+				}
+			} on error {errmsg options} {
+				puts stderr "umount err: $options"
+			}
+		} on ok {} {
+			puts stderr "jitc umount succeeded"
 		}
+		puts stderr "Mountpoint busy: $mountpoint_busy"
 		#puts stderr "Processing event queue after umount"
 		#update
 
@@ -197,9 +202,7 @@ set tempdir	[thread::send $fs_tid {
 	thread::send $epoll_tid {
 		package require jitc
 
-		file delete -force /tmp/fuse_epoll_fd; file mkdir /tmp/fuse_epoll_fd
 		interp alias {} poll_fd {} jitc::capply [list \
-			debug		/tmp/fuse_epoll_fd \
 			options		{-Wall -Werror -g} \
 			code {//@begin=c@
 				#include <sys/epoll.h>
@@ -284,7 +287,7 @@ set tempdir	[thread::send $fs_tid {
 			global running
 
 			set timeout	[poll_fd waitfor_fd $fd 5000]
-			puts stderr "epoll thread epoll_fd returned: $timeout"
+			#puts stderr "epoll thread epoll_fd returned: $timeout"
 			if {!$timeout && $running} {
 				uplevel #0 $cb
 			}
@@ -303,8 +306,7 @@ set tempdir	[thread::send $fs_tid {
 	}
 
 	# fuse_io <<<
-	file delete -force /tmp/fuse_io; file mkdir /tmp/fuse_io
-	set fuse_io	{debug /tmp/fuse_io options {-Wall -Werror -g} export {
+	set fuse_io	{options {-Wall -Werror -g} export {
 			symbols	{fuse_write}
 			header	{
 				#include <unistd.h>
@@ -321,15 +323,26 @@ set tempdir	[thread::send $fs_tid {
 				int		code = TCL_OK;
 				ssize_t	written = 0;
 
-				do {
-					const ssize_t wrote = write(fd, (void*)buf+written, len - written);
+				for (;;) {
+					const ssize_t wrote = write(fd, (void*)buf+written, len-written);
 					if (wrote == -1) {
-						if (errno = EINTR) continue;
+						if (errno == EINTR) continue;
 						THROW_POSIX_LABEL(done, code, "Error calling write on fuse fd");
 					}
 					written += wrote;
 					if (written < len) continue;
-				} while(0);
+					break;
+				}
+
+				//@end=c@@begin=c@
+				#if 0
+				struct fuse_out_header* hdr = buf;
+				fprintf(stderr, "Wrote fuse response: %ld bytes, len: %ld, hdr->len: %d, hdr->error: %d, hdr->unique: %ld\n", written, len, hdr->len, hdr->error, hdr->unique);
+				if (written < sizeof(*hdr) + 32) {
+					for (int i=sizeof(*hdr); i<written; i++) fprintf(stderr, " %02X", ((uint8_t*)buf)[i]);
+					fprintf(stderr, "\n");
+				}
+				#endif
 
 			done:
 				return code;
@@ -735,7 +748,6 @@ done:
 				struct fuse_out_header*	hdr = (void*)buf;
 				struct $replystruct*	reply = ((void*)buf)+sizeof(struct fuse_out_header);
 
-				fprintf(stderr, "In write_fuse_$name\\n");
 				CHECK_ARGS(3, "fd unique msg");
 
 				TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv\[1\], &fd));
@@ -748,7 +760,6 @@ done:
 				*reply = (struct $replystruct){0};
 				TEST_OK_LABEL(done, code, dict_to_struct_${replystruct}(interp, objv\[3\], reply));
 
-				fprintf(stderr, "Writing $replystruct: %ld bytes\\n", buflen);
 				TEST_OK_LABEL(done, code, fuse_write(interp, fd, buf, buflen));
 
 			done:
@@ -776,8 +787,7 @@ done:
 	#>>>
 
 	# flagmap_initflags <<<
-	file delete -force /tmp/flagmap_initflags; file mkdir /tmp/flagmap_initflags
-	set flagmap_initflags	[gen_flag_map -name initflags -headers {stdint.h linux/fuse.h} -debug /tmp/flagmap_initflags -type uint32_t -flags {
+	set flagmap_initflags	[gen_flag_map -name initflags -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
 		FUSE_ASYNC_READ
 		FUSE_POSIX_LOCKS
 		FUSE_FILE_OPS
@@ -830,9 +840,7 @@ done:
 	}]
 	#>>>
 	# flagmap_open <<<
-	set debugdir	/tmp/flagmap_open
-	file delete -force $debugdir; file mkdir $debugdir
-	set flagmap_open	[gen_flag_map -debug $debugdir -name open -headers {fcntl.h sys/stat.h} -flags {
+	set flagmap_open	[gen_flag_map -name open -headers {fcntl.h sys/stat.h} -flags {
 		O_APPEND
 		O_ASYNC
 		O_CLOEXEC
@@ -895,8 +903,7 @@ done:
 	}]
 	#>>>
 	# enummap_errno <<<
-	file delete -force /tmp/enummap_errno; file mkdir /tmp/enummap_errno
-	set enummap_errno	[gen_enum_map -name errno -headers errno.h -debug /tmp/enummap_errno -vals {
+	set enummap_errno	[gen_enum_map -name errno -headers errno.h -vals {
 		EPERM
 		ENOENT
 		ESRCH
@@ -931,23 +938,43 @@ done:
 		ENAMETOOLONG
 		ENOLCK
 		ENOSYS
+		EOPNOTSUPP
 		ENOTEMPTY
 		EINVAL
 		ERANGE
 		EILSEQ
 	}]
 	#>>>
+	# struct fuse_init_in converter <<<
+	set struct_fuse_init_in	[gen_struct_converter -name fuse_init_in -headers {stdint.h linux/fuse.h} -fields {
+		uint32_t					major
+		uint32_t					minor
+		uint32_t					max_readahead
+		{uint32_t flags initflags}	flags
+	}]
+	#>>>
+	# struct fuse_init_out converter <<<
+	set struct_fuse_init_out	[gen_struct_converter -name fuse_init_out -headers {stdint.h linux/fuse.h} -fields {
+		uint32_t					major
+		uint32_t					minor
+		uint32_t					max_readahead
+		{uint32_t flags initflags}	flags
+		uint16_t					max_background
+		uint16_t					congestion_threshold
+		uint32_t					max_write
+		uint32_t					time_gran
+		uint16_t					max_pages
+		uint16_t					map_alignment
+	}]
+	#>>>
 	# struct fuse_getattr_in converter <<<
-	file delete -force /tmp/fuse_struct_getattr_in; file mkdir /tmp/fuse_struct_getattr_in
-	set struct_fuse_getattr_in	[gen_struct_converter -debug /tmp/fuse_struct_getattr_in -name fuse_getattr_in -headers {stdint.h linux/fuse.h} -fields {
+	set struct_fuse_getattr_in	[gen_struct_converter -name fuse_getattr_in -headers {stdint.h linux/fuse.h} -fields {
 		{uint32_t flags getattr}	getattr_flags
 		uint64_t					fh
 	}]
 	#>>>
 	# struct fuse_open_in converter <<<
-	set debugdir	/tmp/struct_fuse_open_in
-	file delete -force $debugdir; file mkdir $debugdir
-	set struct_fuse_open_in	[gen_struct_converter -debug $debugdir -name fuse_open_in -headers {stdint.h linux/fuse.h} -fields {
+	set struct_fuse_open_in	[gen_struct_converter -name fuse_open_in -headers {stdint.h linux/fuse.h} -fields {
 		{uint32_t flags open}	flags
 		{uint32_t flags fopen}	open_flags
 	}]
@@ -985,23 +1012,8 @@ done:
 		{struct fuse_attr}			attr
 	}]
 	#>>>
-	# struct fuse_init_out converter <<<
-	set struct_fuse_init_out	[gen_struct_converter -name fuse_init_out -headers {stdint.h linux/fuse.h} -fields {
-		uint32_t					major
-		uint32_t					minor
-		uint32_t					max_readahead
-		{uint32_t flags initflags}	flags
-		uint16_t					max_background
-		uint16_t					congestion_threshold
-		uint32_t					max_write
-		uint32_t					time_gran
-		uint16_t					max_pages
-		uint16_t					map_alignment
-	}]
-	#>>>
 	# struct fuse_read_in converter <<<
-	file delete -force /tmp/fuse_read_in; file mkdir /tmp/fuse_read_in
-	set struct_fuse_read_in	[gen_struct_converter -debug /tmp/fuse_read_in -name fuse_read_in -headers stdint.h -fields {
+	set struct_fuse_read_in	[gen_struct_converter -name fuse_read_in -headers stdint.h -fields {
 		uint64_t					fh
 		uint64_t					offset
 		uint32_t					size
@@ -1021,15 +1033,11 @@ done:
 
 	package require jitclib::obstackpool
 
-	file delete -force /tmp/fusecmds; file mkdir /tmp/fusecmds
 	interp alias {} fusecmds {} ::jitc::capply [list \
-		define	_GNU_SOURCE \
-		define	{DEBUG 1} \
-		debug	/tmp/fusecmds \
-		options	{-Wall -Werror -g0} \
+		options	{-Wall -Werror -g} \
 		use		$fuse_io \
-		use		$flagmap_initflags \
 		use		$enummap_errno \
+		use		$struct_fuse_init_in \
 		use		$struct_fuse_getattr_in \
 		use		$struct_fuse_open_in \
 		use		$struct_fuse_read_in \
@@ -1058,10 +1066,6 @@ done:
 			LIT_PID,
 			LIT_TAIL,
 			LIT_CUSE_INIT,
-			LIT_MAJOR,
-			LIT_MINOR,
-			LIT_MAX_READAHEAD,
-			LIT_FLAGS,
 			LIT_IN,
 			LIT_BLOCKED,
 			LIT_EOF,
@@ -1079,10 +1083,6 @@ done:
 			"pid",
 			"tail",
 			"CUSE_INIT",
-			"major",
-			"minor",
-			"max_readahead",
-			"flags",
 			"in",
 			"_state blocked",
 			"_state eof",
@@ -1104,30 +1104,6 @@ done:
 
 		typedef int (opcode_decoder)(Tcl_Interp* interp, void* payload, Tcl_Obj** in);
 		opcode_decoder*	decode[fuse_opcode_max] = {0};
-
-		static int decode_fuse_init(Tcl_Interp* interp, struct fuse_init_in* p, Tcl_Obj** in) //<<<
-		{
-			int						code = TCL_OK;
-			Tcl_Obj*				kernflags = NULL;
-			Tcl_Obj*				msg = NULL;
-
-			replace_tclobj(&msg, Tcl_NewDictObj());
-
-			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MAJOR], Tcl_NewWideIntObj(p->major)));
-			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MINOR], Tcl_NewWideIntObj(p->minor)));
-			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_MAX_READAHEAD], Tcl_NewWideIntObj(p->max_readahead)));
-			TEST_OK_LABEL(done, code, get_list_from_initflags(interp, p->flags, &kernflags));
-			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, msg, lit[LIT_FLAGS], kernflags));
-
-			replace_tclobj(in, msg);
-
-		done:
-			replace_tclobj(&msg, NULL);
-			replace_tclobj(&kernflags, NULL);
-			return code;
-		}
-
-		//>>>
 
 		//@end=c@@begin=c@
 		INIT { //<<<
@@ -1185,7 +1161,7 @@ done:
 			for (int i=0; lit_strs[i]; i++)
 				replace_tclobj(&lit[i], Tcl_NewStringObj(lit_strs[i], -1));
 
-			decode[FUSE_INIT]		= (opcode_decoder*)decode_fuse_init;
+			decode[FUSE_INIT]		= (opcode_decoder*)struct_fuse_init_in_to_dict;
 			decode[FUSE_GETATTR]	= (opcode_decoder*)struct_fuse_getattr_in_to_dict;
 			decode[FUSE_OPENDIR]	= (opcode_decoder*)struct_fuse_open_in_to_dict;
 			decode[FUSE_READDIR]	= (opcode_decoder*)struct_fuse_read_in_to_dict;
@@ -1234,16 +1210,14 @@ done:
 			CHECK_ARGS(1, "chan");
 
 			TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[1], &fd));
-			fprintf(stderr, "Preparing to read from fuse fd: %d\n", fd);
 
-			do {
+			for (;;) {
 				int err;
 				got_header = read(fd, readbuf, readbufsize);
 				err = errno;
-				fprintf(stderr, "after read, got_header: %ld, errno: %d, sizeof *req_header: %ld\n", got_header, err, sizeof *req_header);
+				//fprintf(stderr, "after read, got_header: %ld, errno: %d, sizeof *req_header: %ld\n", got_header, err, sizeof *req_header);
 
 				if (got_header < (ssize_t)(sizeof *req_header)) {
-					fprintf(stderr, "got_header: %ld < sizeof *req_header: %ld\n", got_header, sizeof *req_header);
 					if (got_header == -1) {
 						if (errno == EINTR) continue;
 						if (errno == EAGAIN) {
@@ -1251,7 +1225,6 @@ done:
 							Tcl_SetObjResult(interp, lit[LIT_BLOCKED]);
 							goto done;
 						}
-						fprintf(stderr, "got_header == -1, errno: %d\n", errno);
 						THROW_POSIX_LABEL(done, code, "Error calling read on fuse fd");
 					} else if (got_header == 0) {
 						// EOF
@@ -1260,10 +1233,9 @@ done:
 					}
 					//@end=c@@begin=c@
 					THROW_PRINTF_LABEL(done, code, "Asked for %d bytes, but got %d\n", sizeof *req_header, got_header);
-				} else {
-					fprintf(stderr, "got_header: %ld >= sizeof *req_header: %ld\n", got_header, sizeof *req_header);
 				}
-			} while(0);
+				break;
+			}
 			//@end=c@@begin=c@
 			if (got_header == -1) THROW_ERROR_LABEL(done, code, "Read header error, shouldn't happen");
 
@@ -1285,20 +1257,20 @@ done:
 				}
 			}
 
-			if (got_header > req_header->len)
-				fprintf(stderr, "Read more than expected (%ld): %ld\n", req_header->len, got_header);
+			//if (got_header > req_header->len)
+			//	fprintf(stderr, "Read more than expected (%ld): %ld\n", req_header->len, got_header);
 
 
 			ssize_t	remain = req_header->len - got_header;
 
 			if (remain > 0) {
-				do {
+				for (;;) {
 					const ssize_t got_tail = read(fd, readbuf+got_header, readbufsize-got_header);
-					fprintf(stderr, "got_tail: %ld, asked for: %ld, got_header: %ld, sizeof req_header: %ld\n", got_tail, remain, got_header, sizeof *req_header);
+					//fprintf(stderr, "got_tail: %ld, asked for: %ld, got_header: %ld, sizeof req_header: %ld\n", got_tail, remain, got_header, sizeof *req_header);
 
 					if (got_tail <= remain) {
 						if (got_tail == -1) {
-							if (errno = EINTR) continue;
+							if (errno == EINTR) continue;
 							THROW_POSIX_LABEL(done, code, "Error calling read on fuse fd");
 						} else if (got_tail == 0) {
 							// EOF
@@ -1306,7 +1278,8 @@ done:
 						}
 						THROW_PRINTF_LABEL(done, code, "Asked for %d bytes, but got %d\n", readbufsize-got_header, got_tail);
 					}
-				} while(0);
+					break;
+				};
 			}
 
 			replace_tclobj(&msg, Tcl_NewDictObj());
@@ -1353,7 +1326,7 @@ done:
 
 			struct fuse_out_header	hdr = {
 				.len		= sizeof hdr,
-				.error		= err,
+				.error		= -err,
 				.unique		= unique
 			};
 
@@ -1453,10 +1426,6 @@ done:
 				obstack_grow(ob, name, namelen);
 				obstack_grow(ob, zeros, padding);
 
-				fprintf(stderr, "obstack dirent size: %d, namelen: %d, padding: %d\n",
-					obstack_object_size(ob) - last,
-					namelen,
-					padding);
 				last = obstack_object_size(ob);
 			}
 
@@ -1469,7 +1438,7 @@ done:
 
 			TEST_OK_LABEL(done, code, fuse_write(interp, fd, hdr, hdr->len));
 
-			fprintf(stderr, "Wrote %ld bytes out, %d entries, is all? %d, unique: %ld\n", hdr->len, i-off, i==dc, hdr->unique);
+			//fprintf(stderr, "Wrote %ld bytes out, %d entries, is all? %d, unique: %ld\n", hdr->len, i-off, i==dc, hdr->unique);
 
 			Tcl_SetObjResult(interp, i == dc ? lit[LIT_TRUE] : lit[LIT_FALSE]);
 
@@ -1555,7 +1524,7 @@ done:
 		atimensec	$now_ns \
 		mtimensec	$now_ns \
 		ctimensec	$now_ns \
-		mode		0o40755 \
+		mode		0o40750 \
 		nlink		2 \
 		uid			1000 \
 		gid			1000 \
@@ -1568,12 +1537,13 @@ done:
 	proc readable fd {
 		global nodes handles
 
-		puts stderr "fuse fd readable"
+		#puts stderr "fuse fd readable"
 		while 1 {
 			try {
-				puts "read fuse msg: [timerate {
+				#puts "read fuse msg: [timerate {
+				#set msg	[fusecmds read_fuse_req $fd]
+				#} 1 1]"
 				set msg	[fusecmds read_fuse_req $fd]
-				} 1 1]"
 
 				if {[dict exists $msg _state]} {
 					switch -exact -- [dict get $msg _state] {
@@ -1583,7 +1553,6 @@ done:
 							return
 						}
 						blocked {
-							puts stderr "Got EAGAIN on fuse fd"
 							return
 						}
 						default {
@@ -1592,16 +1561,18 @@ done:
 					}
 				}
 
-				set seen	{}
-				puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
-					dict set seen $v 1
-					format {%8s: (%s)} $v [dict get $msg $v]
-				}] \n\t]"
-				puts stderr "payload: [regexp -all -inline .. [binary encode hex [dict get $msg tail]]]"
-				dict set seen tail 1
-				dict for {k v} $msg {
-					if {[dict exists $seen $k]} continue
-					puts [format {%12s: (%s)} $k [dict get $msg $k]]
+				if 0 {
+					set seen	{}
+					puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
+						dict set seen $v 1
+						format {%8s: (%s)} $v [dict get $msg $v]
+					}] \n\t]"
+					puts stderr "payload: [regexp -all -inline .. [binary encode hex [dict get $msg tail]]]"
+					dict set seen tail 1
+					dict for {k v} $msg {
+						if {[dict exists $seen $k]} continue
+						puts [format {%12s: (%s)} $k [dict get $msg $k]]
+					}
 				}
 
 				switch -exact -- [dict get $msg opcode] {
@@ -1661,9 +1632,9 @@ done:
 					}
 
 					FUSE_OPENDIR {
-						puts stderr "handling FUSE_OPENDIR"
+						#puts stderr "handling FUSE_OPENDIR"
 						set fh	[fopen [dict get $msg nodeid] 0]
-						puts stderr "assigned fh: ($fh)"
+						#puts stderr "assigned fh: ($fh)"
 						fusecmds write_fuse_open_out $fd [dict get $msg unique] [dict create \
 							fh			$fh \
 							open_flags	{} \
@@ -1671,7 +1642,7 @@ done:
 					}
 
 					FUSE_READDIR {
-						puts stderr "Handling FUSE_READDIR"
+						#puts stderr "Handling FUSE_READDIR"
 						set fh		[dict get $msg in fh]
 						if {![dict exists $handles $fh]} {throw fuse_posix EBADF}
 						set inode	[dict get $handles $fh inode]
@@ -1691,11 +1662,11 @@ done:
 							]
 						}
 						if {[fusecmds write_fuse_readdir_out $fd [dict get $msg unique] $off $size [dict get $handles $fh dirents]]} {
-							puts stderr "Wrote readdir response, all entries consumed, releasing dirents"
+							#puts stderr "Wrote readdir response, all entries consumed, releasing dirents"
 							# Used all entries
 							dict unset handles $fh dirents
 						} else {
-							puts stderr "Write readdir response, not all entries consumed, hanging on to dirents"
+							#puts stderr "Write readdir response, not all entries consumed, hanging on to dirents"
 						}
 					}
 
@@ -1703,6 +1674,11 @@ done:
 						set fh		[dict get $msg in fh]
 						fclose $fh
 						fusecmds write_empty $fd [dict get $msg unique]
+					}
+
+					FUSE_GETXATTR {
+						throw fuse_posix ENOSYS
+						#throw fuse_posix EOPNOTSUPP
 					}
 
 					default {
@@ -1732,7 +1708,7 @@ done:
 				return -options $options $errmsg
 			}
 		}
-		puts stderr "Leaving fuse fd readable cb"
+		#puts stderr "Leaving fuse fd readable cb"
 	}
 
 	set fd	[fusecmds open_fuse]
@@ -1740,9 +1716,7 @@ done:
 	package require jitclib::tempdir
 	set tempdir	[jitc::capply $::jitclib::tempdir tempdir fuseraw_test_]
 
-	file delete -force /tmp/dbg
-	file mkdir /tmp/dbg
-	set mount {debug /tmp/dbg options {-Wall -Werror -g} code {//@begin=c@<<<
+	set mount {options {-Wall -Werror -g} code {//@begin=c@<<<
 		#include <sys/mount.h>
 		#include <stdio.h>
 		#include <unistd.h>
@@ -1759,18 +1733,35 @@ done:
 			int mountpoint_len;
 			const char* mountpoint = Tcl_GetStringFromObj(objv[2], &mountpoint_len);
 
-			fcntl(fd, F_SETFD, 0);
-
 			replace_tclobj(&fsargs, Tcl_ObjPrintf("fd=%d,rootmode=%o,user_id=1000,group_id=1000", fd, S_IFDIR));
 
-			fprintf(stderr, "Calling mount(), mountpoint: (%s), fsargs: (%s)\n", mountpoint, Tcl_GetString(fsargs));
-			//const int mount_rc = mount("fuseraw", mountpoint, "fuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
-			const int mount_rc = mount("fuse", mountpoint, "fuse", 0, Tcl_GetString(fsargs));
+			//fprintf(stderr, "Calling mount(), mountpoint: (%s), fsargs: (%s)\n", mountpoint, Tcl_GetString(fsargs));
+			const int mount_rc = mount("fuseraw", mountpoint, "fuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
+			//const int mount_rc = mount("fuse", mountpoint, "fuse", 0, Tcl_GetString(fsargs));
 			if (mount_rc == -1)
 				THROW_POSIX_LABEL(done, code, "Error calling mount");
 
 		done:
 			replace_tclobj(&fsargs, NULL);
+			return code;
+		}
+
+		//@end=c@@begin=c@
+		OBJCMD(do_umount) {
+			int			code = TCL_OK;
+			int			fd;
+
+			CHECK_ARGS(1, "mountpoint");
+
+			int mountpoint_len;
+			const char* mountpoint = Tcl_GetStringFromObj(objv[1], &mountpoint_len);
+
+			//fprintf(stderr, "Calling umount(), mountpoint: (%s)\n", mountpoint);
+			const int umount_rc = umount(mountpoint);
+			if (umount_rc == -1)
+				THROW_POSIX_LABEL(done, code, "Error calling umount");
+
+		done:
 			return code;
 		}
 
@@ -1780,7 +1771,7 @@ done:
 	#>>>
 
 	if 1 {
-		puts stderr "Calling mount ([info exists mount]) on $tempdir: [exec ls -ald $tempdir]"
+		puts stderr "Calling mount ([info exists mount]) on $tempdir: [exec ls -ald $tempdir] (I am: uid: ([exec id -u]), gid: ([exec id -g]))"
 		jitc::capply $mount do_mount $fd $tempdir
 	} else {
 		try {
@@ -1798,6 +1789,20 @@ puts stderr "Calling glob $tempdir/*"
 #puts stderr "Glob: ([glob -types hidden $tempdir/*])"
 puts stderr "ls: [exec ls -a $tempdir]"
 puts stderr "Mainthread waiting"
+
+# warmup
+exec ls -la / $tempdir /tmp/d
+
+puts "ls: [timerate {
+puts "ls $tempdir:\n[exec ls -al $tempdir]"
+} 1 1], benchmark: [if 1 {timerate {exec ls $tempdir}}]"
+#puts "cat [timerate {
+#puts "cat $tempdir/foo: ([exec cat $tempdir/foo])"
+#} 1 1]"
+puts "ls /tmp/d: [timerate {exec ls -a /tmp/d} 1 1], benchmark: [timerate {exec ls -a /tmp/d}]"
+puts "glob  : [timerate {glob -types hidden $tempdir/*} 1 1], benchmark: [timerate {glob -types hidden $tempdir/*}]"
+puts "glob /tmp/d: [timerate {glob -types hidden /tmp/d/*} 1 1], benchmark: [timerate {glob -types hidden /tmp/d/*}]"
+
 after 3000
 puts stderr "Mainthread releasing fs_tid"
 

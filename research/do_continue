@@ -1,0 +1,41 @@
+package require jitc
+
+puts stderr "do {} while(0); continue:"
+jitc::capply {code {//@begin=c@
+	OBJCMD(do_continue) {
+		int	i = 0;
+		do {
+			fprintf(stderr, "i: %d\n", i);
+			if (i++ < 10) continue;
+		} while(0);
+		return TCL_OK;
+	}
+//@end=c@
+}} do_continue
+
+puts stderr "label+goto:"
+jitc::capply {code {//@begin=c@
+	OBJCMD(label) {
+		int	i = 0;
+	again:
+		fprintf(stderr, "i: %d\n", i);
+		if (i++ < 10) goto again;
+		return TCL_OK;
+	}
+//@end=c@
+}} label
+
+puts stderr "for (;;) {}; break:"
+jitc::capply {code {//@begin=c@
+	OBJCMD(for_break) {
+		int	i = 0;
+		for (;;) {
+			fprintf(stderr, "i: %d\n", i);
+			if (i++ < 10) continue;
+			break;
+		}
+		return TCL_OK;
+	}
+//@end=c@
+}} for_break
+
