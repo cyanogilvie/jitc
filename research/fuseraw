@@ -1,3 +1,5 @@
+file delete -force /tmp/dbg; file mkdir /tmp/dbg
+
 proc readfile fn {
 	set h	[open $fn]
 	try {read $h} finally {close $h}
@@ -307,10 +309,12 @@ set tempdir	[thread::send $fs_tid {
 
 	# fuse_io <<<
 	set fuse_io	{options {-Wall -Werror -g} export {
-			symbols	{fuse_write}
+			symbols	{fuse_write fuse_writev}
 			header	{
 				#include <unistd.h>
+				#include <sys/uio.h>
 				int fuse_write(Tcl_Interp* interp, int fd, void* buf, size_t buflen);
+				int fuse_writev(Tcl_Interp* interp, int fd, struct iovec* iov, int iovcnt);
 			}
 		}
 		code {//@begin=c@
@@ -331,6 +335,36 @@ set tempdir	[thread::send $fs_tid {
 					}
 					written += wrote;
 					if (written < len) continue;
+					break;
+				}
+
+				//@end=c@@begin=c@
+				#if 0
+				struct fuse_out_header* hdr = buf;
+				fprintf(stderr, "Wrote fuse response: %ld bytes, len: %ld, hdr->len: %d, hdr->error: %d, hdr->unique: %ld\n", written, len, hdr->len, hdr->error, hdr->unique);
+				if (written < sizeof(*hdr) + 32) {
+					for (int i=sizeof(*hdr); i<written; i++) fprintf(stderr, " %02X", ((uint8_t*)buf)[i]);
+					fprintf(stderr, "\n");
+				}
+				#endif
+
+			done:
+				return code;
+			}
+
+			//>>>@end=c@@begin=c@
+			int fuse_writev(Tcl_Interp* interp, int fd, struct iovec* iov, int iovcnt) //<<<
+			{
+				int		code = TCL_OK;
+				ssize_t	written = 0;
+
+				for (;;) {
+					const ssize_t wrote = writev(fd, iov, iovcnt);
+					if (wrote == -1) {
+						if (errno == EINTR) continue;
+						THROW_POSIX_LABEL(done, code, "Error calling writev on fuse fd");
+					}
+					fprintf(stderr, "fuse_writev wrote %ld bytes\n", wrote);
 					break;
 				}
 
@@ -534,9 +568,18 @@ done:
 		set code				{}
 		set use_extra			{}
 
+		set iovec_sections	1
+		foreach {k v} $fields {
+			set t	[lindex $k 0]
+			if {$t in {%tail string}} {
+				incr iovec_sections
+			}
+		}
+
 		foreach header $headers {
 			append exported_headers	"#include <$header>\n"
 		}
+		append exported_headers		"#include <sys/uio.h>\n"
 
 		set requirements_seen	{}
 		set require {var {
@@ -548,6 +591,8 @@ done:
 		}}
 
 		append code [subst {
+			struct $name g_buf;
+
 			[join [lmap {type field} $fields {subst {
 				Tcl_Obj*	f_$field = NULL;
 			}}] \n]
@@ -565,6 +610,13 @@ done:
 				}}] \n]
 			}
 
+			int dict_to_struct_${name}_iovec_sections(Tcl_Interp* interp, Tcl_Obj* dict, int* count)
+			{
+				*count = $iovec_sections;
+				return TCL_OK;
+			}
+
+			[if {$iovec_sections == 1} {subst {
 			int dict_to_struct_${name}(Tcl_Interp* interp, Tcl_Obj* dict, struct $name* out)
 			{
 				int				code = TCL_OK;
@@ -636,6 +688,7 @@ done:
 								out->$lenfield = len;
 							}
 						}}
+						{%tail *} {error "Dynamic length structs are not supported"}
 						default {
 							error "Unhandled type \"$type\""
 						}
@@ -646,7 +699,120 @@ done:
 				return code;
 			}
 
-			int struct_${name}_to_dict(Tcl_Interp* interp, struct $name* s, Tcl_Obj** out)
+			}}]
+			int dict_to_struct_${name}_iovec(Tcl_Interp* interp, Tcl_Obj* dict, struct iovec* iov)
+			{
+				int				code = TCL_OK;
+				int				ii = 0;
+				struct $name*	out = &g_buf;
+
+				*out = (struct $name){0};
+
+				iov\[ii++\] = (struct iovec){
+					.iov_base	= &g_buf,
+					.iov_len	= sizeof(struct $name)
+				};
+
+				[join [lmap {type field} $fields {
+					switch -glob -- $type {
+						uint16_t -
+						int32_t -
+						uint32_t {subst {
+							{
+								int			l;
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								if (v) {
+									TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, v, &l));
+									out->$field = l;
+								}
+							}
+						}}
+						uint64_t {subst {
+							{
+								Tcl_WideInt	l;
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								if (v) {
+									TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, v, &l));
+									out->$field = l;
+								}
+							}
+						}}
+						{uint64_t flags *} -
+						{uint32_t flags *} {
+							lassign $type coretype - flags
+							apply $require ::flagmap_$flags
+							subst {
+							{
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								if (v)
+									TEST_OK_LABEL(done, code, get_${flags}_from_list(interp, v, &out->$field));
+							}
+							}
+						}
+						{struct *} {
+							set structname	[lindex $type 1]
+							apply $require ::struct_$structname
+							subst {
+							{
+								Tcl_Obj*	v = NULL;
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								if (v)
+									TEST_OK_LABEL(done, code, dict_to_struct_${structname}(interp, v, &out->$field));
+							}
+							}
+						}
+						{string *} {
+							set lenfield	[lindex $type 1]
+							subst {
+							{
+								Tcl_Obj*	v = NULL;
+								int			len;
+
+								TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+								const char*	str = Tcl_GetStringFromObj(v, &len);
+								out->$lenfield = len;
+								iov\[ii++\] = (struct iovec){
+									.iov_base	= (void*)str,
+									.iov_len	= len
+								};
+							}
+						}}
+						{%tail zstring} {subst {
+							Tcl_Obj*	v = NULL;
+							int			len;
+
+							TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+							const char*	str = Tcl_GetStringFromObj(v, &len);
+							iov\[ii++\] = (struct iovec){
+								.iov_base	= (void*)str,
+								.iov_len	= len
+							};
+						}}
+						{%tail bytes} {
+							Tcl_Obj*	v = NULL;
+							int			len;
+
+							TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
+							const unsigned char*	bytes = Tcl_GetBytearrayFromObj(v, &len);
+							iov\[ii++\] = (struct iovec){
+								.iov_base	= (void*)bytes,
+								.iov_len	= len
+							};
+						}
+						default {
+							error "Unhandled type \"$type\""
+						}
+					}
+				}] \n]
+
+			done:
+				return code;
+			}
+
+			int struct_${name}_to_dict(Tcl_Interp* interp, struct $name* s, size_t len, Tcl_Obj** out)
 			{
 				int				code = TCL_OK;
 				Tcl_Obj*		d = NULL;
@@ -679,7 +845,7 @@ done:
 							subst {
 							{
 								Tcl_Obj*	t = NULL;
-								TEST_OK_LABEL(done$field, code, struct_${structname}_to_dict(interp, &s->$field, &t));
+								TEST_OK_LABEL(done$field, code, struct_${structname}_to_dict(interp, &s->$field, sizeof(s->$field), &t));
 								TEST_OK_LABEL(done$field, code, Tcl_DictObjPut(interp, d, f_$field, t));
 							done$field:
 								replace_tclobj(&t, NULL);
@@ -693,6 +859,14 @@ done:
 							TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, d, f_$field, Tcl_NewStringObj(s->$field, s->$lenfield)));
 							}
 						}
+						{%tail zstring} {subst {
+							const char*	base = ((void*)s) + sizeof(struct $name);
+							TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, d, f_$field, Tcl_NewStringObj(base, len - sizeof(struct $name) -1)));
+						}}
+						{%tail bytes} {subst {
+							const unsigned char*	base = ((void*)s) + sizeof(struct $name);
+							TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, d, f_$field, Tcl_NewByteArrayObj(base, len - sizeof(struct $name))));
+						}}
 						default {
 							error "Unhandled type \"$type\""
 						}
@@ -705,9 +879,14 @@ done:
 				return code;
 			}
 		}]
-		lappend exported_symbols	dict_to_struct_$name struct_${name}_to_dict
+		if {$iovec_sections == 1} {
+			lappend exported_symbols	dict_to_struct_$name
+		}
+		lappend exported_symbols	dict_to_struct_${name}_iovec dict_to_struct_${name}_iovec_sections struct_${name}_to_dict
 		append exported_headers		"int dict_to_struct_${name}(Tcl_Interp* interp, Tcl_Obj* dict, struct $name* out);\n"
-		append exported_headers		"int struct_${name}_to_dict(Tcl_Interp* interp, struct $name* s, Tcl_Obj** out);\n"
+		append exported_headers		"int dict_to_struct_${name}_iovec(Tcl_Interp* interp, Tcl_Obj* dict, struct iovec* iov);\n"
+		append exported_headers		"int dict_to_struct_${name}_iovec_sections(Tcl_Interp* interp, Tcl_Obj* dict, int* count);\n"
+		append exported_headers		"int struct_${name}_to_dict(Tcl_Interp* interp, struct $name* s, size_t len, Tcl_Obj** out);\n"
 
 		if {[info exists debug]} {
 			set debug	[list debug $debug]
@@ -739,30 +918,46 @@ done:
 		set use_extra			{}
 
 		append code [subst {
+			#include <sys/uio.h>
+
 			OBJCMD(write_fuse_$name) {
 				int				code = TCL_OK;
 				int				fd;
 				Tcl_WideInt		unique;
-				const size_t	buflen = sizeof(struct fuse_out_header) + sizeof(struct $replystruct);
-				uint8_t			buf\[buflen\];
-				struct fuse_out_header*	hdr = (void*)buf;
-				struct $replystruct*	reply = ((void*)buf)+sizeof(struct fuse_out_header);
+				struct fuse_out_header	hdr = {0};
+				int				iovc;
+				Tcl_Obj*		msg = NULL;
 
 				CHECK_ARGS(3, "fd unique msg");
 
 				TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv\[1\], &fd));
 				TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv\[2\], &unique));
+				replace_tclobj(&msg, objv\[3\]);	// Must hold a ref to this while we use the iovec entries
+				TEST_OK_LABEL(done, code, dict_to_struct_${replystruct}_iovec_sections(interp, msg, &iovc));
 
-				*hdr = (struct fuse_out_header){
-					.len	= buflen,
-					.unique	= unique
-				};
-				*reply = (struct $replystruct){0};
-				TEST_OK_LABEL(done, code, dict_to_struct_${replystruct}(interp, objv\[3\], reply));
+				{
+					struct iovec	iov\[1+iovc\];
+					size_t			total = 0;
 
-				TEST_OK_LABEL(done, code, fuse_write(interp, fd, buf, buflen));
+					iov\[0\] = (struct iovec){
+						.iov_base	= &hdr,
+						.iov_len	= sizeof(hdr)
+					};
+					TEST_OK_LABEL(done, code, dict_to_struct_${replystruct}_iovec(interp, msg, iov+1));
+
+					for (int i=0; i<1+iovc; i++) total += iov\[i\].iov_len;
+
+					hdr = (struct fuse_out_header){
+						.len	= total,
+						.unique	= unique
+					};
+
+					fprintf(stderr, "write_fuse_$name writing a total of %ld bytes from %d iovec sections\\n", total, 1+iovc);
+					TEST_OK_LABEL(done, code, fuse_writev(interp, fd, iov, 1+iovc));
+				}
 
 			done:
+				replace_tclobj(&msg, NULL);
 				return code;
 			}
 		}]
@@ -943,10 +1138,11 @@ done:
 		EINVAL
 		ERANGE
 		EILSEQ
+		EPROTO
 	}]
 	#>>>
 	# struct fuse_init_in converter <<<
-	set struct_fuse_init_in	[gen_struct_converter -name fuse_init_in -headers {stdint.h linux/fuse.h} -fields {
+	set struct_fuse_init_in	[gen_struct_converter -debug /tmp/dbg -name fuse_init_in -headers {stdint.h linux/fuse.h} -fields {
 		uint32_t					major
 		uint32_t					minor
 		uint32_t					max_readahead
@@ -1030,6 +1226,25 @@ done:
 		uint64_t						lock_owner
 	}]
 	#>>>
+	# struct fuse_create_in converter <<<
+	set struct_fuse_create_in	[gen_struct_converter -name fuse_create_in -headers stdint.h -fields {
+		{uint32_t flags open}			flags
+		uint32_t						mode
+		uint32_t						umask
+		{uint32_t flags fuse_open}		open_flags
+		{%tail zstring}					name		
+	}]
+	#>>>
+	# struct fuse_entry_out converter <<<
+	set struct_fuse_entry_out	[gen_struct_converter -name fuse_entry_out -headers {stdint.h linux/fuse.h} -fields {
+		uint64_t			nodeid
+		uint64_t			generation
+		uint64_t			entry_valid
+		uint64_t			entry_valid_nsec
+		uint64_t			attr_valid_nsec
+		{struct fuse_attr}	attr
+	}]
+	#>>>
 
 	package require jitclib::obstackpool
 
@@ -1042,10 +1257,12 @@ done:
 		use		$struct_fuse_open_in \
 		use		$struct_fuse_read_in \
 		use		$struct_fuse_release_in \
+		use		$struct_fuse_create_in \
 		use		$jitclib::obstackpool \
-		use		[gen_fuse_writer -name init_out	-replystruct fuse_init_out] \
-		use		[gen_fuse_writer -name attr_out	-replystruct fuse_attr_out] \
-		use		[gen_fuse_writer -name open_out	-replystruct fuse_open_out] \
+		use		[gen_fuse_writer -name init_out		-replystruct fuse_init_out] \
+		use		[gen_fuse_writer -name attr_out		-replystruct fuse_attr_out] \
+		use		[gen_fuse_writer -name open_out		-replystruct fuse_open_out] \
+		use		[gen_fuse_writer -name entry_out	-replystruct fuse_entry_out] \
 		code \
 	{//@begin=c@<<<
 		#include <unistd.h>
@@ -1102,7 +1319,7 @@ done:
 		static uint8_t	static_readbuf[fuse_default_readbuf_size] = {0};
 		static void*	readbuf = static_readbuf;
 
-		typedef int (opcode_decoder)(Tcl_Interp* interp, void* payload, Tcl_Obj** in);
+		typedef int (opcode_decoder)(Tcl_Interp* interp, void* payload, size_t len, Tcl_Obj** in);
 		opcode_decoder*	decode[fuse_opcode_max] = {0};
 
 		//@end=c@@begin=c@
@@ -1166,6 +1383,7 @@ done:
 			decode[FUSE_OPENDIR]	= (opcode_decoder*)struct_fuse_open_in_to_dict;
 			decode[FUSE_READDIR]	= (opcode_decoder*)struct_fuse_read_in_to_dict;
 			decode[FUSE_RELEASEDIR]	= (opcode_decoder*)struct_fuse_release_in_to_dict;
+			decode[FUSE_CREATE]		= (opcode_decoder*)struct_fuse_create_in_to_dict;
 
 			return TCL_OK;
 		}
@@ -1295,7 +1513,7 @@ done:
 
 			if (req_header->opcode < fuse_opcode_max && decode[req_header->opcode]) {
 				Tcl_Obj*	in = NULL;
-				TEST_OK_LABEL(donein, code, (decode[req_header->opcode])(interp, readbuf+sizeof *req_header, &in));
+				TEST_OK_LABEL(donein, code, (decode[req_header->opcode])(interp, readbuf+sizeof(*req_header), req_header->len - sizeof(*req_header), &in));
 				TEST_OK_LABEL(donein, code, Tcl_DictObjPut(interp, msg, lit[LIT_IN], in));
 			donein:
 				replace_tclobj(&in, NULL);
@@ -1486,7 +1704,7 @@ done:
 
 	proc fstime usec {list [expr {$usec/1000000}] [expr {($usec%1000000) * 1000}]}
 
-	set inode_seq	0
+	set inode_seq	2
 	set fh_seq		0
 	set nodes		{}
 	set handles		{}
@@ -1561,7 +1779,7 @@ done:
 					}
 				}
 
-				if 0 {
+				if 1 {
 					set seen	{}
 					puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
 						dict set seen $v 1
@@ -1681,8 +1899,78 @@ done:
 						#throw fuse_posix EOPNOTSUPP
 					}
 
+					FUSE_LOOKUP {
+						set name	[encoding convertfrom utf-8 [string range [dict get $msg tail] 0 end-1]]
+						puts stderr "FUSE_LOOKUP, name: ($name)"
+						if {![dict exists $nodes [dict get $msg nodeid]]} {throw fuse_posix ENOENT}	;# EINVAL?
+						set dir	[dict get $nodes [dict get $msg nodeid]]
+						if {![fusecmds is_dir [dict get $dir mode]]} {throw fuse_posix ENOTDIR}
+						if {![dict exists $dir children $name]} {throw fuse_posix ENOENT}
+						set inode	[dict get $dir children $name]
+						fusecmds write_fuse_entry_out $fd [dict get $msg unique] [dict create \
+							nodeid				$inode \
+							generation			0 \
+							entry_valid			1 \
+							attr_valid			1 \
+							entry_valid_nsec	0 \
+							attr_valid_nsec		0 \
+							attr				[dict get $nodes $inode] \
+						]
+					}
+
+					FUSE_CREATE {
+						set name		[dict get $msg in name]
+						if {![dict exists $nodes [dict get $msg nodeid]]} {throw fuse_posix ENOENT}	;# EINVAL?
+						set dir	[dict get $nodes [dict get $msg nodeid]]
+						if {![fusecmds is_dir [dict get $dir mode]]} {throw fuse_posix ENOTDIR}
+						if {[dict exists $dir children $name]} {throw fuse_posix EEXIST}
+						set inode	[incr inode_seq]
+						lassign [fstime [clock microseconds]] now_s now_ns
+						dict set nodes $inode [dict create \
+							ino			$inode \
+							parent		[dict get $msg nodeid] \
+							size		0 \
+							blocks		0 \
+							atime		$now_s \
+							mtime		$now_s \
+							ctime		$now_s \
+							atimensec	$now_ns \
+							mtimensec	$now_ns \
+							ctimensec	$now_ns \
+							mode		[dict get $msg in mode] \
+							nlink		1 \
+							uid			1000 \
+							gid			1000 \
+							blksize		4096 \
+							flags {
+							} \
+							children	{} \
+						]
+						fusecmds write_fuse_entry_out $fd [dict get $msg unique] [dict create \
+							nodeid				$inode \
+							generation			0 \
+							entry_valid			1 \
+							attr_valid			1 \
+							entry_valid_nsec	0 \
+							attr_valid_nsec		0 \
+							attr				[dict get $nodes $inode] \
+						]
+					}
+
 					default {
-						error "opcode ([dict get $msg opcode]) not handled"
+						set seen	{}
+						puts "Received fuse msg:\n\t[join [lmap v {opcode unique nodeid uid gid pid} {
+							dict set seen $v 1
+							format {%8s: (%s)} $v [dict get $msg $v]
+						}] \n\t]"
+						puts stderr "payload: [regexp -all -inline .. [binary encode hex [dict get $msg tail]]]"
+						dict set seen tail 1
+						dict for {k v} $msg {
+							if {[dict exists $seen $k]} continue
+							puts [format {%12s: (%s)} $k [dict get $msg $k]]
+						}
+						puts stderr "opcode ([dict get $msg opcode]) not handled"
+						throw fuse_posix EOPNOTSUPP
 					}
 				}
 
@@ -1702,7 +1990,7 @@ done:
 				puts "fuse fd readable error [dict get $options -errorcode]: [dict get $options -errorinfo]"
 				if {[info exists msg] && [dict exists $msg unique]} {
 					puts stderr "Writing error reply"
-					fusecmds write_error $fd [dict get $msg unique] EINVAL
+					fusecmds write_error $fd [dict get $msg unique] EPROTO
 				}
 				cleanup
 				return -options $options $errmsg
@@ -1788,8 +2076,8 @@ done:
 puts stderr "Calling glob $tempdir/*"
 #puts stderr "Glob: ([glob -types hidden $tempdir/*])"
 puts stderr "ls: [exec ls -a $tempdir]"
-puts stderr "Mainthread waiting"
 
+if 0 {
 # warmup
 exec ls -la / $tempdir /tmp/d
 
@@ -1802,8 +2090,13 @@ puts "ls $tempdir:\n[exec ls -al $tempdir]"
 puts "ls /tmp/d: [timerate {exec ls -a /tmp/d} 1 1], benchmark: [timerate {exec ls -a /tmp/d}]"
 puts "glob  : [timerate {glob -types hidden $tempdir/*} 1 1], benchmark: [timerate {glob -types hidden $tempdir/*}]"
 puts "glob /tmp/d: [timerate {glob -types hidden /tmp/d/*} 1 1], benchmark: [timerate {glob -types hidden /tmp/d/*}]"
+}
 
-after 3000
+
+writefile $tempdir/foo {hello, world}
+
+#puts stderr "Mainthread waiting"
+#after 3000
 puts stderr "Mainthread releasing fs_tid"
 
 thread::release $fs_tid
