@@ -151,7 +151,7 @@ set tempdir	[thread::send $fs_tid {
 	proc cleanup {} { #<<<
 		global fd tempdir epoll_tid
 
-		puts stderr "In fs_tid cleanup"
+		puts stderr "In fs_tid cleanup, epoll_tid exists? [info exists epoll_tid]"
 
 		if {[info exists epoll_tid]} {
 			thread::send -async $epoll_tid [list set running 0]
@@ -364,7 +364,9 @@ set tempdir	[thread::send $fs_tid {
 						if (errno == EINTR) continue;
 						THROW_POSIX_LABEL(done, code, "Error calling writev on fuse fd");
 					}
-					fprintf(stderr, "fuse_writev wrote %ld bytes\n", wrote);
+					size_t expecting = 0;
+					for (int i=0; i<iovcnt; i++) expecting += iov[i].iov_len;
+					fprintf(stderr, "fuse_writev wrote %ld bytes, expecting: %ld\n", wrote, expecting);
 					break;
 				}
 
@@ -791,17 +793,17 @@ done:
 								.iov_len	= len
 							};
 						}}
-						{%tail bytes} {
+						{%tail bytes} {subst {
 							Tcl_Obj*	v = NULL;
 							int			len;
 
 							TEST_OK_LABEL(done, code, Tcl_DictObjGet(interp, dict, f_$field, &v));
-							const unsigned char*	bytes = Tcl_GetBytearrayFromObj(v, &len);
+							const unsigned char*	bytes = Tcl_GetByteArrayFromObj(v, &len);
 							iov\[ii++\] = (struct iovec){
 								.iov_base	= (void*)bytes,
 								.iov_len	= len
 							};
-						}
+						}}
 						default {
 							error "Unhandled type \"$type\""
 						}
@@ -879,11 +881,12 @@ done:
 				return code;
 			}
 		}]
+
 		if {$iovec_sections == 1} {
 			lappend exported_symbols	dict_to_struct_$name
+			append exported_headers		"int dict_to_struct_${name}(Tcl_Interp* interp, Tcl_Obj* dict, struct $name* out);\n"
 		}
 		lappend exported_symbols	dict_to_struct_${name}_iovec dict_to_struct_${name}_iovec_sections struct_${name}_to_dict
-		append exported_headers		"int dict_to_struct_${name}(Tcl_Interp* interp, Tcl_Obj* dict, struct $name* out);\n"
 		append exported_headers		"int dict_to_struct_${name}_iovec(Tcl_Interp* interp, Tcl_Obj* dict, struct iovec* iov);\n"
 		append exported_headers		"int dict_to_struct_${name}_iovec_sections(Tcl_Interp* interp, Tcl_Obj* dict, int* count);\n"
 		append exported_headers		"int struct_${name}_to_dict(Tcl_Interp* interp, struct $name* s, size_t len, Tcl_Obj** out);\n"
@@ -909,55 +912,111 @@ done:
 		parse_args $args {
 			-name			{-required}
 			-debug			{}
-			-replystruct	{-required}
+			args			{-name replies}
+		}
+
+		if {[llength $replies] % 2 != 0} {
+			error "replies must be a list of pairs of type -> detail"
 		}
 
 		set exported_symbols	{}
 		set exported_headers	{}
 		set code				{}
 		set use_extra			{}
+		set use					[list use $fuse_io]
+		set repparts			[expr {[llength $replies] / 2}]
+
+		foreach {t rname} $replies {
+			if {$t eq "struct"} {
+				lappend use		use [set ::struct_$rname]
+			}
+		}
 
 		append code [subst {
+			#include <linux/fuse.h>
 			#include <sys/uio.h>
 
 			OBJCMD(write_fuse_$name) {
 				int				code = TCL_OK;
 				int				fd;
 				Tcl_WideInt		unique;
-				struct fuse_out_header	hdr = {0};
-				int				iovc;
-				Tcl_Obj*		msg = NULL;
+				struct fuse_out_header	hdr;
+				int				iovc = 1;		// At least one (for the fuse_out_header)
+				Tcl_Obj*		msg\[$repparts\] = {0};
+				int				part;
+				int				part_iovc\[$repparts\] = {0};
 
-				CHECK_ARGS(3, "fd unique msg");
+				CHECK_ARGS([expr {2 + $repparts}], "fd unique [join [lmap {t rname} $replies {set rname}]]");
 
 				TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv\[1\], &fd));
 				TEST_OK_LABEL(done, code, Tcl_GetWideIntFromObj(interp, objv\[2\], &unique));
-				replace_tclobj(&msg, objv\[3\]);	// Must hold a ref to this while we use the iovec entries
-				TEST_OK_LABEL(done, code, dict_to_struct_${replystruct}_iovec_sections(interp, msg, &iovc));
+
+				// Count up the total iovec entries we need
+				part = 0;
+				[join [set i 2; lmap {t rname} $replies {incr i; subst {
+					replace_tclobj(&msg\[part\], objv\[$i\]);	// Must hold a ref to this while we use the iovec entries
+					[switch -exact -- $t {
+						struct {subst {
+							TEST_OK_LABEL(done, code, dict_to_struct_${rname}_iovec_sections(interp, msg\[part\], &part_iovc\[part\]));
+						}}
+						zstring - bytes {subst {
+							part_iovc\[part\] = 1;
+						}}
+						default {error "Invalid reply part type \"$t\""}
+					}]
+					iovc += part_iovc\[part\];
+					part++;
+				}}] \n]
 
 				{
-					struct iovec	iov\[1+iovc\];
+					struct iovec	iov\[iovc\];
 					size_t			total = 0;
+					int				iofs = 0;
 
-					iov\[0\] = (struct iovec){
+					iov\[iofs++\] = (struct iovec){
 						.iov_base	= &hdr,
 						.iov_len	= sizeof(hdr)
 					};
-					TEST_OK_LABEL(done, code, dict_to_struct_${replystruct}_iovec(interp, msg, iov+1));
 
-					for (int i=0; i<1+iovc; i++) total += iov\[i\].iov_len;
+					part = 0;
+					[join [lmap {t rname} $replies {subst {
+						[switch -exact -- $t {
+							struct {subst {
+								TEST_OK_LABEL(done, code, dict_to_struct_${rname}_iovec(interp, msg\[part\], iov+iofs));
+							}}
+							zstring {subst {
+								{
+									int len;
+									iov\[iofs\].iov_base = (void*)Tcl_GetStringFromObj(msg\[part\], &len);
+									iov\[part\].iov_len = len+1;	// Copy the null terminator too
+								}
+							}}
+							bytes {subst {
+								{
+									int len;
+									iov\[iofs\].iov_base = (void*)Tcl_GetByteArrayFromObj(msg\[part\], &len);
+									iov\[iofs\].iov_len = len;
+								}
+							}}
+							default {error "Invalid reply part type \"$t\""}
+						}]
+						iofs += part_iovc\[part\];
+						part++;
+					}}] \n]
+
+					for (int i=0; i<iovc; i++) total += iov\[i\].iov_len;
 
 					hdr = (struct fuse_out_header){
 						.len	= total,
 						.unique	= unique
 					};
 
-					fprintf(stderr, "write_fuse_$name writing a total of %ld bytes from %d iovec sections, sizeof struct $replystruct: %ld\\n", total, 1+iovc, sizeof(struct $replystruct));
-					TEST_OK_LABEL(done, code, fuse_writev(interp, fd, iov, 1+iovc));
+					fprintf(stderr, "write_fuse_$name writing a total of %ld bytes from %d iovec sections\\n", total, iovc);
+					TEST_OK_LABEL(done, code, fuse_writev(interp, fd, iov, iovc));
 				}
 
 			done:
-				replace_tclobj(&msg, NULL);
+				for (int i=0; i<$repparts; i++) replace_tclobj(&msg\[i\], NULL);
 				return code;
 			}
 		}]
@@ -973,8 +1032,7 @@ done:
 		list \
 			{*}$debug \
 			options {-Wall -Werror -g} \
-			use		$fuse_io \
-			use		[set ::struct_$replystruct] \
+			{*}$use \
 			export	[list symbols $exported_symbols header $exported_headers] \
 			code	$code
 	}
@@ -1091,10 +1149,27 @@ done:
 		FUSE_READ_LOCKOWNER
 	}]
 	#>>>
-	# flagmap_fuse_read <<<
+	# flagmap_fuse_release <<<
 	set flagmap_fuse_release	[gen_flag_map -name fuse_release -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
 		FUSE_RELEASE_FLUSH
 		FUSE_RELEASE_FLOCK_UNLOCK
+	}]
+	#>>>
+	# flagmap_fuse_write <<<
+	set flagmap_fuse_write	[gen_flag_map -name fuse_write -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+		FUSE_WRITE_CACHE
+		FUSE_WRITE_LOCKOWNER
+		FUSE_WRITE_KILL_SUIDGID
+	}]
+	#>>>
+	# flagmap_fuse_ioctl <<<
+	set flagmap_fuse_ioctl	[gen_flag_map -name fuse_ioctl -headers {stdint.h linux/fuse.h} -type uint32_t -flags {
+		FUSE_IOCTL_COMPAT
+		FUSE_IOCTL_UNRESTRICTED
+		FUSE_IOCTL_RETRY
+		FUSE_IOCTL_32BIT
+		FUSE_IOCTL_DIR
+		FUSE_IOCTL_COMPAT_X32
 	}]
 	#>>>
 	# enummap_errno <<<
@@ -1171,14 +1246,14 @@ done:
 	#>>>
 	# struct fuse_open_in converter <<<
 	set struct_fuse_open_in	[gen_struct_converter -name fuse_open_in -headers {stdint.h linux/fuse.h} -fields {
-		{uint32_t flags open}	flags
-		{uint32_t flags fopen}	open_flags
+		{uint32_t flags open}		flags
+		{uint32_t flags fuse_open}	open_flags
 	}]
 	#>>>
 	# struct fuse_open_out converter <<<
-	set struct_fuse_open_out	[gen_struct_converter -name fuse_open_out -headers {stdint.h linux/fuse.h} -fields {
-		uint64_t				fh
-		{uint32_t flags fopen}	open_flags
+	set struct_fuse_open_out	[gen_struct_converter -name fuse_open_out -headers stdint.h -fields {
+		uint64_t						fh
+		{uint32_t flags fuse_open}		open_flags
 	}]
 	#>>>
 	# struct fuse_attr converter <<<
@@ -1246,6 +1321,53 @@ done:
 		{struct fuse_attr}	attr
 	}]
 	#>>>
+	# struct fuse_write_in converter <<<
+	set struct_fuse_write_in	[gen_struct_converter -name fuse_write_in -headers stdint.h -fields {
+		uint64_t						fh
+		uint64_t						offset
+		uint32_t						size
+		{uint32_t flags fuse_write}		write_flags
+		uint64_t						lock_owner
+		{uint32_t flags open}			flags
+		{%tail bytes}					data
+	}]
+	#>>>
+	# struct fuse_write_out converter <<<
+	set struct_fuse_write_out	[gen_struct_converter -name fuse_write_out -headers {stdint.h linux/fuse.h} -fields {
+		uint32_t						size
+	}]
+	#>>>
+	# struct fuse_ioctl_in converter <<<
+	set struct_fuse_ioctl_in	[gen_struct_converter -name fuse_ioctl_in -headers {stdint.h linux/fuse.h} -fields {
+		uint64_t						fh
+		{uint32_t flags fuse_ioctl}		flags
+		uint32_t						cmd
+		uint64_t						arg
+		uint32_t						in_size
+		uint32_t						out_size
+	}]
+	#>>>
+	# struct fuse_flush_in converter <<<
+	set struct_fuse_flush_in	[gen_struct_converter -name fuse_flush_in -headers {stdint.h linux/fuse.h} -fields {
+		uint64_t						fh
+		uint64_t						lock_owner
+	}]
+	#>>>
+	# struct fuse_read_in converter <<<
+	set struct_fuse_read_in	[gen_struct_converter -name fuse_read_in -headers {stdint.h linux/fuse.h} -fields {
+		uint64_t						fh
+		uint64_t						offset
+		uint32_t						size
+		{uint32_t flags fuse_read}		read_flags
+		uint64_t						lock_owner
+		uint32_t						flags
+	}]
+	#>>>
+	# struct fuse_forget_in converter <<<
+	set struct_fuse_forget_in	[gen_struct_converter -name fuse_forget_in -headers {stdint.h linux/fuse.h} -fields {
+		uint64_t						nlookup
+	}]
+	#>>>
 
 	package require jitclib::obstackpool
 
@@ -1259,11 +1381,19 @@ done:
 		use		$struct_fuse_read_in \
 		use		$struct_fuse_release_in \
 		use		$struct_fuse_create_in \
+		use		$struct_fuse_write_in \
+		use		$struct_fuse_ioctl_in \
+		use		$struct_fuse_flush_in \
+		use		$struct_fuse_read_in \
+		use		$struct_fuse_forget_in \
 		use		$jitclib::obstackpool \
-		use		[gen_fuse_writer -name init_out		-replystruct fuse_init_out] \
-		use		[gen_fuse_writer -name attr_out		-replystruct fuse_attr_out] \
-		use		[gen_fuse_writer -name open_out		-replystruct fuse_open_out] \
-		use		[gen_fuse_writer -name entry_out	-replystruct fuse_entry_out] \
+		use		[gen_fuse_writer -name init_out		struct fuse_init_out] \
+		use		[gen_fuse_writer -name attr_out		struct fuse_attr_out] \
+		use		[gen_fuse_writer -name entry_out	struct fuse_entry_out] \
+		use		[gen_fuse_writer -name create_out	struct fuse_entry_out struct fuse_open_out] \
+		use		[gen_fuse_writer -name write_out	struct fuse_write_out] \
+		use		[gen_fuse_writer -name open_out		struct fuse_open_out] \
+		use		[gen_fuse_writer -name read_out		bytes data] \
 		code \
 	{//@begin=c@<<<
 		#include <unistd.h>
@@ -1289,6 +1419,7 @@ done:
 			LIT_EOF,
 			LIT_TRUE,
 			LIT_FALSE,
+			LIT_STRING,
 			_LIT_SIZE
 		};
 		//@end=c@@begin=c@
@@ -1306,6 +1437,7 @@ done:
 			"_state eof",
 			"1",
 			"0",
+			"string",
 			NULL
 		};
 
@@ -1322,6 +1454,19 @@ done:
 
 		typedef int (opcode_decoder)(Tcl_Interp* interp, void* payload, size_t len, Tcl_Obj** in);
 		opcode_decoder*	decode[fuse_opcode_max] = {0};
+
+		static int zstring_tail_to_dict(Tcl_Interp* interp, void* payload, size_t len, Tcl_Obj** in)
+		{
+			int			code = TCL_OK;
+			Tcl_Obj*	res = NULL;
+			replace_tclobj(&res, Tcl_NewDictObj());
+			TEST_OK_LABEL(done, code, Tcl_DictObjPut(interp, res, lit[LIT_STRING], Tcl_NewStringObj(payload, len-1)));
+			replace_tclobj(in, res);
+
+		done:
+			replace_tclobj(&res, NULL);
+			return code;
+		}
 
 		//@end=c@@begin=c@
 		INIT { //<<<
@@ -1385,6 +1530,15 @@ done:
 			decode[FUSE_READDIR]	= (opcode_decoder*)struct_fuse_read_in_to_dict;
 			decode[FUSE_RELEASEDIR]	= (opcode_decoder*)struct_fuse_release_in_to_dict;
 			decode[FUSE_CREATE]		= (opcode_decoder*)struct_fuse_create_in_to_dict;
+			decode[FUSE_WRITE]		= (opcode_decoder*)struct_fuse_write_in_to_dict;
+			decode[FUSE_IOCTL]		= (opcode_decoder*)struct_fuse_ioctl_in_to_dict;
+			decode[FUSE_FLUSH]		= (opcode_decoder*)struct_fuse_flush_in_to_dict;
+			decode[FUSE_RELEASE]	= (opcode_decoder*)struct_fuse_release_in_to_dict;
+			decode[FUSE_OPEN]		= (opcode_decoder*)struct_fuse_open_in_to_dict;
+			decode[FUSE_READ]		= (opcode_decoder*)struct_fuse_read_in_to_dict;
+			decode[FUSE_LOOKUP]		= (opcode_decoder*)zstring_tail_to_dict;
+			decode[FUSE_UNLINK]		= (opcode_decoder*)zstring_tail_to_dict;
+			decode[FUSE_FORGET]		= (opcode_decoder*)struct_fuse_forget_in_to_dict;
 
 			return TCL_OK;
 		}
@@ -1676,7 +1830,7 @@ done:
 
 			CHECK_ARGS(0, "");
 
-			fd = open("/dev/fuse", O_CLOEXEC | O_RDWR | O_NONBLOCK);
+			fd = open("/dev/defuse", O_CLOEXEC | O_RDWR | O_NONBLOCK);
 			if (-1 == fd) THROW_POSIX_LABEL(done, code, "Error opening /dev/fuse");
 
 			Tcl_SetObjResult(interp, Tcl_NewIntObj(fd));
@@ -1710,11 +1864,14 @@ done:
 	set nodes		{}
 	set handles		{}
 
-	proc fopen {inode mode} { #<<<
+	proc fopen {inode flags} { #<<<
 		global nodes handles fh_seq
 		set fh	[incr fh_seq]
 		if {![dict exists $nodes $inode]} {throw fuse_posix ENOENT}
-		# TODO: check mode
+		# TODO: check flags
+		dict with nodes $inode {
+			incr refs
+		}
 		dict set handles $fh [dict create \
 			inode	$inode \
 			offset	0 \
@@ -1724,9 +1881,18 @@ done:
 
 	#>>>
 	proc fclose fh { #<<<
-		global handles
+		global handles nodes
 		if {![dict exists $handles $fh]} {throw fuse_posix EBADF}
+		set inode	[dict get $handles $fh inode]
 		dict unset $handles $fh
+		dict with nodes $inode {
+			if {[incr refs -1] == 0} {
+				if {$nlink < ([fusecmds is_dir $mode] ? 2 : 1)} {
+					puts "All refs to $inode gone ($nlink < [expr {[fusecmds is_dir $mode] ? 2 : 1}]) purging:\n[dict get $nodes $inode]"
+					dict unset nodes $inode
+				}
+			}
+		}
 	}
 
 	#>>>
@@ -1745,16 +1911,18 @@ done:
 		ctimensec	$now_ns \
 		mode		0o40750 \
 		nlink		2 \
+		refs		0 \
 		uid			1000 \
 		gid			1000 \
 		blksize		4096 \
 		flags {
 		} \
 		children	{} \
+		bytes		{} \
 	]	;# Root
 
 	proc readable fd {
-		global nodes handles
+		global nodes handles inode_seq
 
 		#puts stderr "fuse fd readable"
 		while 1 {
@@ -1829,22 +1997,18 @@ done:
 							if {![dict exists $handles [dict get $msg in fh]]} {
 								throw fuse_posix EBADF
 							}
-							set nodeid	[dict get $handles [dict get $msg fh] inode]
+							set nodeid	[dict get $handles [dict get $msg in fh] inode]
 						} else {
 							set nodeid	[dict get $msg nodeid]
 						}
 
 						if {[dict exists $nodes $nodeid]} {
 							set attrs	[dict get $nodes $nodeid]
-							if {[fusecmds is_dir [dict get $attrs mode]]} {
-								fusecmds write_fuse_attr_out $fd $unique [dict create \
-									attr_valid		2 \
-									attr_valid_nsec	500 \
-									attr			$attrs \
-								]
-							} else {
-								throw fuse_posix ENOTDIR
-							}
+							fusecmds write_fuse_attr_out $fd $unique [dict create \
+								attr_valid		2 \
+								attr_valid_nsec	500 \
+								attr			$attrs \
+							]
 						} else {
 							throw fuse_posix ENOENT
 						}
@@ -1852,7 +2016,7 @@ done:
 
 					FUSE_OPENDIR {
 						#puts stderr "handling FUSE_OPENDIR"
-						set fh	[fopen [dict get $msg nodeid] 0]
+						set fh	[fopen [dict get $msg nodeid] {}]
 						#puts stderr "assigned fh: ($fh)"
 						fusecmds write_fuse_open_out $fd [dict get $msg unique] [dict create \
 							fh			$fh \
@@ -1889,7 +2053,8 @@ done:
 						}
 					}
 
-					FUSE_RELEASEDIR {
+					FUSE_RELEASEDIR -
+					FUSE_RELEASE {
 						set fh		[dict get $msg in fh]
 						fclose $fh
 						fusecmds write_empty $fd [dict get $msg unique]
@@ -1901,7 +2066,8 @@ done:
 					}
 
 					FUSE_LOOKUP {
-						set name	[encoding convertfrom utf-8 [string range [dict get $msg tail] 0 end-1]]
+						#set name	[encoding convertfrom utf-8 [string range [dict get $msg tail] 0 end-1]]
+						set name	[dict get $msg in string]
 						puts stderr "FUSE_LOOKUP, name: ($name)"
 						if {![dict exists $nodes [dict get $msg nodeid]]} {throw fuse_posix ENOENT}	;# EINVAL?
 						set dir	[dict get $nodes [dict get $msg nodeid]]
@@ -1921,6 +2087,7 @@ done:
 
 					FUSE_CREATE {
 						set name		[dict get $msg in name]
+						puts "nodes: [dict keys $nodes]"
 						if {![dict exists $nodes [dict get $msg nodeid]]} {throw fuse_posix ENOENT}	;# EINVAL?
 						set dir	[dict get $nodes [dict get $msg nodeid]]
 						if {![fusecmds is_dir [dict get $dir mode]]} {throw fuse_posix ENOTDIR}
@@ -1940,14 +2107,20 @@ done:
 							ctimensec	$now_ns \
 							mode		[dict get $msg in mode] \
 							nlink		1 \
+							refs		0 \
 							uid			1000 \
 							gid			1000 \
 							blksize		4096 \
 							flags {
 							} \
 							children	{} \
+							bytes		{} \
 						]
-						fusecmds write_fuse_entry_out $fd [dict get $msg unique] [dict create \
+						puts stderr "Created inode $inode, mode: [format 0o%o [dict get $nodes $inode mode]]"
+						dict set nodes [dict get $msg nodeid] children $name $inode
+						set fh	[fopen $inode [dict get $msg in flags]]
+						puts stderr "Opened fh: ($fh)"
+						fusecmds write_fuse_create_out $fd [dict get $msg unique] [dict create \
 							nodeid				$inode \
 							generation			0 \
 							entry_valid			1 \
@@ -1955,7 +2128,83 @@ done:
 							entry_valid_nsec	0 \
 							attr_valid_nsec		0 \
 							attr				[dict get $nodes $inode] \
+						] [dict create \
+							fh			$fh \
+							open_flags	{} \
 						]
+					}
+
+					FUSE_WRITE {
+						set fh		[dict get $msg in fh]
+						if {![dict exists $handles $fh]} {throw fuse_posix EBADF}
+						set inode	[dict get $handles $fh inode]
+						if {![dict exists $nodes $inode]} {throw fuse_posix ENOENT}
+						set old	[dict get $nodes $inode bytes]
+						set offset	[dict get $msg in offset]
+						set pre	[if {$offset} {
+							string range $old 0 [dict get $msg in offset]-1
+						}]
+						set post	[string range $old [expr {$offset+[dict get $msg in size]}] end]
+						lassign [fstime [clock microseconds]] now_s now_ns
+						dict set nodes $inode bytes $pre[dict get $msg in data]$post
+						dict set nodes $inode size [string length [dict get $nodes $inode bytes]]
+						dict set nodes $inode atime		$now_s
+						dict set nodes $inode mtime		$now_s
+						dict set nodes $inode atimensec	$now_ns
+						dict set nodes $inode mtimensec	$now_ns
+						fusecmds write_fuse_write_out $fd [dict get $msg unique] [dict create \
+							size	[dict get $msg in size]
+						]
+					}
+
+					FUSE_FLUSH {
+						set fh		[dict get $msg in fh]
+						if {![dict exists $handles $fh]} {throw fuse_posix EBADF}
+						set inode	[dict get $handles $fh inode]
+						if {![dict exists $nodes $inode]} {throw fuse_posix ENOENT}
+						fusecmds write_empty $fd [dict get $msg unique]
+					}
+
+					FUSE_OPEN {
+						set fh	[fopen [dict get $msg nodeid] [dict get $msg in flags]]
+						fusecmds write_fuse_open_out $fd [dict get $msg unique]  [dict create \
+							fh			$fh \
+							open_flags	{} \
+						]
+					}
+
+					FUSE_READ {
+						set fh		[dict get $msg in fh]
+						if {![dict exists $handles $fh]} {throw fuse_posix EBADF}
+						set inode	[dict get $handles $fh inode]
+						if {![dict exists $nodes $inode]} {throw fuse_posix ENOENT}
+						set off		[dict get $msg in offset]
+						set size	[dict get $msg in size]
+						lassign [fstime [clock microseconds]] now_s now_ns
+						dict set nodes $inode atime		$now_s
+						dict set nodes $inode atimensec	$now_ns
+						fusecmds write_fuse_read_out $fd [dict get $msg unique] [string range [dict get $nodes $inode bytes] $off [expr {$off+$size-1}]]
+					}
+
+					FUSE_UNLINK {
+						set name	[dict get $msg in string]
+						puts stderr "FUSE_UNLINK, name: ($name)"
+						set inode	[dict get $msg nodeid]
+						if {![dict exists $nodes $inode]} {throw fuse_posix ENOENT}	;# EINVAL?
+						set dir	[dict get $nodes $inode]
+						if {![dict exists $dir children $name]} {throw fuse_posix ENOENT}
+						dict with nodes [dict get $dir children $name] {
+							dict unset $children $name
+							if {[incr nlink -1] < ([fusecmds is_dir $mode] ? 2 : 1) && $refs == 0} {
+								puts "All refs to $inode gone ($nlink < [expr {[fusecmds is_dir $mode] ? 2 : 1}]) purging:\n[dict get $nodes $inode]"
+								dict unset nodes $inode
+							}
+						}
+						fusecmds write_empty $fd [dict get $msg unique]
+					}
+
+					FUSE_FORGET {
+						puts stderr "Got FUSE_FORGET ([dict get $msg in nlookup])"
 					}
 
 					default {
@@ -2025,7 +2274,8 @@ done:
 			replace_tclobj(&fsargs, Tcl_ObjPrintf("fd=%d,rootmode=%o,user_id=1000,group_id=1000", fd, S_IFDIR));
 
 			//fprintf(stderr, "Calling mount(), mountpoint: (%s), fsargs: (%s)\n", mountpoint, Tcl_GetString(fsargs));
-			const int mount_rc = mount("fuseraw", mountpoint, "fuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
+			//const int mount_rc = mount("fuseraw", mountpoint, "fuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
+			const int mount_rc = mount("fuseraw", mountpoint, "defuse", MS_NOEXEC | MS_NOSUID, Tcl_GetString(fsargs));
 			//const int mount_rc = mount("fuse", mountpoint, "fuse", 0, Tcl_GetString(fsargs));
 			if (mount_rc == -1)
 				THROW_POSIX_LABEL(done, code, "Error calling mount");
@@ -2095,9 +2345,13 @@ puts "glob /tmp/d: [timerate {glob -types hidden /tmp/d/*} 1 1], benchmark: [tim
 
 
 writefile $tempdir/foo {hello, world}
+puts "Wrote $tempdir/foo"
+puts "Read back: ([readfile $tempdir/foo])"
+file delete $tempdir/foo
+puts "unlinked $tempdir/foo"
 
-#puts stderr "Mainthread waiting"
-#after 3000
+puts stderr "Mainthread waiting"
+after 1000
 puts stderr "Mainthread releasing fs_tid"
 
 thread::release $fs_tid
