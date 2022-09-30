@@ -996,6 +996,25 @@ finally:
 }
 
 //}}}
+static int nrapply_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+{
+	int				code = TCL_OK;
+	Tcl_ObjCmdProc*	proc = NULL;
+
+	if (objc < 3) {
+		Tcl_WrongNumArgs(interp, 1, objv, "cdef symbol args");
+		code = TCL_ERROR;
+		goto finally;
+	}
+
+	TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, objv[1], objv[2], (void**)&proc));
+	code = Tcl_NRCallObjProc(interp, proc, NULL, objc-2, objv-2);
+
+finally:
+	return code;
+}
+
+//}}}
 static int symbols_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
 {
 	int				code = TCL_OK;
@@ -1049,6 +1068,7 @@ static struct cmd {
 	Tcl_ObjCmdProc*	proc;
 } cmds[] = {
 	{NS "::capply",		capply_cmd},
+	{NS "::nrapply",	nrapply_cmd},
 	{NS "::symbols",	symbols_cmd},
 	{NS "::mkdtemp",	mkdtemp_cmd},
 	{NULL,				NULL}
