@@ -668,6 +668,136 @@ test capply-11.1 {jitclib::load_cdef} -setup { #<<<
 }
 #>>>
 }
+test capply-11.1 {Test NR command dispatch} -body { #<<<
+	set test	capply-11.1
+	namespace eval ::test_$test {
+		coroutine foo apply {pref { #<<<
+			lassign [yieldto return -level 0] coro x
+			while 1 {
+				lassign [yieldto $coro $pref$x] coro x
+			}
+		}} a
+
+		#>>>
+		coroutine bar apply [list {} { #<<<
+			jitc::capply {options {-Wall -Werror -gdwarf-5} code {
+				//@begin=c@
+				struct range_state {
+					Tcl_Obj*	iter;
+					Tcl_Obj*	res;
+					Tcl_Obj*	script;
+					int			from;
+					int			to;
+					int			step;
+					int			i;
+				};
+
+				//@end=c@@begin=c@
+
+				static int range_loop_top(Tcl_Interp* interp, struct range_state* s);
+				static int range_loop_bot(ClientData[], Tcl_Interp* interp, int result);
+
+				static void free_range_state(struct range_state** s) //<<<
+				{
+					if (*s) {
+						replace_tclobj(&(*s)->iter, NULL);
+						replace_tclobj(&(*s)->script, NULL);
+						replace_tclobj(&(*s)->res, NULL);
+						ckfree(*s);
+						*s = NULL;
+					}
+				}
+
+				//@end=c@@begin=c@>>>
+				OBJCMD(range) //<<<
+				{
+					int					code = TCL_OK;
+					struct range_state*	s = NULL;
+
+					CHECK_ARGS(4, "iteratorvar from to script");
+
+					s = ckalloc(sizeof *s);
+					*s = (struct range_state){0};
+					//@end=c@@begin=c@
+					replace_tclobj(&s->iter, objv[1]);
+					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[2], &s->from));
+					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[3], &s->to));
+					replace_tclobj(&s->script, objv[4]);
+
+					s->step = (s->to >= s->from) ? 1 : -1;
+					s->i = s->from;
+					replace_tclobj(&s->res, Tcl_NewListObj(0, NULL));
+
+					return range_loop_top(interp, s);
+
+				done:
+					free_range_state(&s);
+					return code;
+				}
+
+				//@end=c@@begin=c@>>>
+				static int range_loop_top(Tcl_Interp* interp, struct range_state* s) //<<<
+				{
+					int					code = TCL_OK;
+					Tcl_Obj*			v = NULL;
+
+					if ((s->step > 0 && s->i > s->to) || (s->step < 0 && s->i < s->to)) {
+						if (code == TCL_OK) Tcl_SetObjResult(interp, s->res);
+						goto done;
+					}
+
+					replace_tclobj(&v, Tcl_NewIntObj(s->i));
+					if (NULL == Tcl_ObjSetVar2(interp, s->iter, NULL, v, TCL_LEAVE_ERR_MSG))
+						goto done;
+					replace_tclobj(&v, NULL);
+
+					Tcl_NRAddCallback(interp, range_loop_bot, s, NULL, NULL, NULL);
+					code = Tcl_NREvalObj(interp, s->script, 0);
+					return code;
+
+				done:
+					replace_tclobj(&v, NULL);
+					free_range_state(&s);
+					return code;
+				}
+
+				//>>>
+				static int range_loop_bot(ClientData cdata[], Tcl_Interp* interp, int result) //<<<
+				{
+					int					code = TCL_OK;
+					struct range_state*	s = cdata[0];
+
+					switch (result) {
+						case TCL_OK:
+							TEST_OK_LABEL(done, code, Tcl_ListObjAppendElement(interp, s->res, Tcl_GetObjResult(interp)));
+							// Falls through
+						case TCL_CONTINUE:
+							s->i += s->step;
+							return range_loop_top(interp, s);
+
+						default:
+							code = result;
+							goto done;
+					}
+
+				done:
+					free_range_state(&s);
+					return code;
+				}
+
+				//@end=c@>>>
+			}} range x 1 10 {
+				yieldto foo [info coroutine] $x
+			}
+		} [namespace current]]
+
+		#>>>
+	}
+} -cleanup {
+	namespace delete ::test_$test
+	unset -nocomplain test
+} -result {a1 a2 a3 a4 a5 a6 a7 a8 a9 a10}
+#>>>
 test capply-12.1 {Test debug info} -constraints inDebugger -setup { #<<<
 	set tmpdir	[file join [expr {[info exists ::env(TMP)] ? $::env(TMP) : "/tmp"}] jitc_capply-12.1_[format %08x [expr {int(rand()*(2**32))}]]]
 	file mkdir $tmpdir

@@ -1008,7 +1008,7 @@ static int nrapply_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *
 	}
 
 	TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, objv[1], objv[2], (void**)&proc));
-	code = Tcl_NRCallObjProc(interp, proc, NULL, objc-2, objv+2);
+	code = (proc)(NULL, interp, objc-2, objv+2);
 
 finally:
 	return code;
@@ -1074,8 +1074,7 @@ static struct cmd {
 	Tcl_ObjCmdProc*	proc;
 	Tcl_ObjCmdProc*	nrproc;
 } cmds[] = {
-	{NS "::capply",		capply_cmd,			NULL},
-	{NS "::nrapply",	nrapply_cmd_setup,	nrapply_cmd},
+	{NS "::capply",		nrapply_cmd_setup,	capply_cmd},
 	{NS "::symbols",	symbols_cmd,		NULL},
 	{NS "::mkdtemp",	mkdtemp_cmd,		NULL},
 	{NULL,				NULL,				NULL}
@@ -1112,21 +1111,17 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 	// Set up interp_cx }}}
 
 	while (c->name) {
-		fprintf(stderr, "Creating NR command %s, c->proc: %p, c->nrproc: %p\n", c->name, c->proc, c->nrproc);
+		Tcl_Command r = NULL;
+
 		if (c->nrproc) {
-			fprintf(stderr, "first\n");
-			if (NULL == Tcl_NRCreateCommand(interp, c->name, c->proc, c->nrproc, l, NULL)) {
-				Tcl_SetObjResult(interp, Tcl_ObjPrintf("Could not create nr command %s", c->name));
-				code = TCL_ERROR;
-				goto finally;
-			}
+			r = Tcl_NRCreateCommand(interp, c->name, c->proc, c->nrproc, l, NULL);
 		} else {
-			fprintf(stderr, "second\n");
-			if (NULL == Tcl_CreateObjCommand(interp, c->name, c->proc, l, NULL)) {
-				Tcl_SetObjResult(interp, Tcl_ObjPrintf("Could not create command %s", c->name));
-				code = TCL_ERROR;
-				goto finally;
-			}
+			r = Tcl_CreateObjCommand(interp, c->name, c->proc, l, NULL);
+		}
+		if (r == NULL) {
+			Tcl_SetObjResult(interp, Tcl_ObjPrintf("Could not create command %s", c->name));
+			code = TCL_ERROR;
+			goto finally;
 		}
 		c++;
 	}
