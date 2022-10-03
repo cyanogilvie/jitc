@@ -80,7 +80,7 @@ test capply-2.1 {missing symbol} -body { #<<<
 			//@end=c@
 		}
 	} hellox foo bar
-} -returnCodes error -errorCode {JITC SYMBOL hellox} -result {Symbol not found: "hellox"}
+} -returnCodes error -errorCode {TCL LOOKUP LOAD_SYMBOL hellox} -match glob -result {cannot find symbol "hellox": */dll.so: undefined symbol: _hellox}
 #>>>
 test capply-3.1 {exception} -body { #<<<
 	jitc::capply {
@@ -188,7 +188,7 @@ test capply-4.2 {mode: raw} -setup { #<<<
 	jitc::capply $cdef msg foo bar
 } -cleanup {
 	unset -nocomplain cdef
-} -returnCodes error -result {ERROR: In "string", line 2: ',' expected (got "cdata"):
+} -returnCodes error -result {ERROR: In "<string>", line 2: ',' expected (got "cdata"):
 			int msg(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])}
 #>>>
 test capply-5.1 {OBJCMD} -body { #<<<
@@ -604,7 +604,7 @@ test capply-7.2 {filter re2c, sentinel without bounds check} -setup { #<<<
 #>>>
 test capply-8.1 {tcc memory leak when a header is not found, mode raw: no leak} -body { #<<<
 	jitc::capply {mode raw code "#include <nonesuch.h>"} foo
-} -returnCodes error -result {ERROR: In "string", line 1: include file 'nonesuch.h' not found:
+} -returnCodes error -result {ERROR: In "<string>", line 1: include file 'nonesuch.h' not found:
 #include <nonesuch.h>}
 #>>>
 test capply-8.2 {tcc memory leak when a header is not found, mode tcl: inline functions leak} -constraints tccMemleak -body { #<<<
