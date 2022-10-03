@@ -29,12 +29,16 @@ test nrapply-1.1 {Test NR command dispatch} -body { #<<<
 			};
 
 			//@end=c@@begin=c@
+
+			static int range_loop_top(Tcl_Interp* interp, struct range_state* s);
+			static int range_loop_bot(ClientData[], Tcl_Interp* interp, int result);
+
 			static void free_range_state(struct range_state** s) //<<<
 			{
 				if (*s) {
-					replace_tclobj(&(*s->iter), NULL);
-					replace_tclobj(&(*s->script), NULL);
-					replace_tclobj(&(*s->res), NULL);
+					replace_tclobj(&(*s)->iter, NULL);
+					replace_tclobj(&(*s)->script, NULL);
+					replace_tclobj(&(*s)->res, NULL);
 					ckfree(*s);
 					*s = NULL;
 				}
@@ -49,16 +53,16 @@ test nrapply-1.1 {Test NR command dispatch} -body { #<<<
 				CHECK_ARGS(4, "iteratorvar from to script");
 
 				s = ckalloc(sizeof *s);
-				*s = {0};
+				*s = (struct range_state){0};
 				//@end=c@@begin=c@
 				replace_tclobj(&s->iter, objv[1]);
-				TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[2], &s->from))
-				TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[3], &s->to))
+				TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[2], &s->from));
+				TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[3], &s->to));
 				replace_tclobj(&s->script, objv[4]);
 
 				s->step = (s->to >= s->from) ? 1 : -1;
-				i = from;
-				replace_tclobj((&s->res, Tcl_NewListObj(0, NULL))
+				s->i = s->from;
+				replace_tclobj(&s->res, Tcl_NewListObj(0, NULL));
 
 				return range_loop_top(interp, s);
 
@@ -79,11 +83,13 @@ test nrapply-1.1 {Test NR command dispatch} -body { #<<<
 				s->i += s->step;
 
 				replace_tclobj(&v, Tcl_NewIntObj(s->i));
-				TEST_OK_LABEL(done, code, Tcl_SetObjVar2(interp, s->iter, NULL, v, TCL_LEAVE_ERR_MSG));
+				if (NULL == Tcl_ObjSetVar2(interp, s->iter, NULL, v, TCL_LEAVE_ERR_MSG))
+					goto done;
 				replace_tclobj(&v, NULL);
 
 				Tcl_NRAddCallback(interp, range_loop_bot, s, NULL, NULL, NULL);
-				return Tcl_NREvalObj(interp, s->script, 0);
+				code = Tcl_NREvalObj(interp, s->script, 0);
+				return code;
 
 			done:
 				replace_tclobj(&v, NULL);
@@ -92,14 +98,14 @@ test nrapply-1.1 {Test NR command dispatch} -body { #<<<
 			}
 
 			//>>>
-			static int range_loop_bot(ClientData[], Tcl_Interp* interp, int result) //<<<
+			static int range_loop_bot(ClientData cdata[], Tcl_Interp* interp, int result) //<<<
 			{
 				int					code = TCL_OK;
 				struct range_state*	s = cdata[0];
 
 				switch (result) {
 					case TCL_OK:
-						TEST_OK_LABEL(done, code, Tcl_ListObjAppend(interp, s->res, Tcl_GetObjResult(interp)));
+						TEST_OK_LABEL(done, code, Tcl_ListObjAppendElement(interp, s->res, Tcl_GetObjResult(interp)));
 						// Falls through
 					case TCL_CONTINUE:
 						return range_loop_top(interp, s);
@@ -116,9 +122,9 @@ test nrapply-1.1 {Test NR command dispatch} -body { #<<<
 
 			//@end=c@>>>
 		}} range x 1 10 {
-			yieldto foo [info coroutine $x]
+			yieldto foo [info coroutine] $x
 		}
-	}
+	}}
 
 	#>>>
 } -cleanup {
