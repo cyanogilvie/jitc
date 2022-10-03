@@ -1126,7 +1126,6 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 		c++;
 	}
 
-	TEST_OK_LABEL(finally, code, Memfs_Init(interp));
 	TEST_OK_LABEL(finally, code, Tcl_PkgProvideEx(interp, PACKAGE_NAME, PACKAGE_VERSION, jitcConstStubsPtr));
 
 finally:
@@ -1141,7 +1140,6 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 	int					code = TCL_OK;
 
 	if (flags == TCL_UNLOAD_DETACH_FROM_PROCESS) {
-		TEST_OK_LABEL(finally, code, Memfs_Unload(interp));
 		fprintf(stderr, "jitc unloading, finalizing mutexes\n");
 		Tcl_MutexFinalize(&gdb_jit_mutex);
 		gdb_jit_mutex = NULL;

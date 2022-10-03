@@ -78,12 +78,11 @@ TEA_SETUP_COMPILER
 # and PKG_TCL_SOURCES.
 #-----------------------------------------------------------------------
 
-TEA_ADD_SOURCES([jitc.c jitcStubInit.c memfs.c])
+TEA_ADD_SOURCES([jitc.c jitcStubInit.c])
 TEA_ADD_HEADERS([generic/jitc.h generic/jitcDecls.h])
 TEA_ADD_INCLUDES([-Ilocal/include])
-TEA_ADD_LIBS([-Llocal/lib -l:libtcc.a `pkg-config fuse3 --libs`])
-#TEA_ADD_LIBS([jitc/libtcc.a])
-TEA_ADD_CFLAGS([`pkg-config fuse3 --cflags`])
+TEA_ADD_LIBS([-Llocal/lib -l:libtcc.a])
+TEA_ADD_CFLAGS([])
 TEA_ADD_STUB_SOURCES([jitcStubLib.c])
 TEA_ADD_TCL_SOURCES([library/jitc.tcl])
 
