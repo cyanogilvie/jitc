@@ -687,10 +687,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		char		template[] = P_tmpdir "/jitc_XXXXXX";
 		char*		base = mkdtemp(template);
 		Tcl_Obj*	tmp_fn = NULL;
+		Tcl_DString	dllfn;
+
+		Tcl_DStringInit(&dllfn);
 
 		if (base == NULL) THROW_POSIX_LABEL(tmpfiledone, code, "Error creating temporary base directory");
-		Tcl_DString	dllfn;
-		Tcl_DStringInit(&dllfn);
 		Tcl_DStringAppend(&dllfn, base, sizeof(template)-1);
 		Tcl_DStringAppend(&dllfn, "/dll.so", -1);
 		replace_tclobj(&tmp_fn, Tcl_NewStringObj(Tcl_DStringValue(&dllfn), Tcl_DStringLength(&dllfn)));
@@ -1147,7 +1148,6 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 		g_tcc_mutex = NULL;
 	}
 
-finally:
 	return code;
 }
 
