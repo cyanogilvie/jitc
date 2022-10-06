@@ -343,6 +343,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		_Pragma("GCC diagnostic ignored \"-Wswitch\"")
 		switch (part) {
 			case PART_OPTIONS: tcc_set_options(tcc, Tcl_GetString(ov[i+1])); break;	// Must be set before tcc_set_output_type
+			case PART_LIBRARY_PATH:
+				if (-1 == tcc_add_library_path(tcc, Tcl_GetString(ov[i+1])))
+					THROW_ERROR_LABEL(finally, code, "Error adding library path \"", Tcl_GetString(ov[i+1]), "\"");
+				break;
+
 			case PART_PACKAGE: //{{{
 				{
 					int			pc;
@@ -525,6 +530,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 			case PART_DEBUG:
 			case PART_PACKAGE:
 			case PART_USE:
+			case PART_LIBRARY_PATH:
 				/* Handled above */
 				break;
 
@@ -625,11 +631,6 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				//}}}
 
 			case PART_EXPORT: break;
-
-			case PART_LIBRARY_PATH:
-				if (-1 == tcc_add_library_path(tcc, Tcl_GetString(v)))
-					THROW_ERROR_LABEL(finally, code, "Error adding library path \"", Tcl_GetString(v), "\"");
-				break;
 
 			case PART_LIBRARY:
 				if (-1 == tcc_add_library(tcc, Tcl_GetString(v)))
