@@ -19,4 +19,4 @@
 	url = https://github.com/cyanogilvie/dedup.git
 [submodule "tclconfig"]
 	path = tclconfig
-	url = git@github.com:cyanogilvie/tclconfig
+	url = https://github.com/cyanogilvie/tclconfig.git
