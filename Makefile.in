@@ -535,7 +535,7 @@ tcc:
 	mkdir -p tinycc
 	mkdir -p local
 	git submodule update --init --depth 1 tinycc
-	(cd tinycc; ./configure --debug --dwarf=5 --prefix=../local)
+	(cd tinycc; ./configure --debug --dwarf=5 --prefix=$(top_builddir)/local)
 	make -C tinycc -j 16 libtcc.so libtcc.a all
 	make -C tinycc install
 	# Not part of tcc, but required to build code that uses MODE_TCL
