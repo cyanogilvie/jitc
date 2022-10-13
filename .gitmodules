@@ -1,7 +1,7 @@
 [submodule "tinycc"]
 	path = tinycc
-	url = git://repo.or.cz/tinycc.git
-	shallow = false
+	url = https://github.com/cyanogilvie/tinycc.git
+	shallow = true
 [submodule "re2c"]
 	path = tools/re2c
 	url = https://github.com/skvadrik/re2c
