@@ -533,13 +533,13 @@ tags:
 
 tcc:
 	mkdir -p tinycc
-	mkdir -p local
+	mkdir -p $(top_builddir)/local
 	git submodule update --init --depth 1 tinycc
 	./configure_tinycc.sh --debug --dwarf=5 --prefix=$(top_builddir)/local
 	make -C tinycc -j 16 libtcc.so libtcc.a all
 	make -C tinycc install
 	# Not part of tcc, but required to build code that uses MODE_TCL
-	cp generic/tclstuff.h local/lib/tcc/include
+	cp generic/tclstuff.h $(top_builddir)/local/lib/tcc/include
 
 tools: local/bin/re2c local/bin/packcc local/bin/lemon
 

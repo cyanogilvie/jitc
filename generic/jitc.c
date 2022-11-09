@@ -654,10 +654,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				break;
 
 			case PART_FILTER:
-				int			len;
-				Tcl_GetStringFromObj(v, &len);
+				{
+					int			len;
+					Tcl_GetStringFromObj(v, &len);
 
-				replace_tclobj(&filter, len ? v : NULL);
+					replace_tclobj(&filter, len ? v : NULL);
+				}
 				break;
 
 			default:
