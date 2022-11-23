@@ -27,8 +27,15 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 	replace_tclobj(&r->symbols, NULL);
 
 	if (r->handle) {
-		cdef_release*	release = Tcl_FindSymbol(NULL, r->handle, "release");
-		if (release) (release)(r->interp);
+		if (r->symbols && r->interp) {
+			struct interp_cx*	l = Tcl_GetAssocData(r->interp, "jitc", NULL);
+			Tcl_Obj* releasesymboladdr = NULL;
+
+			if (TCL_OK == Tcl_DictObjGet(r->interp, r->symbols, l->lit[LIT_RELEASE], &releasesymboladdr) && releasesymboladdr) {
+				cdef_release*	release = Tcl_FindSymbol(NULL, r->handle, "release");
+				if (release) (release)(r->interp);
+			}
+		}
 
 		//Tcl_InterpState	state = Tcl_SaveInterpState(r->interp, 0);
 		if (TCL_OK != Tcl_FSUnloadFile(r->interp, r->handle)) {
@@ -111,6 +118,8 @@ const char* lit_str[] = {
 	"::jitc::packagedir",
 	"::jitc::prefix",
 	"::jitc::_build_compile_error",
+	"init",
+	"release",
 	NULL
 };
 
@@ -731,9 +740,16 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	// Avoid a circular reference between cdef and our new jitc intrep obj
 	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
 
-	cdef_init*	init = Tcl_FindSymbol(interp, r->handle, "init");
-	if (init) {
-		fprintf(stderr, "cdef defines init, calling: %p, symbols: (%s)\n", init, Tcl_GetString(r->symbols));
+	/* On some platforms, Tcl_FindSymbol returns the address for _init when
+	 * asked for init, which trips us up when we want to see if an init handler
+	 * has been defined, so we have to use the list of symbols we got from
+	 * tcc_list_symbols instead of Tcl_FindSymbol(... "init")
+	 */
+	Tcl_Obj* initsymboladdr = NULL;
+	TEST_OK_LABEL(finally, code, Tcl_DictObjGet(interp, r->symbols, l->lit[LIT_INIT], &initsymboladdr));
+	if (initsymboladdr) {
+		cdef_init*	init = Tcl_FindSymbol(interp, r->handle, "init");
+		//fprintf(stderr, "cdef defines init, calling: %p, symbols: (%s)\n", init, Tcl_GetString(r->symbols));
 		TEST_OK_LABEL(finally, code, (init)(interp));
 	}
 

@@ -70,6 +70,8 @@ enum {
 	LIT_PACKAGEDIR_VAR,
 	LIT_PREFIX_VAR,
 	LIT_COMPILEERROR,
+	LIT_INIT,
+	LIT_RELEASE,
 	LIT_SIZE
 };
 extern const char*	lit_str[];
