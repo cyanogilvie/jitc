@@ -90,12 +90,14 @@ static inline void release_tclobj(Tcl_Obj** obj)
 }
 static inline void replace_tclobj(Tcl_Obj** target, Tcl_Obj* replacement)
 {
-	if (*target) {
-		Tcl_DecrRefCount(*target);
-		*target = NULL;
-	}
+	Tcl_Obj*	old = *target;
+
 	*target = replacement;
 	if (*target) Tcl_IncrRefCount(*target);
+	if (old) {
+		Tcl_DecrRefCount(old);
+		old = NULL;
+	}
 }
 
 #if DEBUG

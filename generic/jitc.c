@@ -732,8 +732,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
 
 	cdef_init*	init = Tcl_FindSymbol(interp, r->handle, "init");
-	if (init)
+	if (init) {
+		fprintf(stderr, "cdef defines init, calling: %p, symbols: (%s)\n", init, Tcl_GetString(r->symbols));
 		TEST_OK_LABEL(finally, code, (init)(interp));
+	}
 
 	replace_tclobj(&r->debugfiles, debugfiles);
 	replace_tclobj(&debugfiles, NULL);
