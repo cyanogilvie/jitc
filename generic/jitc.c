@@ -21,10 +21,14 @@ Tcl_ObjType jitc_objtype = {
 
 static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 {
-	Tcl_ObjIntRep*		ir = Tcl_FetchIntRep(obj, &jitc_objtype);
-	struct jitc_intrep*	r = ir->twoPtrValue.ptr1;
+	Tcl_ObjInternalRep*		ir = Tcl_FetchInternalRep(obj, &jitc_objtype);
+	struct jitc_intrep*		r = ir->twoPtrValue.ptr1;
+	struct jitc_instance*	instance = ir->twoPtrValue.ptr2;
 
-	replace_tclobj(&r->symbols, NULL);
+	instance->next->prev = instance->prev;
+	instance->prev->next = instance->next;
+	//*instance = (struct jitc_instance){0};
+	ckfree(instance);  instance = NULL;  ir->twoPtrValue.ptr2 = NULL;
 
 	if (r->handle) {
 		if (r->symbols && r->interp) {
@@ -44,6 +48,8 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 		r->handle = NULL;
 		//Tcl_RestoreInterpState(r->interp, state);
 	}
+
+	replace_tclobj(&r->symbols, NULL);
 
 	r->interp = NULL;
 	replace_tclobj(&r->cdef, NULL);
@@ -71,21 +77,34 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 //}}}
 static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup) //{{{
 {
-	Tcl_ObjIntRep*		ir = Tcl_FetchIntRep(src, &jitc_objtype);
-	struct jitc_intrep*	r = ir->twoPtrValue.ptr1;
-	Tcl_ObjIntRep		newir = {0};
+	Tcl_ObjInternalRep*		ir = Tcl_FetchInternalRep(src, &jitc_objtype);
+	struct jitc_intrep*		r = ir->twoPtrValue.ptr1;
+	struct interp_cx*		l = Tcl_GetAssocData(r->interp, "jitc", NULL);
+	Tcl_ObjInternalRep		newir = {0};
+	struct jitc_instance*	instance = NULL;
 
 	// Shouldn't ever need to happen, but if it does we have to recompile from source.
 	// Set the dup's intrep to a dup of the cdef list instead
 	replace_tclobj((Tcl_Obj**)&newir.twoPtrValue.ptr2, r->cdef);
 
-	Tcl_StoreIntRep(dup, &jitc_objtype, &newir);
+	instance = ckalloc(sizeof *instance);
+	*instance = (struct jitc_instance){
+		.next	= l->instance_head.next,
+		.prev	= &l->instance_head,
+		.obj	= dup
+	};
+	l->instance_head.next = instance;
+	instance->next->prev = instance;
+
+	newir.twoPtrValue.ptr2 = instance;
+
+	Tcl_StoreInternalRep(dup, &jitc_objtype, &newir);
 }
 
 //}}}
 void update_jitc_string_rep(Tcl_Obj* obj) //{{{
 {
-	Tcl_ObjIntRep*		ir = Tcl_FetchIntRep(obj, &jitc_objtype);
+	Tcl_ObjInternalRep*	ir = Tcl_FetchInternalRep(obj, &jitc_objtype);
 	struct jitc_intrep*	r = ir->twoPtrValue.ptr1;
 	int					newstring_len;
 	const char*			newstring = Tcl_GetStringFromObj(r->cdef, &newstring_len);
@@ -313,7 +332,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				replace_tclobj(&librarypath, NULL);
 				replace_tclobj(&tccpath, NULL);
 				if (code != TCL_OK) goto finally;
-				Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
+				Tcl_DStringAppend(&preamble, "#define TCL_NORETURN\n#include <tclstuff.h>\n", -1);
 			}
 			break;
 
@@ -802,6 +821,7 @@ finally:
 		code = TCL_ERROR;
 	done_compileerror:
 		if (state) Tcl_DiscardInterpState(state);
+		for (int i=0; i<5; i++) replace_tclobj(&cmd[i], NULL);
 		replace_tclobj(&errorcode, NULL);
 		replace_tclobj(&errormsg, NULL);
 		replace_tclobj(&res, NULL);
@@ -865,17 +885,29 @@ finally:
 int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct jitc_intrep** rPtr) //{{{
 {
 	int					code = TCL_OK;
-	Tcl_ObjIntRep*		ir = Tcl_FetchIntRep(obj, &jitc_objtype);
+	Tcl_ObjInternalRep*	ir = Tcl_FetchInternalRep(obj, &jitc_objtype);
 	struct jitc_intrep*	r = NULL;
 
 	if (ir == NULL) {
-		Tcl_ObjIntRep	newir = {0};
+		struct interp_cx*	l = Tcl_GetAssocData(interp, "jitc", NULL);
+		Tcl_ObjInternalRep	newir = {0};
 
 		TEST_OK_LABEL(finally, code, compile(interp, obj, (struct jitc_intrep **)&newir.twoPtrValue.ptr1));
 
-		Tcl_FreeIntRep(obj);
-		Tcl_StoreIntRep(obj, &jitc_objtype, &newir);
-		ir = Tcl_FetchIntRep(obj, &jitc_objtype);
+		struct jitc_instance* instance = ckalloc(sizeof *instance);
+		*instance = (struct jitc_instance){
+			.next	= l->instance_head.next,
+			.prev	= &l->instance_head,
+			.obj	= obj
+		};
+		l->instance_head.next = instance;
+		instance->next->prev = instance;
+
+		newir.twoPtrValue.ptr2 = instance;
+
+		//Tcl_FreeInternalRep(obj);
+		Tcl_StoreInternalRep(obj, &jitc_objtype, &newir);
+		ir = Tcl_FetchInternalRep(obj, &jitc_objtype);
 	}
 
 	r = ir->twoPtrValue.ptr1;
@@ -895,6 +927,13 @@ finally:
 static void free_interp_cx(ClientData cdata, Tcl_Interp* interp) //{{{
 {
 	struct interp_cx*	l = cdata;
+
+	while (l->instance_head.next != &l->instance_tail) {
+		struct jitc_instance*	instance = l->instance_head.next;
+
+		if (!Tcl_HasStringRep(instance->obj)) Tcl_GetString(instance->obj);	// Regenerate the string rep
+		Tcl_FreeInternalRep(instance->obj);									// Free the intrep (which references pointers we're about to invalidate by unloading our lib)
+	}
 
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], NULL);
@@ -1130,6 +1169,9 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], Tcl_NewStringObj(lit_str[i], -1));
+
+	l->instance_head.next = &l->instance_tail;
+	l->instance_tail.prev = &l->instance_head;
 	// Set up interp_cx }}}
 
 	while (c->name) {
@@ -1167,6 +1209,8 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 		gdb_jit_mutex = NULL;
 		Tcl_MutexFinalize(&g_tcc_mutex);
 		g_tcc_mutex = NULL;
+	} else {
+		fprintf(stderr, "jitc detaching from interp\n");
 	}
 
 	return code;

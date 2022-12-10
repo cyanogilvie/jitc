@@ -4,7 +4,7 @@ Just In Time C for Tcl
 
 ## SYNOPSIS
 
-**package require jitc** ?0.1?
+**package require jitc** ?0.2?
 
 **jitc::capply** *cdef* *symbol* ?*arg* …?  
 **jitc::symbols** *cdef*  

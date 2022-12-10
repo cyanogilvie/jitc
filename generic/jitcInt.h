@@ -59,6 +59,12 @@ struct jitc_intrep {
 	struct jit_code_entry	jit_symbols;
 };
 
+struct jitc_instance {
+	struct jitc_instance*	next;
+	struct jitc_instance*	prev;
+	Tcl_Obj*				obj;
+};
+
 enum {
 	LIT_BLANK,
 	LIT_INCLUDE,
@@ -77,7 +83,9 @@ enum {
 extern const char*	lit_str[];
 
 struct interp_cx {
-	Tcl_Obj*		lit[LIT_SIZE];
+	Tcl_Obj*				lit[LIT_SIZE];
+	struct jitc_instance	instance_head;
+	struct jitc_instance	instance_tail;
 };
 
 int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct jitc_intrep** rPtr);

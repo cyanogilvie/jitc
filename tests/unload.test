@@ -1,0 +1,68 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+
+proc readfile fn {
+	set h	[open $fn r]
+	try {read $h} finally {close $h}
+}
+
+
+# TODO: figure out how to determine inDebugger for other platforms
+tcltest::testConstraint inDebugger	[expr {
+	$::tcl_platform(os) eq "Linux" &&
+	[regexp {\mTracerPid:\s*([0-9]+)\M} [readfile /proc/self/status] - tracerpid] &&
+	$tracerpid != 0
+}]
+
+test unload-1.1 {Load in a child interpreter} -body { #<<<
+	interp create c
+	set here	[file dirname [file normalize [info script]]]
+	c eval "package ifneeded jitc 0.1 \[list source [file join $here ../library/jitc.tcl]\]"
+	c eval {
+		package require jitc
+
+		set cdef {
+			code { //@begin=c@
+		  		Tcl_Obj*	lit_test = NULL;
+
+				INIT {
+					fprintf(stderr, "cdef init\n");
+					replace_tclobj(&lit_test, Tcl_NewStringObj("test object", -1));
+					return TCL_OK;
+				}
+
+		  		RELEASE {
+					fprintf(stderr, "cdef release\n");
+					replace_tclobj(&lit_test, NULL);
+				}
+		  		
+				OBJCMD(hello)
+				{
+					CHECK_ARGS(2, "a b");
+
+					Tcl_SetObjResult(interp, Tcl_ObjPrintf("hello, %s and %s",
+						Tcl_GetString(objv[1]),
+						Tcl_GetString(objv[2])));
+
+					return TCL_OK;
+				}
+				//@end=c@
+			}
+		}
+		jitc::capply $cdef hello foo bar
+	}
+} -cleanup {
+	interp delete c
+	unset -nocomplain here
+} -result {hello, foo and bar}
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4
