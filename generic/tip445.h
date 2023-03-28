@@ -35,8 +35,8 @@ typedef union Tcl_ObjInternalRep {
 #else
 static inline void Tcl_FreeInternalRep(Tcl_Obj* obj)
 {
-	if (obj->typePtr && obj->typePtr->freeInternalRepProc)
-		obj->typePtr->freeInternalRepProc(obj);
+	if (obj->typePtr && obj->typePtr->freeIntRepProc)
+		obj->typePtr->freeIntRepProc(obj);
 }
 #endif
 #endif
@@ -47,6 +47,7 @@ static inline void Tcl_FreeInternalRep(Tcl_Obj* obj)
 #else
 static inline void Tcl_StoreInternalRep(Tcl_Obj* objPtr, const Tcl_ObjType* typePtr, const Tcl_ObjInternalRep* irPtr)
 {
+	Tcl_FreeInternalRep(objPtr);
 	objPtr->typePtr = typePtr;
 	memcpy(&objPtr->internalRep, irPtr, sizeof(Tcl_ObjInternalRep));
 }

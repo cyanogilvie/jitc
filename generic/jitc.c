@@ -1204,13 +1204,14 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 	int					code = TCL_OK;
 
 	if (flags == TCL_UNLOAD_DETACH_FROM_PROCESS) {
-		fprintf(stderr, "jitc unloading, finalizing mutexes\n");
+		//fprintf(stderr, "jitc unloading, finalizing mutexes\n");
 		Tcl_MutexFinalize(&gdb_jit_mutex);
 		gdb_jit_mutex = NULL;
 		Tcl_MutexFinalize(&g_tcc_mutex);
 		g_tcc_mutex = NULL;
 	} else {
-		fprintf(stderr, "jitc detaching from interp\n");
+		//fprintf(stderr, "jitc detaching from interp\n");
+		// TODO: remove commands
 	}
 
 	return code;
