@@ -33,12 +33,16 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 	if (r->handle) {
 		if (r->symbols && r->interp) {
 			struct interp_cx*	l = Tcl_GetAssocData(r->interp, "jitc", NULL);
-			Tcl_Obj* releasesymboladdr = NULL;
+			Tcl_Obj*	releasename = NULL;
+			Tcl_Obj*	releasesymboladdr = NULL;
 
+			// l can be NULL here if we're here because the interp is being deleted (and so free_interp_cx has been called)
+			replace_tclobj(&releasename, l ? l->lit[LIT_RELEASE] : Tcl_NewStringObj("release", -1));
 			if (TCL_OK == Tcl_DictObjGet(r->interp, r->symbols, l->lit[LIT_RELEASE], &releasesymboladdr) && releasesymboladdr) {
 				cdef_release*	release = Tcl_FindSymbol(NULL, r->handle, "release");
 				if (release) (release)(r->interp);
 			}
+			replace_tclobj(&releasename, NULL);
 		}
 
 		//Tcl_InterpState	state = Tcl_SaveInterpState(r->interp, 0);
