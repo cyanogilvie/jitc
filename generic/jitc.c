@@ -38,7 +38,7 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 
 			// l can be NULL here if we're here because the interp is being deleted (and so free_interp_cx has been called)
 			replace_tclobj(&releasename, l ? l->lit[LIT_RELEASE] : Tcl_NewStringObj("release", -1));
-			if (TCL_OK == Tcl_DictObjGet(r->interp, r->symbols, l->lit[LIT_RELEASE], &releasesymboladdr) && releasesymboladdr) {
+			if (TCL_OK == Tcl_DictObjGet(r->interp, r->symbols, releasename, &releasesymboladdr) && releasesymboladdr) {
 				cdef_release*	release = Tcl_FindSymbol(NULL, r->handle, "release");
 				if (release) (release)(r->interp);
 			}
