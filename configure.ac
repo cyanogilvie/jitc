@@ -19,15 +19,13 @@ dnl	to configure the system for the local environment.
 # so that we create the export library with the dll.
 #-----------------------------------------------------------------------
 
-AC_INIT([jitc], [0.2])
+AC_INIT([jitc], [0.3])
 
 #--------------------------------------------------------------------
 # Call TEA_INIT as the first TEA_ macro to set up initial vars.
 # This will define a ${TEA_PLATFORM} variable == "unix" or "windows"
 # as well as PKG_LIB_FILE and PKG_STUB_LIB_FILE.
 #--------------------------------------------------------------------
-
-CHECK_TESTMODE
 
 touch generic/jitc.h
 touch library/jitc.tcl
@@ -67,6 +65,9 @@ TEA_PREFIX
 #-----------------------------------------------------------------------
 
 TEA_SETUP_COMPILER
+
+# Check for feature toggles
+ENABLE_TESTMODE
 
 #-----------------------------------------------------------------------
 # __CHANGE__
@@ -153,6 +154,7 @@ TEA_CONFIG_CFLAGS
 TIP445
 #DEDUP_STUBS
 AX_CC_FOR_BUILD
+TEABASE_INIT()
 
 #--------------------------------------------------------------------
 # Set the default compiler switches based on the --enable-symbols option.

@@ -21,7 +21,7 @@ tcltest::testConstraint inDebugger	[expr {
 test unload-1.1 {Load in a child interpreter} -body { #<<<
 	interp create c
 	set here	[file dirname [file normalize [info script]]]
-	c eval "package ifneeded jitc 0.2 \[list source [file join $here ../library/jitc.tcl]\]"
+	c eval "package ifneeded jitc 0.3 \[list source [file join $here ../library/jitc.tcl]\]"
 	c eval {
 		package require jitc
 

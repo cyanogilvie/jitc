@@ -66,7 +66,7 @@ namespace eval ::jitc {
 			lappend librarypath $path
 		}
 
-		load [file join $packagedir libjitc0.1.so] jitc
+		load [file join $packagedir libjitc0.3.so] jitc
 		tcl::tm::path add $jitclib
 	} [namespace current]]
 
