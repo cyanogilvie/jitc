@@ -19,7 +19,7 @@ dnl	to configure the system for the local environment.
 # so that we create the export library with the dll.
 #-----------------------------------------------------------------------
 
-AC_INIT([jitc], [0.3])
+AC_INIT([jitc], [0.4])
 
 #--------------------------------------------------------------------
 # Call TEA_INIT as the first TEA_ macro to set up initial vars.
@@ -207,7 +207,7 @@ TEAX_CONFIG_LINK_LINE(JITC_BUILD_LIB_SPEC,
 TEAX_CONFIG_LINK_LINE(JITC_BUILD_STUB_LIB_SPEC,
 					 [${BUILD_DIR}], [${PACKAGE_NAME}stub])
 
-AC_CONFIG_FILES([Makefile pkgIndex.tcl library/jitc.tcl jitcConfig.sh generic/jitc.h])
+AC_CONFIG_FILES([Makefile teabase/Makefile pkgIndex.tcl library/jitc.tcl jitcConfig.sh generic/jitc.h])
 #AC_CONFIG_FILES([sampleConfig.sh])
 
 #--------------------------------------------------------------------

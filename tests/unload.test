@@ -21,7 +21,7 @@ tcltest::testConstraint inDebugger	[expr {
 test unload-1.1 {Load in a child interpreter} -body { #<<<
 	interp create c
 	set here	[file dirname [file normalize [info script]]]
-	c eval "package ifneeded jitc 0.3 \[list source [file join $here ../library/jitc.tcl]\]"
+	c eval "package ifneeded jitc 0.4 \[list source [file join $here ../library/jitc.tcl]\]"
 	c eval {
 		package require jitc
 
@@ -30,13 +30,11 @@ test unload-1.1 {Load in a child interpreter} -body { #<<<
 		  		Tcl_Obj*	lit_test = NULL;
 
 				INIT {
-					fprintf(stderr, "cdef init\n");
 					replace_tclobj(&lit_test, Tcl_NewStringObj("test object", -1));
 					return TCL_OK;
 				}
 
 		  		RELEASE {
-					fprintf(stderr, "cdef release\n");
 					replace_tclobj(&lit_test, NULL);
 				}
 		  		

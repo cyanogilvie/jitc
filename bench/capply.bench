@@ -20,6 +20,9 @@ proc main {} {
 				}
 			}
 		}]
+	} -overhead {
+		reuse		{return -level 0 $cdef}
+		recompile	{lrange [list foo {*}$cdef] 1 end}
 	} -compare {
 		reuse {
 			jitc::capply $cdef hello jitc

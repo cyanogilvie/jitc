@@ -252,6 +252,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	Tcl_Obj*			exported_headers = NULL;
 	Tcl_Obj*			exported_symbols = NULL;
 	Tcl_Obj*			compileerror_code = NULL;
+	Tcl_Obj*			add_library_queue = NULL;
+	Tcl_Obj*			add_symbol_queue = NULL;
 
 	Tcl_DStringInit(&preamble);
 
@@ -283,6 +285,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, ov[i+1], &sc, &sv));
 					if (sc >= 1) TEST_OK_LABEL(finally, code, get_r_from_obj(interp, sv[0], &r));
 				}
+				break;
 			case PART_USE:
 				TEST_OK_LABEL(finally, code, get_r_from_obj(interp, ov[i+1], &r));
 				break;
@@ -302,6 +305,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	tcc = tcc_new();
 	tcc_set_error_func(tcc, &compile_errors, errfunc);
+	tcc_set_options(tcc, "-Wl,--enable-new-dtags");
 
 	// Set some mode-dependent defaults
 	switch (mode) {
@@ -432,21 +436,33 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 						tcc_add_include_path(tcc, Tcl_GetString(vals[KEY_INCLUDEDIR_RUNTIME]));
 					if (vals[KEY_INCLUDEDIR_INSTALL])
 						tcc_add_include_path(tcc, Tcl_GetString(vals[KEY_INCLUDEDIR_INSTALL]));
-					if (vals[KEY_LIBDIR_RUNTIME])
+					if (vals[KEY_LIBDIR_RUNTIME]) {
 						if (-1 == tcc_add_library_path(tcc, Tcl_GetString(vals[KEY_LIBDIR_RUNTIME]))) {
 							// TODO: what?
+						} else {
+							Tcl_Obj*	runpath_opt = NULL;
+							replace_tclobj(&runpath_opt, Tcl_ObjPrintf("-Wl,-rpath=%s", Tcl_GetString(vals[KEY_LIBDIR_RUNTIME])));
+							tcc_set_options(tcc, Tcl_GetString(runpath_opt));
+							replace_tclobj(&runpath_opt, NULL);
 						}
-					if (vals[KEY_LIBDIR_INSTALL])
+					}
+					if (vals[KEY_LIBDIR_INSTALL]) {
 						if (-1 == tcc_add_library_path(tcc, Tcl_GetString(vals[KEY_LIBDIR_INSTALL]))) {
 							// TODO: what?
+						} else {
+							Tcl_Obj*	runpath_opt = NULL;
+							replace_tclobj(&runpath_opt, Tcl_ObjPrintf("-Wl,-rpath=%s", Tcl_GetString(vals[KEY_LIBDIR_INSTALL])));
+							tcc_set_options(tcc, Tcl_GetString(runpath_opt));
+							replace_tclobj(&runpath_opt, NULL);
 						}
+					}
 					if (vals[KEY_LIBRARY]) {
 						const char* libstr = Tcl_GetString(vals[KEY_LIBRARY]);
 						if (strncmp("lib", libstr, 3) == 0) {
 							libstr += 3;
 						}
-						if (-1 == tcc_add_library(tcc, libstr))
-							THROW_ERROR_LABEL(freevals, code, "Error adding library \"", Tcl_GetString(vals[KEY_LIBRARY]), "\"");
+						if (!add_library_queue) replace_tclobj(&add_library_queue, Tcl_NewListObj(1, NULL));
+						TEST_OK_LABEL(freevals, code, Tcl_ListObjAppendElement(interp, add_library_queue, Tcl_NewStringObj(libstr, -1)));
 					}
 
 				freevals:
@@ -474,15 +490,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 						Tcl_DStringAppend(&preamble, headerstr, headerstrlen);
 					}
 					if (use_symbols) {
-						Tcl_Obj**		sv = NULL;
-						int				sc;
-
-						TEST_OK_LABEL(usedone, code, Tcl_ListObjGetElements(interp, use_symbols, &sc, &sv));
-						for (int s=0; s<sc; s++) {
-							void*	val = NULL;
-							TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, useobj, sv[s], &val));
-							tcc_add_symbol(tcc, Tcl_GetString(sv[s]), val);
-						}
+						if (!add_symbol_queue) replace_tclobj(&add_symbol_queue, Tcl_NewListObj(2, NULL));
+						TEST_OK_LABEL(freevals, code, Tcl_ListObjAppendElement(interp, add_symbol_queue, useobj));
+						TEST_OK_LABEL(freevals, code, Tcl_ListObjAppendElement(interp, add_symbol_queue, use_symbols));
 					}
 
 				usedone:
@@ -494,6 +504,50 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				//}}}
 		}
 		_Pragma("GCC diagnostic pop")
+	}
+
+	//fprintf(stderr, "compiling: %s\n", Tcl_GetString(cdef));
+	//tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
+	//tcc_set_output_type(tcc, TCC_OUTPUT_OBJ);
+	tcc_set_output_type(tcc, TCC_OUTPUT_DLL);
+
+	if (add_library_queue) { // Can only happen after tcc_set_output_type (tcc_add_library)
+		int			qc;
+		Tcl_Obj**	qv = NULL;
+
+		TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, add_library_queue, &qc, &qv));
+
+		for (int i=0; i<qc; i++)
+			if (-1 == tcc_add_library(tcc, Tcl_GetString(qv[i])))
+				THROW_ERROR_LABEL(finally, code, "Error adding library \"", Tcl_GetString(qv[i]), "\"");
+
+		replace_tclobj(&add_library_queue, NULL);
+	}
+
+	if (add_symbol_queue) {
+		int			qc;
+		Tcl_Obj**	qv = NULL;
+
+		TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, add_symbol_queue, &qc, &qv));
+
+		if (qc % 2 != 0)
+			THROW_ERROR_LABEL(finally, code, "add_symbol_queue must have an even number of elements");
+
+		for (int i=0; i<qc; i+=2) {
+			int			sc;
+			Tcl_Obj**	sv = NULL;
+			Tcl_Obj*	useobj		= qv[i];
+			Tcl_Obj*	use_symbols	= qv[i+1];
+
+			TEST_OK_LABEL(usedone, code, Tcl_ListObjGetElements(interp, use_symbols, &sc, &sv));
+			for (int s=0; s<sc; s++) {
+				void*	val = NULL;
+				TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, useobj, sv[s], &val));
+				tcc_add_symbol(tcc, Tcl_GetString(sv[s]), val);
+			}
+		}
+
+		replace_tclobj(&add_symbol_queue, NULL);
 	}
 
 	// Third pass through the parts to process PART_EXPORT directives	(export headers must be appended to preamble after use ones)
@@ -546,10 +600,6 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		_Pragma("GCC diagnostic pop")
 	}
 
-	//fprintf(stderr, "compiling: %s\n", Tcl_GetString(cdef));
-	//tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
-	//tcc_set_output_type(tcc, TCC_OUTPUT_OBJ);
-	tcc_set_output_type(tcc, TCC_OUTPUT_DLL);
 	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
 	for (i=0; i<oc; i+=2) {
 		enum partenum	part;
@@ -863,6 +913,8 @@ finally:
 	replace_tclobj(&exported_symbols,	NULL);
 	replace_tclobj(&exported_headers,	NULL);
 	replace_tclobj(&compileerror_code,	NULL);
+	replace_tclobj(&add_library_queue,	NULL);
+	replace_tclobj(&add_symbol_queue,	NULL);
 
 	if (stat) {
 		ckfree(stat);

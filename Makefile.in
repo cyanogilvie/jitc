@@ -194,6 +194,8 @@ VALGRINDARGS	= --tool=memcheck -q --num-callers=8 --leak-resolution=high \
 
 all: binaries libraries doc
 
+include teabase/Makefile
+
 #========================================================================
 # The binaries target builds executable programs, Windows .dll's, unix
 # shared/static libraries, and any other platform-dependent files.

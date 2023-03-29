@@ -205,8 +205,8 @@ test capply-5.1 {OBJCMD} -body { #<<<
 #>>>
 test capply-6.1 {dedup} -constraints knownBug -setup { #<<<
 	set cdef	{
-		include_path	local/lib/dedup0.9.3
-		library_path	local/lib/dedup0.9.3
+		include_path	local/lib/dedup0.9.5
+		library_path	local/lib/dedup0.9.5
 		code {
 			#include <dedup.h>
 
@@ -229,7 +229,7 @@ test capply-6.1 {dedup} -constraints knownBug -setup { #<<<
 				return TCL_OK;
 			}
 		}
-		library			dedup0.9.3
+		library			dedup0.9.5
 	}
 } -body {
 	jitc::capply $cdef foo
@@ -239,8 +239,8 @@ test capply-6.1 {dedup} -constraints knownBug -setup { #<<<
 #>>>
 test capply-6.2 {dedup stubs} -setup { #<<<
 	set cdef	{
-		include_path	local/lib/dedup0.9.3
-		library_path	local/lib/dedup0.9.3
+		include_path	local/lib/dedup0.9.5
+		library_path	local/lib/dedup0.9.5
 		define			{USE_TCL_STUBS 1}
 		define			{USE_DEDUP_STUBS 1}
 		code {
@@ -271,7 +271,7 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 				return TCL_OK;
 			}
 		}
-		library			dedupstub0.9.3
+		library			dedupstub0.9.5
 		library			tclstub8.7
 	}
 } -body {
@@ -283,9 +283,9 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 test capply-6.3 {dedup no stubs, tcl package require} -constraints knownBug -setup { #<<<
 	package require dedup
 	set cdef	{
-		include_path	local/lib/dedup0.9.3
-		library_path	local/lib/dedup0.9.3
-		library			dedup0.9.3
+		include_path	local/lib/dedup0.9.5
+		library_path	local/lib/dedup0.9.5
+		library			dedup0.9.5
 		code {
 			#include <dedup.h>
 
@@ -316,7 +316,7 @@ test capply-6.3 {dedup no stubs, tcl package require} -constraints knownBug -set
 #>>>
 test capply-6.4 {dedup package} -setup { #<<<
 	set cdef	{
-		package	{dedup 0.9.3}
+		package	{dedup 0.9.5}
 		code {
 			struct dedup_pool*	g_dedup = NULL;
 
@@ -345,7 +345,7 @@ test capply-6.4 {dedup package} -setup { #<<<
 #>>>
 test capply-6.5 {dedup package, reuse pool} -setup { #<<<
 	set dedup_cdef	[list \
-		package	{dedup 0.9.3} \
+		package	{dedup 0.9.5} \
 		define	$puts_format \
 	]
 	lappend dedup_cdef code { //@begin=c@
@@ -396,7 +396,7 @@ test capply-6.5 {dedup package, reuse pool} -setup { #<<<
 
 	set cdef1 [list \
 		symbols	[list $dedup_cdef g_dedup] \
-		package	{dedup 0.9.3} \
+		package	{dedup 0.9.5} \
 		define	$puts_format \
 		define	{CHILD cdef1} \
 		code	$code \
@@ -404,7 +404,7 @@ test capply-6.5 {dedup package, reuse pool} -setup { #<<<
 
 	set cdef2 [list \
 		symbols	[list $dedup_cdef g_dedup] \
-		package	{dedup 0.9.3} \
+		package	{dedup 0.9.5} \
 		define	$puts_format \
 		define	{CHILD cdef2} \
 		code	$code \
@@ -434,7 +434,7 @@ freed dedup pool
 #>>>
 test capply-6.6 {dedup package, reuse pool, import function symbols} -setup { #<<<
 	set dedup_cdef	[list \
-		package	{dedup 0.9.3} \
+		package	{dedup 0.9.5} \
 		define	$puts_format \
 	]
 	lappend dedup_cdef code { //@begin=c@
@@ -490,7 +490,7 @@ test capply-6.6 {dedup package, reuse pool, import function symbols} -setup { #<
 	}
 
 	set cdef1 [list \
-		symbols	[list $dedup_cdef g_dedup Dedup_NewStringObj] \
+		symbols	[list $dedup_cdef g_dedup Dedup_NewStringObj Dedup_Stats] \
 		define	$puts_format \
 		define	{CHILD cdef1} \
 		code	$code \
@@ -821,8 +821,10 @@ test capply-12.1 {Test debug info} -constraints inDebugger -setup { #<<<
 } -result notreached
 #>>>
 
-test tmp-1.1 {} -body {
-	jitc::capply [list debug /tmp/tmpdebug options {-g -Wall -Werror} library_path /usr/lib/x86_64-linux-gnu code {//@begin=c@
+test tmp-1.1 {} -constraints SIGTRAP -body {
+	file delete -force /tmp/tmpdebug
+	file mkdir /tmp/tmpdebug
+	jitc::capply [list debug /tmp/tmpdebug options {-g -Wall -Werror} code {//@begin=c@
 		#include <signal.h>
 		#include <stdlib.h>
 		OBJCMD(trap) {
@@ -830,6 +832,8 @@ test tmp-1.1 {} -body {
 			return TCL_OK;
 		}
 	//@end=c@}] trap
+} -cleanup {
+	file delete -force /tmp/tmpdebug
 } -result xx
 
 # cleanup

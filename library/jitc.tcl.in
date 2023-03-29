@@ -93,7 +93,7 @@ namespace eval ::jitc {
 				list $lvl $fn {} $msg
 			}]
 		}
-		puts stderr "errorstr ($errorstr) -> errors ($errors)"
+		#puts stderr "errorstr ($errorstr) -> errors ($errors)"
 		set error_report	{}
 		set sep				{}
 		foreach error $errors {
