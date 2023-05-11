@@ -125,7 +125,7 @@ namespace eval ::jitc {
 		}
 		set source	[lindex $args end]
 		set options	[lrange $args 0 end-1]
-		exec echo $source | $re2cpath - {*}$options
+		exec echo $source | $re2cpath - --input-encoding utf8 {*}$options
 	}
 
 	#>>>

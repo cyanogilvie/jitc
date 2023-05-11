@@ -75,7 +75,7 @@ fast regular expression based lexers.
 .SS CDEF FORMAT
 .PP
 The \f[I]cdef\f[R] argument to \f[B]jitc::capply\f[R] and
-\f[B]jitc:symbols\f[R] is a list of pairs of elements: \f[I]part\f[R]
+\f[B]jitc::symbols\f[R] is a list of pairs of elements: \f[I]part\f[R]
 and \f[I]value\f[R].
 When compiling and linking the code the parts are applied in sequence.
 \f[I]part\f[R] must be one of:
@@ -396,6 +396,7 @@ set cdef [string trim { code {
     {
         Tcl_DStringInit(&g_str);
         printf(\[dq]%s\[dq], \[dq]Initialized g_str\[rs]n\[dq]);
+        return TCL_OK;
     }
 
     void release(Tcl_Interp* interp)

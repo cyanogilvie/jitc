@@ -48,7 +48,7 @@ The compiler supports the most of the C99 and C11 C language standards.
 
 ## CDEF FORMAT
 
-The *cdef* argument to **jitc::capply** and **jitc:symbols** is a list
+The *cdef* argument to **jitc::capply** and **jitc::symbols** is a list
 of pairs of elements: *part* and *value*. When compiling and linking the
 code the parts are applied in sequence. *part* must be one of:
 
@@ -251,6 +251,7 @@ set cdef [string trim { code {
     {
         Tcl_DStringInit(&g_str);
         printf("%s", "Initialized g_str\n");
+        return TCL_OK;
     }
 
     void release(Tcl_Interp* interp)
