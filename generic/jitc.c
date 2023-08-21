@@ -340,7 +340,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				replace_tclobj(&librarypath, NULL);
 				replace_tclobj(&tccpath, NULL);
 				if (code != TCL_OK) goto finally;
-				Tcl_DStringAppend(&preamble, "#define TCL_NORETURN\n#include <tclstuff.h>\n", -1);
+				Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
 			}
 			break;
 
@@ -599,6 +599,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		}
 		_Pragma("GCC diagnostic pop")
 	}
+
+	// Hack around wchar confusion on musl / aarch64
+	tcc_define_symbol(tcc, "__DEFINED_wchar_t", "");
 
 	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
 	for (i=0; i<oc; i+=2) {
