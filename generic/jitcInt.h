@@ -88,6 +88,13 @@ struct interp_cx {
 	struct jitc_instance	instance_tail;
 };
 
+struct proc_binding {
+	Tcl_Obj*		cdef;
+	Tcl_Obj*		symbol;
+	Tcl_ObjCmdProc*	resolved;
+	Tcl_Obj*		curryargs;
+};
+
 int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct jitc_intrep** rPtr);
 
 // memfs.c

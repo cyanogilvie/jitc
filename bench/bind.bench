@@ -1,0 +1,36 @@
+if {"bench" ni [info commands bench]} {
+	package require bench
+	namespace import bench::*
+}
+
+package require jitc
+
+proc main {} {
+	bench bind-1.1 {hello world} -batch auto -setup { #<<<
+		set cdef	[string trim {
+			code {
+				int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+				{
+					if (objc != 2) {
+						Tcl_WrongNumArgs(interp, 1, objv, "noun");
+						return TCL_ERROR;
+					}
+					Tcl_SetObjResult(interp, Tcl_ObjPrintf("hello, %s", Tcl_GetString(objv[1])));
+					return TCL_OK;
+				}
+			}
+		}]
+		jitc::bind registered $cdef hello
+	} -compare {
+		capply	{ jitc::capply $cdef hello jitc }
+		cmd		{ registered jitc }
+	} -cleanup {
+		unset -nocomplain cdef
+		rename registered {}
+	} -result {hello, jitc}
+	#>>>
+}
+
+main
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

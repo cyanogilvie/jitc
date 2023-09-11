@@ -15,7 +15,7 @@ namespace eval ::jitclib {
 				OBSTACK_POOL_MEDIUM			// A MB or more
 			};
 
-			//@end=c@@begin=c@>>>
+			//@end=c@@begin=c@
 			struct obstack* obstack_pool_get(enum obstack_pool_estimate est);
 			void obstack_pool_release(struct obstack* ob);
 			void obstack_pool_groom(uint64_t ts);

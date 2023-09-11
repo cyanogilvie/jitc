@@ -1,6 +1,6 @@
-% jitc(3) 0.2 | Just In Time C for Tcl
+% jitc(3) 0.5 | Just In Time C for Tcl
 % Cyan Ogilvie
-% 0.2
+% 0.5
 
 # JITC
 
@@ -9,9 +9,10 @@ Just In Time C for Tcl
 
 ## SYNOPSIS
 
-**package require jitc** ?0.2?
+**package require jitc** ?0.5?
 
 **jitc::capply** *cdef* *symbol* ?*arg* ...?\
+**jitc::bind** *name* *cdef* *symbol* ?*curryarg* ...?\
 **jitc::symbols** *cdef*\
 **jitc::packageinclude**\
 **jitc::re2c** ?*option* ...? *source*\
@@ -40,6 +41,11 @@ The compiler supports the most of the C99 and C11 C language standards.
 **jitc::capply** *cdef* *symbol* ?*arg* ...?
 :   Execute *symbol* in the compiled *cdef* as a Tcl_ObjCmdProc.  If *symbol* points to
     something other than a Tcl_ObjCmdProc things are likely to get interesting quickly.
+
+**jitc::bind** *name* *cdef* *symbol* ?*curryarg* ...?
+:   Register *name* as a command that invokes *symbol* in *def*.  *symbol* must be a
+    Tcl_ObjCmdProc or you're in for a bad time.  If any *curryarg*s are supplied they
+    are prepended to any args passed to *symbol* when *name* is invoked.
 
 **jitc::symbols** *cdef*
 :   Return a list of the symbols in *cdef*.

@@ -1,0 +1,119 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+package require jitc
+
+proc readfile fn {
+	set h	[open $fn]
+	try {read $h} finally {close $h}
+}
+
+# TODO: figure out how to determine inDebugger for other platforms
+tcltest::testConstraint inDebugger	[expr {
+	$::tcl_platform(os) eq "Linux" &&
+	[regexp {\mTracerPid:\s*([0-9]+)\M} [readfile /proc/self/status] - tracerpid] &&
+	$tracerpid != 0
+}]
+
+# Send debug output via puts so that the test's -output handling can capure it
+set puts_format	{{PUTS_FORMAT(fmt, ...)} {do {					\
+		Tcl_Obj*	cmd = NULL;						\
+		replace_tclobj(&cmd, Tcl_NewListObj(3, (Tcl_Obj*[]){		\
+			Tcl_NewStringObj("puts", 4),			\
+			Tcl_NewStringObj("-nonewline", 10),		\
+			Tcl_ObjPrintf(fmt, ##__VA_ARGS__)		\
+		}));										\
+		Tcl_EvalObjEx(interp, cmd, TCL_EVAL_GLOBAL);\
+		replace_tclobj(&cmd, NULL);					\
+		Tcl_ResetResult(interp);					\
+	} while(0);
+}}
+
+test bind-1.1 {no curry} -setup { #<<<
+	set name	test_bind-1.1
+	jitc::bind $name {
+		code {
+			OBJCMD(hello)
+			{
+				CHECK_ARGS(0, "");
+				Tcl_SetObjResult(interp, Tcl_NewStringObj("hello, bind", -1));
+				return TCL_OK;
+			}
+		}
+	} hello
+} -body {
+	$name
+} -cleanup {
+	rename $name {}
+} -result {hello, bind}
+#>>>
+test bind-2.1 {curry} -setup { #<<<
+	set name	test_bind-2.1
+	jitc::bind $name {
+		code {
+			OBJCMD(hello)
+			{
+				CHECK_ARGS(3, "a b c");
+				Tcl_SetObjResult(interp, Tcl_ObjPrintf("cmd(%s), a(%s), b(%s), c(%s)",
+					Tcl_GetString(objv[0]),
+					Tcl_GetString(objv[1]),
+					Tcl_GetString(objv[2]),
+					Tcl_GetString(objv[3])
+				));
+				return TCL_OK;
+			}
+		}
+	} hello first
+} -body {
+	$name second third
+} -cleanup {
+	rename $name {}
+} -result {cmd(test_bind-2.1), a(first), b(second), c(third)}
+#>>>
+
+if 0 {
+set cdef {
+	code {
+		OBJCMD(hello)
+		{
+			return TCL_OK;
+		}
+	}
+}
+
+proc inproc args {
+	jitc::capply {
+		code {
+			OBJCMD(hello)
+			{
+				return TCL_OK;
+			}
+		}
+	} hello {*}$args
+}
+
+jitc::bind registered $cdef hello
+jitc::bind registered_curry $cdef hello foo bar
+
+puts stderr "capply: [timerate {
+	jitc::capply $cdef hello
+}]"
+puts stderr "capply in proc: [timerate {
+	inproc hello
+}]"
+puts stderr "bind, no curry: [timerate {
+	registered
+}]"
+puts stderr "bind, curry: [timerate {
+	registered_curry
+}]"
+}
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

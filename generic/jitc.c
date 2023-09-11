@@ -1141,6 +1141,98 @@ static int nrapply_cmd_setup(ClientData cdata, Tcl_Interp* interp, int objc, Tcl
 }
 
 //}}}
+static int _bind_invoke_curried(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+{
+	int						code = TCL_OK;
+	struct proc_binding*	binding = cdata;
+#define STATIC_ARGS_SPACE	10
+	Tcl_Obj*				o_static[STATIC_ARGS_SPACE];
+	Tcl_Obj**				ov = NULL;
+	int						oc = 0;
+	Tcl_Obj**				cv = NULL;
+	int						cc, arg = 0;
+
+	TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, binding->curryargs, &cc, &cv));
+	oc = cc + objc;
+	ov = oc <= STATIC_ARGS_SPACE ? o_static : ckalloc(sizeof(Tcl_Obj*) * oc);
+	ov[arg++] = objv[0];
+	for (int i=0; i<cc; i++)   ov[arg++] = cv[i];
+	for (int i=1; i<objc; i++) ov[arg++] = objv[i];
+
+	code = (binding->resolved)(NULL, interp, oc, ov);
+
+finally:
+	if (ov != o_static) {
+		ckfree(ov);
+		ov = NULL;
+	}
+	return code;
+#undef STATIC_ARGS_SPACE
+}
+
+//}}}
+static int _bind_invoke_curried_setup(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+{
+	return Tcl_NRCallObjProc(interp, _bind_invoke_curried, cdata, objc, objv);
+}
+
+//}}}
+static int _bind_invoke_setup(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+{
+	struct proc_binding*	binding = cdata;
+	return Tcl_NRCallObjProc(interp, binding->resolved, cdata, objc, objv);
+}
+
+//}}}
+static void _unbind(ClientData cdata) //{{{
+{
+	struct proc_binding*	binding = cdata;
+
+	replace_tclobj(&binding->cdef, NULL);
+	replace_tclobj(&binding->symbol, NULL);
+	replace_tclobj(&binding->curryargs, NULL);
+	binding->resolved = NULL;
+	ckfree(binding);
+	binding = NULL;
+}
+
+//}}}
+static int bind_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
+{
+	int						code = TCL_OK;
+	struct proc_binding*	binding = NULL;
+
+	enum {A_cmd, A_NAME, A_CDEF, A_SYMBOL, A_args};
+	CHECK_MIN_ARGS_LABEL(finally, code, "name cdef symbol ?curryarg ...?");
+
+	binding = ckalloc(sizeof *binding);
+	*binding = (struct proc_binding){0};
+	replace_tclobj(&binding->cdef,   objv[A_CDEF]);
+	replace_tclobj(&binding->symbol, objv[A_SYMBOL]);
+	TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, objv[A_CDEF], objv[A_SYMBOL], (void**)&binding->resolved));
+	if (objc > A_args) {
+		replace_tclobj(&binding->curryargs, Tcl_NewListObj(objc-A_args, objv+A_args));
+		if (Tcl_NRCreateCommand(interp, Tcl_GetString(objv[A_NAME]), _bind_invoke_curried_setup, _bind_invoke_curried, binding, _unbind) == NULL)
+			THROW_ERROR_LABEL(finally, code, "Failed to create command");
+	} else {
+		if (Tcl_NRCreateCommand(interp, Tcl_GetString(objv[A_NAME]), _bind_invoke_setup, binding->resolved, binding, _unbind) == NULL)
+			THROW_ERROR_LABEL(finally, code, "Failed to create command");
+	}
+
+	binding = NULL;	// Hand over to cmd registration, will be freed by _unbind
+
+finally:
+	if (binding) {
+		replace_tclobj(&binding->cdef, NULL);
+		replace_tclobj(&binding->symbol, NULL);
+		replace_tclobj(&binding->curryargs, NULL);
+		ckfree(binding);
+		binding = NULL;
+	}
+	return code;
+}
+
+//}}}
 static int symbols_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[]) //{{{
 {
 	int				code = TCL_OK;
@@ -1195,6 +1287,7 @@ static struct cmd {
 	Tcl_ObjCmdProc*	nrproc;
 } cmds[] = {
 	{NS "::capply",		nrapply_cmd_setup,	capply_cmd},
+	{NS "::bind",		bind_cmd,			NULL},
 	{NS "::symbols",	symbols_cmd,		NULL},
 	{NS "::mkdtemp",	mkdtemp_cmd,		NULL},
 	{NULL,				NULL,				NULL}

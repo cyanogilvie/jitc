@@ -14,7 +14,7 @@ namespace eval ::jitclib {
 				Tcl_Time	t;	
 				Tcl_GetTime(&t);
 
-				return t.sec * 100000 + t.usec;
+				return t.sec * 1000000 + t.usec;
 			}
 			//@end=c@
 		}
