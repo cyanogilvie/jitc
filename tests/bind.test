@@ -74,6 +74,42 @@ test bind-2.1 {curry} -setup { #<<<
 } -result {cmd(test_bind-2.1), a(first), b(second), c(third)}
 #>>>
 
+coroutine main eval {
+	try {
+		test bind-3.1 {yield} -setup { #<<<
+			set name	test_bind-3.1
+			jitc::bind $name {
+				code {
+					static int bottom(ClientData cdata[], Tcl_Interp* interp, int code)
+					{
+						Tcl_SetObjResult(interp, Tcl_ObjPrintf("hello, %s", Tcl_GetString(Tcl_GetObjResult(interp))));
+						return code;
+					}
+
+					OBJCMD(hello)
+					{
+						CHECK_ARGS(1, "script");
+						Tcl_NRAddCallback(interp, bottom, NULL, NULL, NULL, NULL);
+						return Tcl_NREvalObj(interp, objv[1], 0);
+					}
+				}
+			} hello
+		} -body {
+			$name {
+				after 1 [list [info coroutine] fromyield]
+				yield
+			}
+		} -cleanup {
+			rename $name {}
+		} -result {hello, fromyield}
+		#>>>
+	} finally {
+		set ::coro_done 1
+	}
+}
+
+if {![info exists ::coro_done]} {vwait ::coro_done}
+
 if 0 {
 set cdef {
 	code {

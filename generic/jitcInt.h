@@ -55,6 +55,7 @@ struct jitc_intrep {
 	Tcl_Interp*				interp;
 	Tcl_Obj*				exported_symbols;
 	Tcl_Obj*				exported_headers;
+	Tcl_Obj*				used;				// Hold references to the foreign cdefs to prevent them from being freed under us
 	Tcl_LoadHandle			handle;
 	struct jit_code_entry	jit_symbols;
 };
@@ -76,14 +77,19 @@ enum {
 	LIT_PACKAGEDIR_VAR,
 	LIT_PREFIX_VAR,
 	LIT_COMPILEERROR,
+	LIT_INITSTUBS,
 	LIT_INIT,
 	LIT_RELEASE,
+	LIT_TCLSTUBLIB_CMD,
+	LIT_TCLVER_CMD,
 	LIT_SIZE
 };
 extern const char*	lit_str[];
 
 struct interp_cx {
 	Tcl_Obj*				lit[LIT_SIZE];
+	Tcl_Obj*				tclstublib;
+	Tcl_Obj*				tclver;
 	struct jitc_instance	instance_head;
 	struct jitc_instance	instance_tail;
 };

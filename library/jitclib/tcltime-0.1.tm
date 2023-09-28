@@ -11,7 +11,7 @@ namespace eval ::jitclib {
 		code {//@begin=c@
 			uint64_t now()
 			{
-				Tcl_Time	t;	
+				Tcl_Time	t;
 				Tcl_GetTime(&t);
 
 				return t.sec * 1000000 + t.usec;

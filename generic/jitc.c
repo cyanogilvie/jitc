@@ -4,6 +4,7 @@
 
 TCL_DECLARE_MUTEX(g_tcc_mutex);
 
+typedef const char* (cdef_initstubs)(Tcl_Interp* interp, const char* ver);
 typedef int (cdef_init)(Tcl_Interp* interp);
 typedef int (cdef_release)(Tcl_Interp* interp);
 
@@ -73,6 +74,7 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 	replace_tclobj((Tcl_Obj**)&ir->twoPtrValue.ptr2, NULL);
 	replace_tclobj(&r->exported_symbols, NULL);
 	replace_tclobj(&r->exported_headers, NULL);
+	replace_tclobj(&r->used, NULL);
 
 	ckfree(r);
 	r = NULL;
@@ -141,8 +143,11 @@ const char* lit_str[] = {
 	"::jitc::packagedir",
 	"::jitc::prefix",
 	"::jitc::_build_compile_error",
+	"_initstubs",
 	"init",
 	"release",
+	"return -level 0 tclstub[info tclversion]",
+	"info tclversion",
 	NULL
 };
 
@@ -254,6 +259,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	Tcl_Obj*			compileerror_code = NULL;
 	Tcl_Obj*			add_library_queue = NULL;
 	Tcl_Obj*			add_symbol_queue = NULL;
+	Tcl_Obj*			used = NULL;
 
 	Tcl_DStringInit(&preamble);
 
@@ -280,14 +286,23 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				{
 					Tcl_Obj**	sv;
 					int			sc;
-					struct jitc_intrep*	r;
+					struct jitc_intrep*	ur;
 
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, ov[i+1], &sc, &sv));
-					if (sc >= 1) TEST_OK_LABEL(finally, code, get_r_from_obj(interp, sv[0], &r));
+					if (sc >= 1) {
+						if (!used) replace_tclobj(&used, Tcl_NewListObj(1, NULL));
+						TEST_OK_LABEL(finally, code, Tcl_ListObjAppendElement(interp, used, sv[0]));
+						TEST_OK_LABEL(finally, code, get_r_from_obj(interp, sv[0], &ur));
+					}
 				}
 				break;
 			case PART_USE:
-				TEST_OK_LABEL(finally, code, get_r_from_obj(interp, ov[i+1], &r));
+				{
+					struct jitc_intrep*	ur;
+					if (!used) replace_tclobj(&used, Tcl_NewListObj(1, NULL));
+					TEST_OK_LABEL(finally, code, Tcl_ListObjAppendElement(interp, used, ov[i+1]));
+					TEST_OK_LABEL(finally, code, get_r_from_obj(interp, ov[i+1], &ur));
+				}
 				break;
 		}
 		_Pragma("GCC diagnostic pop")
@@ -332,8 +347,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				for (int i=0; i<oc; i++)
 					if (-1 == tcc_add_library_path(tcc, Tcl_GetString(ov[i])))
 						THROW_PRINTF_LABEL(modetclfinally, code, "Error adding library path \"%s\"", Tcl_GetString(ov[i]));
-
-				//tcc_add_library(tcc, Tcl_GetString(l->tcllib));	// Tcl symbols are reverse exported, this doesn't seem to be necessary
+				tcc_define_symbol(tcc, "TCL_USE_STUBS", "1");
 
 			modetclfinally:
 				replace_tclobj(&includepath, NULL);
@@ -511,19 +525,6 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	//tcc_set_output_type(tcc, TCC_OUTPUT_OBJ);
 	tcc_set_output_type(tcc, TCC_OUTPUT_DLL);
 
-	if (add_library_queue) { // Can only happen after tcc_set_output_type (tcc_add_library)
-		int			qc;
-		Tcl_Obj**	qv = NULL;
-
-		TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, add_library_queue, &qc, &qv));
-
-		for (int i=0; i<qc; i++)
-			if (-1 == tcc_add_library(tcc, Tcl_GetString(qv[i])))
-				THROW_ERROR_LABEL(finally, code, "Error adding library \"", Tcl_GetString(qv[i]), "\"");
-
-		replace_tclobj(&add_library_queue, NULL);
-	}
-
 	if (add_symbol_queue) {
 		int			qc;
 		Tcl_Obj**	qv = NULL;
@@ -649,6 +650,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 						Tcl_ResetResult(interp);
 					}
 
+					if (mode == MODE_TCL && -1 == tcc_compile_string(tcc, "#include <tcl.h>\nconst char* _initstubs(Tcl_Interp* interp, const char* ver) {return Tcl_InitStubs(interp, ver, 0);}"))
+						THROW_ERROR_LABEL(codeerror, code, "Error compiling _initstubs");
+
 					if (debugpath) { // Write out to a temporary file instead, and try to arrange for it for be unlinked when intrep is freed {{{
 						replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj*[]){
 							debugpath,
@@ -752,6 +756,22 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		}
 	}
 
+	if (add_library_queue) { // Can only happen after tcc_set_output_type (tcc_add_library)
+		int			qc;
+		Tcl_Obj**	qv = NULL;
+
+		TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, add_library_queue, &qc, &qv));
+
+		for (int i=0; i<qc; i++)
+			if (-1 == tcc_add_library(tcc, Tcl_GetString(qv[i])))
+				THROW_ERROR_LABEL(finally, code, "Error adding library \"", Tcl_GetString(qv[i]), "\"");
+
+		replace_tclobj(&add_library_queue, NULL);
+	}
+
+	if (mode == MODE_TCL)
+		tcc_add_library(tcc, Tcl_GetString(l->tclstublib));
+
 	if (compile_errors) {
 		if (code == TCL_OK)
 			THROW_ERROR_LABEL(finally, code, Tcl_GetString(compile_errors));
@@ -765,11 +785,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	r = ckalloc(sizeof *r);
 	*r = (struct jitc_intrep){
-		.interp = interp,
-		.exported_symbols = exported_symbols,
-		.exported_headers = exported_headers
+		.interp				= interp,
+		.used				= used,
+		.exported_symbols	= exported_symbols,
+		.exported_headers	= exported_headers
 	};
-	exported_headers = exported_symbols = NULL;	// Transfer their refs (if any) to r->export_*
+	used = exported_headers = exported_symbols = NULL;	// Transfer their refs (if any) to r->export_*
 
 	{
 		char		template[] = P_tmpdir "/jitc_XXXXXX";
@@ -817,6 +838,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	// Avoid a circular reference between cdef and our new jitc intrep obj
 	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
+
+	cdef_initstubs*	initstubs = Tcl_FindSymbol(interp, r->handle, "initstubs");
+	if (initstubs) {
+		if (NULL == (initstubs)(interp, Tcl_GetString(l->tclver)))
+			THROW_ERROR_LABEL(finally, code, "Could not init Tcl stubs");
+	}
 
 	/* On some platforms, Tcl_FindSymbol returns the address for _init when
 	 * asked for init, which trips us up when we want to see if an init handler
@@ -913,6 +940,7 @@ finally:
 	replace_tclobj(&pathelements,	NULL);
 	replace_tclobj(&compile_errors,	NULL);
 	replace_tclobj(&filter,			NULL);
+	replace_tclobj(&used,				NULL);
 	replace_tclobj(&exported_symbols,	NULL);
 	replace_tclobj(&exported_headers,	NULL);
 	replace_tclobj(&compileerror_code,	NULL);
@@ -996,6 +1024,9 @@ static void free_interp_cx(ClientData cdata, Tcl_Interp* interp) //{{{
 
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], NULL);
+
+	replace_tclobj(&l->tclstublib, NULL);
+	replace_tclobj(&l->tclver, NULL);
 
 	ckfree(l);
 	l = NULL;
@@ -1321,6 +1352,12 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], Tcl_NewStringObj(lit_str[i], -1));
+
+
+	TEST_OK_LABEL(finally, code, Tcl_EvalObjEx(interp, l->lit[LIT_TCLSTUBLIB_CMD], 0));
+	replace_tclobj(&l->tclstublib, Tcl_GetObjResult(interp));
+	TEST_OK_LABEL(finally, code, Tcl_EvalObjEx(interp, l->lit[LIT_TCLVER_CMD], 0));
+	replace_tclobj(&l->tclver, Tcl_GetObjResult(interp));
 
 	l->instance_head.next = &l->instance_tail;
 	l->instance_tail.prev = &l->instance_head;
