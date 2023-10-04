@@ -1,14 +1,16 @@
 package require jitclib::tcltime
 namespace eval ::jitclib {
-	variable obstackpool	[list use $::jitclib::tcltime mode raw options {-Wall} export {
+	variable obstackpool	[list use $::jitclib::tcltime mode raw options {-Wall -Werror} export {
 		symbols {
 			obstack_pool_get
 			obstack_pool_release
 			obstack_pool_groom
 		}
 		header { //@begin=c@<<<
-			#include <stdint.h>
+			#define obstack_chunk_alloc	malloc
+			#define obstack_chunk_free	free
 			#include <obstack.h>
+			#include <stdint.h>
 
 			enum obstack_pool_estimate {
 				OBSTACK_POOL_SMALL,			// A few pages
@@ -18,7 +20,7 @@ namespace eval ::jitclib {
 			//@end=c@@begin=c@
 			struct obstack* obstack_pool_get(enum obstack_pool_estimate est);
 			void obstack_pool_release(struct obstack* ob);
-			void obstack_pool_groom(uint64_t ts);
+			void obstack_pool_groom(int64_t ts);
 			//@end=c@>>>
 		}
 	} code { //@begin=c@ <<<
@@ -38,9 +40,6 @@ namespace eval ::jitclib {
 			int						avail;
 			uint64_t				oldest;
 		};
-
-		#define obstack_chunk_alloc	malloc
-		#define obstack_chunk_free	free
 
 		struct obstack_pool	g_obstack = {0};
 
@@ -98,10 +97,10 @@ namespace eval ::jitclib {
 		}
 
 		//>>>
-		void obstack_pool_groom(uint64_t ts) //<<<
+		void obstack_pool_groom(int64_t ts) //<<<
 		{
 			const int		min_pool = 10;		// Keep at least this many slots in the pool
-			const uint64_t	horizon = ts - 30*1000000ULL;	// Free excess slots that are older than this
+			const int64_t	horizon = ts - 30*1000000ULL;	// Free excess slots that are older than this
 
 			if (
 					g_obstack.avail > min_pool &&
@@ -147,6 +146,6 @@ namespace eval ::jitclib {
 			g_obstack = (struct obstack_pool){0};
 		}
 		//@end=c@ >>>
-	}]
+	} {*}[if {[file exists /etc/alpine-release]} {list library obstack}]]
 }
 # vim: foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

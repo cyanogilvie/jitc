@@ -4,12 +4,12 @@ namespace eval ::jitclib {
 			symbols now
 			header { //@begin=c@
 				#include <stdint.h>
-				uint64_t now();		// Return the current (Tcl_Time) in microseconds since 1970-01-01 00:00:00 UTC
+				int64_t now();		// Return the current (Tcl_Time) in microseconds since 1970-01-01 00:00:00 UTC
 				//@end=c@
 			}
 		}
 		code {//@begin=c@
-			uint64_t now()
+			int64_t now()
 			{
 				Tcl_Time	t;
 				Tcl_GetTime(&t);

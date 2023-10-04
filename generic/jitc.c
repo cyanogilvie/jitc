@@ -1392,6 +1392,7 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 {
 	int					code = TCL_OK;
 
+	Tcl_DeleteAssocData(interp, "jitc");	// Have to do this here, otherwise Tcl will try to call it after we're unloaded
 	if (flags == TCL_UNLOAD_DETACH_FROM_PROCESS) {
 		//fprintf(stderr, "jitc unloading, finalizing mutexes\n");
 		Tcl_MutexFinalize(&gdb_jit_mutex);
