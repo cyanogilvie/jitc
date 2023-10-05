@@ -8,6 +8,7 @@ namespace eval ::jitclib {
 				add_mtag_rel
 			}
 			header { //@begin=c@
+				#include <obstack.h>
 				#ifndef YYCTYPE
 				#define _TMP_YYCTYPE 1
 				#define YYCTYPE	char

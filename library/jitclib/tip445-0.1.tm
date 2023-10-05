@@ -3,6 +3,9 @@ namespace eval ::jitclib {
 		export {
 			symbols {}
 			header { //@begin=c@
+#ifndef _TIP_445
+#define _TIP_445
+#ifndef Tcl_FetchInternalRep
 #include <string.h>
 #include <assert.h>
 #include <limits.h>
@@ -102,6 +105,8 @@ static char* Tcl_InitStringRep(Tcl_Obj* objPtr, const char* bytes, unsigned numB
 
 	return objPtr->bytes;
 }
+#endif
+#endif
 #endif
 			//@end=c@ }
 		}

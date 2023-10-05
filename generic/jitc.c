@@ -347,7 +347,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				for (int i=0; i<oc; i++)
 					if (-1 == tcc_add_library_path(tcc, Tcl_GetString(ov[i])))
 						THROW_PRINTF_LABEL(modetclfinally, code, "Error adding library path \"%s\"", Tcl_GetString(ov[i]));
-				tcc_define_symbol(tcc, "TCL_USE_STUBS", "1");
+				tcc_define_symbol(tcc, "USE_TCL_STUBS", "1");
 
 			modetclfinally:
 				replace_tclobj(&includepath, NULL);
@@ -441,7 +441,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 					}
 
 					if (vals[KEY_HEADER]) {
-						Tcl_DStringAppend(&preamble, "#include <", -1);
+						Tcl_DStringAppend(&preamble, "\n#include <", -1);
 						Tcl_DStringAppend(&preamble, Tcl_GetString(vals[KEY_HEADER]), -1);
 						Tcl_DStringAppend(&preamble, ">\n", -1);
 					}

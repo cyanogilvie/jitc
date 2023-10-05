@@ -223,7 +223,7 @@ namespace eval ::jitclib {
 				re2c:define:YYSETCONDITION	= "SETCOND";
 
 				end			= [\x00];
-				character	= [\x20-\u10ffff] \ [\\"];
+				character	= [\x20-\U0010ffff] \ [\\"];
 				digit		= [0-9];
 				digit1		= [1-9];
 				hexdigit	= [0-9a-fA-F];
