@@ -14,16 +14,13 @@ namespace eval ::jitclib {
 			Tcl_HashTable	g_intreps;
 
 			static void freeIntRep_asciilower(Tcl_Obj* obj);
+			static void dupIntRep_asciilower(Tcl_Obj* src, Tcl_Obj* dst);
 
 			Tcl_ObjType objtype_asciilower = {
-				"asciilower",
-				freeIntRep_asciilower,
-				NULL,
-				NULL,
-				NULL
+				.name			= "asciilower",
+				.freeIntRepProc	= freeIntRep_asciilower,
+				.dupIntRepProc	= dupIntRep_asciilower
 			};
-
-			static int	cleanup = 0;
 
 			//@end=c@@begin=c@
 			static void freeIntRep_asciilower(Tcl_Obj* obj) //<<<
@@ -31,19 +28,34 @@ namespace eval ::jitclib {
 				Tcl_ObjInternalRep*		ir = Tcl_FetchInternalRep(obj, &objtype_asciilower);
 				Tcl_Obj*				lower = ir->ptrAndLongRep.ptr;
 				replace_tclobj(&lower, NULL);
-				if (!cleanup) {
-					Tcl_HashEntry*	he = Tcl_FindHashEntry(&g_intreps, obj);
-					if (he) Tcl_DeleteHashEntry(he);
-				}
+				Tcl_HashEntry*	he = Tcl_FindHashEntry(&g_intreps, obj);
+				if (!he) Tcl_Panic("freeIntRep_asciilower: no record of intrep");
+				Tcl_DeleteHashEntry(he);
+			}
+
+			//@end=c@@begin=c@>>>
+			static void dupIntRep_asciilower(Tcl_Obj* src, Tcl_Obj* dst) //<<<
+			{
+				Tcl_ObjInternalRep*		ir = Tcl_FetchInternalRep(src, &objtype_asciilower);
+				Tcl_Obj*				lower = ir->ptrAndLongRep.ptr;
+
+				Tcl_IncrRefCount(lower);
+				Tcl_StoreInternalRep(dst, &objtype_asciilower, &(Tcl_ObjInternalRep){
+					.ptrAndLongRep.ptr = lower	// Donate our ref
+				});
+				int		isnew;
+				Tcl_HashEntry*	he = Tcl_CreateHashEntry(&g_intreps, dst, &isnew);
+				if (!isnew) Tcl_Panic("dupIntRep_asciilower: already have intrep registration");
+				Tcl_SetHashValue(he, dst);
 			}
 
 			//@end=c@@begin=c@>>>
 			static void free_intreps() //<<<
 			{
 				Tcl_HashSearch	search;
+				Tcl_HashEntry*	he;
 
-				cleanup = 1;
-				for (Tcl_HashEntry* he=Tcl_FirstHashEntry(&g_intreps, &search); he; he=Tcl_NextHashEntry(&search)) {
+				while ((he = Tcl_FirstHashEntry(&g_intreps, &search))) {
 					Tcl_Obj*	obj = Tcl_GetHashValue(he);
 					Tcl_GetString(obj);
 					Tcl_FreeInternalRep(obj);
@@ -86,11 +98,12 @@ namespace eval ::jitclib {
 
 							replace_tclobj(&lower, Tcl_DStringToObj(&ds));
 
-							Tcl_HashEntry*	he = Tcl_CreateHashEntry(&g_intreps, obj, &isnew);
-							Tcl_SetHashValue(he, obj);
 							Tcl_StoreInternalRep(obj, &objtype_asciilower, &(Tcl_ObjInternalRep){
 								.ptrAndLongRep.ptr = lower	// Donate our ref
 							});
+							Tcl_HashEntry*	he = Tcl_CreateHashEntry(&g_intreps, obj, &isnew);
+							if (!isnew) Tcl_Panic("dupIntRep_asciilower: already have intrep registration");
+							Tcl_SetHashValue(he, obj);
 
 							return lower;
 						}
