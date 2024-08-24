@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -6,8 +7,14 @@
 #include <errno.h>
 #include "tclstuff.h"
 #include <libtcc.h>
+#include <elf.h>
+#include <link.h>
+#include <dlfcn.h>
 #include "jitc.h"
 #include "valgrind/memcheck.h"
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 // pointer to/from int from tclInt.h
 #if !defined(INT2PTR)
@@ -21,6 +28,12 @@
 #endif
 #if !defined(PTR2UINT)
 #   define PTR2UINT(p) ((size_t)(p))
+#endif
+
+#if SIZEOF_VOIDP == 8
+#define ELFW(type) ELF64_##type
+#else
+#define ELFW(type) ELF32_##type
 #endif
 
 // Interface with GDB JIT API {{{
@@ -48,22 +61,48 @@ struct jit_descriptor {
 
 // Interface with GDB JIT API }}}
 
+struct rsym {
+	const char*			name;
+	void*				addr;
+	const ElfW(Sym)*	sym;
+};
+
 struct jitc_intrep {
-	Tcl_Obj*				symbols;
 	Tcl_Obj*				cdef;
 	Tcl_Obj*				debugfiles;
 	Tcl_Interp*				interp;
 	Tcl_Obj*				exported_symbols;
 	Tcl_Obj*				exported_headers;
 	Tcl_Obj*				used;				// Hold references to the foreign cdefs to prevent them from being freed under us
-	Tcl_LoadHandle			handle;
-	struct jit_code_entry	jit_symbols;
+	struct jit_code_entry	jce;
+
+	void**					align_ofs;
+	void*					base;
+	size_t					map_size;
+	uint8_t*				is_mapped;
+	void**					section_base;
+	void**					got;
+	struct plt_entry*		plt;
+	Tcl_HashTable			plt_syms;
+	Tcl_Obj*				needed;
+	Tcl_Obj*				lib_handles;
+	Tcl_Obj*				bytesobj;
+	uint8_t*				bytes;
+	int						len;
+	size_t					symc;
+	struct rsym*			resolved_symbols;
+	Tcl_HashTable			rsyms;
 };
 
 struct jitc_instance {
 	struct jitc_instance*	next;
 	struct jitc_instance*	prev;
 	Tcl_Obj*				obj;
+};
+
+struct plt_entry {
+	void*	target;
+	uint8_t	insn[6];
 };
 
 enum {
@@ -77,9 +116,6 @@ enum {
 	LIT_PACKAGEDIR_VAR,
 	LIT_PREFIX_VAR,
 	LIT_COMPILEERROR,
-	LIT_INITSTUBS,
-	LIT_INIT,
-	LIT_RELEASE,
 	LIT_TCLSTUBLIB_CMD,
 	LIT_TCLVER_CMD,
 	LIT_SIZE

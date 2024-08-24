@@ -33,7 +33,11 @@ set puts_format	{{PUTS_FORMAT(fmt, ...)} {do {					\
 }}
 
 test capply-1.1 {hello, world} -body { #<<<
+	file mkdir /tmp/capply-1.1
+	file delete {*}[glob -nocomplain -type f [file join /tmp/capply-1.1 *]]
 	jitc::capply {
+		debug /tmp/capply-1.1
+		options {-Wall -Werror -gdwarf-5}
 		code { //@begin=c@
 			int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
 			{
@@ -80,7 +84,7 @@ test capply-2.1 {missing symbol} -body { #<<<
 			//@end=c@
 		}
 	} hellox foo bar
-} -returnCodes error -errorCode {TCL LOOKUP LOAD_SYMBOL hellox} -match glob -result {cannot find symbol "hellox": */dll.so: undefined symbol: _hellox}
+} -returnCodes error -errorCode {JITC SYMBOL hellox} -match glob -result {Symbol not found: "hellox"}
 #>>>
 test capply-3.1 {exception} -body { #<<<
 	jitc::capply {
@@ -627,6 +631,65 @@ test capply-9.1 {debug info (-g)} -body { #<<<
 		}
 	} foo
 } -result capply-9.1
+#>>>
+test capply-10.0 {use, simple} -setup { #<<<
+	set dbgpath	/tmp/capply-10.0
+	file mkdir [file join $dbgpath 1]
+	file delete {*}[glob -nocomplain -type f [file join $dbgpath 1 *]]
+	set cdef1 [list debug [file join $dbgpath 1] {*}{
+		options {-Wall -Werror -gdwarf-5}
+		export {
+			symbols	foo
+			header {
+				int foo(int a, int b);
+			}
+		}
+		code {
+			int foo(int a, int b)
+			{
+				return a*b;
+			}
+		}
+	}]
+	file mkdir [file join $dbgpath 2]
+	file delete {*}[glob -nocomplain -type f [file join $dbgpath 2 *]]
+	set cdef2 [list debug [file join $dbgpath 2] use $cdef1 {*}{
+		options {-Wall -Werror -gdwarf-5}
+		code {
+			OBJCMD(foocmd) {
+				CHECK_ARGS(0, "");
+				Tcl_SetObjResult(interp, Tcl_ObjPrintf("capply-10.0: %d", foo(6, 7)));
+				return TCL_OK;
+			}
+		}
+	}]
+} -body {
+	jitc::capply $cdef2 foocmd
+} -cleanup {
+	unset -nocomplain cdef1 cdef2
+} -result {capply-10.0: 42}
+#>>>
+test capply-10.0.1 {use, obstackpool} -setup { #<<<
+	package require jitclib::obstackpool
+} -body {
+	file mkdir /tmp/capply-10.0.1
+	file delete {*}[glob -nocomplain -type f /tmp/capply-10.0.1/*]
+	jitc::capply [list use $jitclib::obstackpool debug /tmp/capply-10.0.1 {*}{
+		code {
+			OBJCMD(t) {
+				int		code = TCL_OK;
+				struct obstack*	ob = obstack_pool_get(OBSTACK_POOL_SMALL);
+				enum {A_cmd, A_objc};
+				CHECK_ARGS_LABEL(finally, code, "");
+
+				Tcl_SetObjResult(interp, Tcl_NewBooleanObj(ob != NULL));
+			finally:
+				obstack_pool_release(ob);
+				return code;
+			}
+		}
+	}] t
+} -result 1
 #>>>
 test capply-10.1 {use, jitclib, jitclib::json} -setup { #<<<
 	package require jitclib::json

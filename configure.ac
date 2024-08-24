@@ -19,7 +19,7 @@ dnl	to configure the system for the local environment.
 # so that we create the export library with the dll.
 #-----------------------------------------------------------------------
 
-AC_INIT([jitc], [0.5.3])
+AC_INIT([jitc], [0.6.0])
 
 #--------------------------------------------------------------------
 # Call TEA_INIT as the first TEA_ macro to set up initial vars.
@@ -82,7 +82,7 @@ ENABLE_TESTMODE
 TEA_ADD_SOURCES([jitc.c jitcStubInit.c])
 TEA_ADD_HEADERS([generic/jitc.h generic/jitcDecls.h])
 TEA_ADD_INCLUDES([-Ilocal/include])
-TEA_ADD_LIBS([-Llocal/lib -l:libtcc.a])
+TEA_ADD_LIBS([-Llocal/lib -l:libtcc.a -ldl])
 TEA_ADD_CFLAGS([])
 TEA_ADD_STUB_SOURCES([jitcStubLib.c])
 TEA_ADD_TCL_SOURCES([library/jitc.tcl])
@@ -155,6 +155,8 @@ TIP445
 #DEDUP_STUBS
 AX_CC_FOR_BUILD
 TEABASE_INIT()
+
+AC_CHECK_SIZEOF([void*])
 
 #--------------------------------------------------------------------
 # Set the default compiler switches based on the --enable-symbols option.
