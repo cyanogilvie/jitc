@@ -23,6 +23,7 @@ namespace eval ::jitc {
 			lappend includepath	[file join $packagedir generic]
 			lappend includepath	[file join $packagedir local/lib/tcc/include]
 			lappend librarypath	[file join $packagedir local/lib/tcc]
+			lappend includepath	[file join $packagedir local/include]
 			set jitclib $dir
 		} else {
 			set packagedir	$dir

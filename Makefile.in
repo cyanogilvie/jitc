@@ -237,10 +237,15 @@ install-binaries: binaries install-lib-binaries install-bin-binaries install-too
 
 install-libraries: libraries
 	@$(INSTALL_DATA_DIR) $(DESTDIR)$(pkglibdir)
+	@$(INSTALL_DATA_DIR) $(DESTDIR)$(pkglibdir)/include
 	@echo "Installing header files in $(DESTDIR)$(pkglibdir)"
 	@list='$(PKG_HEADERS)'; for i in $$list; do \
 	    echo "Installing $(srcdir)/$$i" ; \
 		$(INSTALL_DATA) $(srcdir)/$$i $(DESTDIR)$(pkglibdir) ; \
+	done;
+	@list='chaos order'; for i in $$list; do \
+	    echo "Installing local/include/$$i" ; \
+	    cp -r local/include/$$i $(DESTDIR)$(pkglibdir)/include ; \
 	done;
 
 install-tools: tools
@@ -531,8 +536,8 @@ uninstall-binaries:
 genstubs: generic/jitc.decls
 	$(TCLSH_PROG) $(TCL_SRC_DIR)/tools/genStubs.tcl generic generic/jitc.decls
 
-tags:
-	ctags-exuberant generic/*
+#tags:
+#	ctags-exuberant generic/*
 
 tcc:
 	mkdir -p tinycc
@@ -544,7 +549,7 @@ tcc:
 	# Not part of tcc, but required to build code that uses MODE_TCL
 	cp generic/tclstuff.h local/lib/tcc/include
 
-tools: local/bin/re2c local/bin/packcc local/bin/lemon
+tools: local/bin/re2c local/bin/packcc local/bin/lemon local/include/chaos local/include/order
 
 local/bin/re2c:
 	mkdir -p tools/re2c
@@ -576,6 +581,14 @@ local/lib/dedup%/pkgIndex.tcl:
 	ln -sf "`pwd`/tclconfig" dedup/tclconfig
 	(cd dedup; autoconf && ./configure CFLAGS="-DPURIFY -Og" --prefix= --exec-prefix="`pwd`/../local" --enable-symbols --with-tcl=$(TCL_BIN_DIR))
 	make -C dedup install-binaries install-libraries
+
+local/include/chaos:
+	mkdir -p local/include
+	cp -r tools/chaos-pp/chaos local/include/
+
+local/include/order: local/include/chaos
+	mkdir -p local/include
+	cp -r tools/order-pp/inc/order local/include/
 
 #local/lib/libfuse3.a:
 #	mkdir -p local/lib

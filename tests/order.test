@@ -1,0 +1,37 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+package require jitc
+
+test order-1.1 {Big fib} -body { #<<<
+	jitc::capply {
+		code {
+			#include <order/interpreter.h>
+
+			#define ORDER_PP_DEF_8fib				\
+				ORDER_PP_FN(8fn(8N,					\
+							8fib_iter(8N, 0, 1)))
+
+			#define ORDER_PP_DEF_8fib_iter			\
+				ORDER_PP_FN(8fn(8N, 8I, 8J,			\
+					8if(8is_0(8N),					\
+						8I,							\
+						8fib_iter(8dec(8N), 8J, 8add(8I, 8J)))))
+
+			OBJCMD(big_fib) {
+				Tcl_SetObjResult(interp, Tcl_NewStringObj(ORDER_PP(8stringize(8to_lit(8fib(8nat(1,0,0))))), -1));
+				return TCL_OK;
+			}
+		}
+	} big_fib
+} -result 354224848179261915075
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4
