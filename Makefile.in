@@ -559,7 +559,7 @@ local/bin/re2c:
 	cd tools/re2c && ./autogen.sh
 	# -gz=none: prevent gcc from compressing the debug symbols in libtcc1.a, which tcc isn't expecting
 	#cd build/re2c && CFLAGS="-gz=none" ../../tools/re2c/configure CC="$(CC)" --disable-golang --disable-rust --enable-libs --disable-shared --enable-static && make -j 16
-	cd build/re2c && ../../tools/re2c/configure CC="$(CC)" --disable-golang --disable-rust --enable-libs --disable-shared --enable-static && make -j 16
+	cd build/re2c && ../../tools/re2c/configure CC="$(CC)" --disable-golang --disable-rust --disable-benchmarks --no-recursion --enable-libs --disable-dlang --disable-haskell --disable-java --disable-ocaml --disable-python --disable-vlang --disable-js --disable-zig --disable-shared --enable-static && make -j 16
 	make -C build/re2c install-strip DESTDIR="`pwd`" prefix=/local
 
 local/bin/packcc:
