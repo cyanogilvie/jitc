@@ -557,7 +557,7 @@ set cdef {
 set first   [jitc::capply $cdef dedup \[dq]foo bar\[dq]]
 set second  [jitc::capply $cdef dedup \[dq]foo bar\[dq]]
 puts \[dq]first:  [tcl::unsupported::representation $first]\[dq]
-puts \[dq]second: [tcl::unsupported::representation $first]\[dq]
+puts \[dq]second: [tcl::unsupported::representation $second]\[dq]
 puts \[dq]dedup pool stats:\[rs]n[jitc::capply $cdef stats]\[dq]
 \f[R]
 .fi

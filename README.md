@@ -398,7 +398,7 @@ set cdef {
 set first   [jitc::capply $cdef dedup "foo bar"]
 set second  [jitc::capply $cdef dedup "foo bar"]
 puts "first:  [tcl::unsupported::representation $first]"
-puts "second: [tcl::unsupported::representation $first]"
+puts "second: [tcl::unsupported::representation $second]"
 puts "dedup pool stats:\n[jitc::capply $cdef stats]"
 ```
 
