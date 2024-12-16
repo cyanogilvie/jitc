@@ -438,6 +438,34 @@ packcc: https://en.wikipedia.org/wiki/PackCC, lemon: https://sqlite.org/src/doc/
 Work in progress, only very basic testing has been done.  Using it anywhere that matters would be
 very brave indeed.
 
+Actually, this is already in heavy production use for us and working well, at least in the subset that
+we're using, but **use** has problems (possibly only when using the musl c library).  Also, musl doesn't
+unload DLLs when dlclose is called, so the compiled objects will leak.  In practice this hasn't created a
+critical problem for us (we primarily ship on alpine linux containers, which use musl), because we've found
+that compiling and freeing the compiled objects to be rare in practice.  Work is ongoing to resolve this
+issue though, and will probably require implementing a custom dynamic linker.
+
+
+## BUILDING
+
+There are no external dependencies other than Tcl.  Building from source requires the git submodules, so
+clone it like:
+
+```
+git clone --recurse-submodules https://github.com/cyanogilvie/jitc
+```
+
+Building is the normal TEA steps:
+
+```
+autoconf
+./configure
+make
+make install
+```
+
+Tcl 9 is not yet supported, but will be as soon as I get time to do it.  Tcl 8.7 is currently supported.
+
 
 ## TODO
 
@@ -459,6 +487,7 @@ same license terms as the Tcl Core.  The TCC compiler is LGPL.  This package
 does not distribute object code or source code from TCC and so doesn't trigger
 any GPL issues, but if you build this package and distribute the result you
 will need to ensure that you are in compliance with the terms of the TCC LGPL
+
 license.  The git submodules for the linked tools each have their own license:
 TinyCC is LGPL; re2c is public domain; packcc is MIT; lemon and sqlite are
 public domain.

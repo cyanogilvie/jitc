@@ -601,6 +601,42 @@ https://sqlite.org/src/doc/trunk/doc/lemon.html.
 .PP
 Work in progress, only very basic testing has been done.
 Using it anywhere that matters would be very brave indeed.
+.PP
+Actually, this is already in heavy production use for us and working
+well, at least in the subset that we\[cq]re using, but \f[B]use\f[R] has
+problems (possibly only when using the musl c library).
+Also, musl doesn\[cq]t unload DLLs when dlclose is called, so the
+compiled objects will leak.
+In practice this hasn\[cq]t created a critical problem for us (we
+primarily ship on alpine linux containers, which use musl), because
+we\[cq]ve found that compiling and freeing the compiled objects to be
+rare in practice.
+Work is ongoing to resolve this issue though, and will probably require
+implementing a custom dynamic linker.
+.SS BUILDING
+.PP
+There are no external dependencies other than Tcl.
+Building from source requires the git submodules, so clone it like:
+.IP
+.nf
+\f[C]
+git clone --recurse-submodules https://github.com/cyanogilvie/jitc
+\f[R]
+.fi
+.PP
+Building is the normal TEA steps:
+.IP
+.nf
+\f[C]
+autoconf
+\&./configure
+make
+make install
+\f[R]
+.fi
+.PP
+Tcl 9 is not yet supported, but will be as soon as I get time to do it.
+Tcl 8.7 is currently supported.
 .SS TODO
 .IP \[bu] 2
 \[u2612] Implement \f[B]init\f[R] and \f[B]release\f[R]
@@ -628,7 +664,9 @@ The TCC compiler is LGPL.
 This package does not distribute object code or source code from TCC and
 so doesn\[cq]t trigger any GPL issues, but if you build this package and
 distribute the result you will need to ensure that you are in compliance
-with the terms of the TCC LGPL license.
+with the terms of the TCC LGPL
+.PP
+license.
 The git submodules for the linked tools each have their own license:
 TinyCC is LGPL; re2c is public domain; packcc is MIT; lemon and sqlite
 are public domain.
