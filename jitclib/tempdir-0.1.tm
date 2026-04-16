@@ -7,10 +7,11 @@ namespace eval ::jitclib {
 			int			code = TCL_OK;
 			Tcl_DString	template;
 
-			CHECK_ARGS(1, "template");
+			enum {A_cmd, A_TEMPLATE, A_objc};
+			CHECK_ARGS("template");
 
 			int preflen;
-			const char*	pref = Tcl_GetStringFromObj(objv[1], &preflen);
+			const char*	pref = Tcl_GetStringFromObj(objv[A_TEMPLATE], &preflen);
 
 			Tcl_DStringInit(&template);
 

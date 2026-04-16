@@ -4,8 +4,8 @@
 //#include <fuse_lowlevel.h>
 #include <sys/mount.h>
 
-TCL_DECLARE_MUTEX(g_memfs_init_mutex);
-TCL_DECLARE_MUTEX(g_memfs_startup_mutex);
+TCL_DECLARE_MUTEX(g_memfs_init_mutex)
+TCL_DECLARE_MUTEX(g_memfs_startup_mutex)
 Tcl_Condition	startup = NULL;
 
 char			template[] = P_tmpdir "/memfs_XXXXXX";

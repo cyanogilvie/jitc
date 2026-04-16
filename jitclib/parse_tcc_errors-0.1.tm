@@ -25,12 +25,13 @@ namespace eval ::jitclib {
 			}
 
 			OBJCMD(parse) {
-				CHECK_ARGS(1, "errorstr");
+				enum {A_cmd, A_STR, A_objc};
+				CHECK_ARGS("errorstr");
 
 				/*!types:re2c*/
 				int							code = TCL_OK;
 				int							str_len;
-				const unsigned char*const	str = (const unsigned char*)Tcl_GetStringFromObj(objv[1], &str_len);
+				const unsigned char*const	str = (const unsigned char*)Tcl_GetStringFromObj(objv[A_STR], &str_len);
 				const unsigned char*		s = str;
 				const unsigned char*		m = NULL;
 				Tcl_Obj*					errors = NULL;

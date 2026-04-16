@@ -1,9 +1,13 @@
+#if HAVE_CONFIG_H
+#   include <config.h>
+#endif
+
 #undef USE_TCL_STUBS
 #undef USE_JITC_STUBS
 #define USE_TCL_STUBS 1
 #define USE_JITC_STUBS 1
 
-#include "jitc.h"
+#include <jitc.h>
 
 MODULE_SCOPE const JitcStubs*	jitcStubsPtr;
 const JitcStubs*					jitcStubsPtr = NULL;

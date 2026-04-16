@@ -1,0 +1,1 @@
+load [file join [file dirname [info script]] @PKG_LIB_FILE@] [string totitle @PACKAGE_NAME@]

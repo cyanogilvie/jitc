@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 
-#ifdef BUILD_jitc
+#ifdef BUILD_@PACKAGE_NAME@
 #undef TCL_STORAGE_CLASS
 #define TCL_STORAGE_CLASS DLLEXPORT
 #endif
@@ -20,7 +20,7 @@ extern const char* JitcInitializeStubs(Tcl_Interp* interp);
 
 #include "jitcDecls.h"
 
-EXTERN int Jitc_Init _ANSI_ARGS_((Tcl_Interp * interp));
+EXTERN int Jitc_Init(Tcl_Interp *interp);
 
 #ifdef __cplusplus
 }

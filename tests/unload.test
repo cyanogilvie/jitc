@@ -21,9 +21,8 @@ tcltest::testConstraint inDebugger	[expr {
 test unload-1.1 {Load in a child interpreter} -body { #<<<
 	interp create c
 	set here	[file dirname [file normalize [info script]]]
-	c eval "package ifneeded jitc [package require jitc] \[list source [file join $here ../library/jitc.tcl]\]"
 	c eval {
-		package require jitc
+		load {} Jitc
 
 		set cdef {
 			code { //@begin=c@
@@ -40,11 +39,12 @@ test unload-1.1 {Load in a child interpreter} -body { #<<<
 		  		
 				OBJCMD(hello)
 				{
-					CHECK_ARGS(2, "a b");
+					enum {A_cmd, A_A, A_B, A_objc};
+					CHECK_ARGS("a b");
 
 					Tcl_SetObjResult(interp, Tcl_ObjPrintf("hello, %s and %s",
-						Tcl_GetString(objv[1]),
-						Tcl_GetString(objv[2])));
+						Tcl_GetString(objv[A_A]),
+						Tcl_GetString(objv[A_B])));
 
 					return TCL_OK;
 				}

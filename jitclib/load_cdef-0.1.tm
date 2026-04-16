@@ -11,10 +11,11 @@ namespace eval ::jitclib {
 			for (int i=0; i<objc; i++) fprintf(stderr, "\t(%s)\n", Tcl_GetString(objv[i]));
 			*/
 			int				code = TCL_OK;
-			if (objc < 3) CHECK_ARGS(2, "file symbol ?arg ...?");
+			enum {A_cmd, A_FILE, A_SYM, A_args};
+			CHECK_MIN_ARGS("file symbol ?arg ...?");
 
 			const char*const symbols[2] = {
-				Tcl_GetString(objv[2]),
+				Tcl_GetString(objv[A_SYM]),
 				NULL
 			};
 			Tcl_ObjCmdProc*	procs[1];
@@ -22,7 +23,7 @@ namespace eval ::jitclib {
 			cdef_release*	release = NULL;
 			Tcl_LoadHandle	handle = NULL;
 
-			fprintf(stderr, "Loading %s, looking for symbol: %s\n", Tcl_GetString(objv[1]), Tcl_GetString(objv[2]));
+			fprintf(stderr, "Loading %s, looking for symbol: %s\n", Tcl_GetString(objv[A_FILE]), Tcl_GetString(objv[A_SYM]));
 			TEST_OK_LABEL(done, code, Tcl_LoadFile(interp, objv[1],
 				symbols,
 				0,
@@ -31,13 +32,13 @@ namespace eval ::jitclib {
 			init = Tcl_FindSymbol(NULL, handle, "init");
 			release = Tcl_FindSymbol(NULL, handle, "init");
 
-			fprintf(stderr, "Loaded %s, init: %p, release: %p, %s: %p\n", Tcl_GetString(objv[1]), init, release, Tcl_GetString(objv[2]), procs[0]);
+			fprintf(stderr, "Loaded %s, init: %p, release: %p, %s: %p\n", Tcl_GetString(objv[A_FILE]), init, release, Tcl_GetString(objv[A_SYM]), procs[0]);
 
 			fprintf(stderr, "Calling init (if set)\n");
 			if (init)
 				TEST_OK_LABEL(done, code, (init)(interp));
 
-			fprintf(stderr, "Calling %s\n", Tcl_GetString(objv[2]));
+			fprintf(stderr, "Calling %s\n", Tcl_GetString(objv[A_SYM]));
 			TEST_OK_LABEL(done, code, (procs[0])(NULL, interp, objc-2, objv+2));
 
 		done:
@@ -46,7 +47,7 @@ namespace eval ::jitclib {
 				TEST_OK_LABEL(done, code, (release)(interp));
 
 			if (handle) {
-				fprintf(stderr, "Unloading %s\n", Tcl_GetString(objv[1]));
+				fprintf(stderr, "Unloading %s\n", Tcl_GetString(objv[A_FILE]));
 				Tcl_FSUnloadFile(interp, handle);
 				handle = NULL;
 			}

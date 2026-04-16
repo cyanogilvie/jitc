@@ -147,7 +147,7 @@ namespace eval ::jitclib {
 			struct obstack*				ob = obstack_pool_get(OBSTACK_POOL_SMALL);
 			struct jsonval*				root = NULL;
 			struct jsonval*				container = NULL;
-			int							len;
+			Tcl_Size					len;
 			Tcl_Obj*					strObj = NULL;
 			replace_tclobj(&strObj, Tcl_DuplicateObj(jsonObj));
 			const unsigned char*const	str = (const unsigned char*)Tcl_GetStringFromObj(strObj, &len);
@@ -365,9 +365,10 @@ namespace eval ::jitclib {
 
 		OBJCMD(valid) {
 			struct jitc_json_intrep*	val = NULL;
-			CHECK_ARGS(1, "json");
+			enum {A_cmd, A_JSON, A_objc};
+			CHECK_ARGS("json");
 
-			const int isvalid = (TCL_OK == parse_json(NULL, objv[1], &val));
+			const int isvalid = (TCL_OK == parse_json(NULL, objv[A_JSON], &val));
 			if (val) {
 				struct obstack*	ob = val->ob;
 				val->root = NULL;
@@ -402,7 +403,7 @@ namespace eval ::jitclib {
 			const unsigned char*		m = NULL;
 			/*!types:re2c*/
 			int							cond = yycvalue;
-			int							len;
+			Tcl_Size					len;
 			const unsigned char*const	str = (const unsigned char*)Tcl_GetStringFromObj(jsonObj, &len);
 			const unsigned char*		s = str;
 			Tcl_DString					containerstack;
@@ -520,8 +521,9 @@ namespace eval ::jitclib {
 
 
 		OBJCMD(check) {
-			CHECK_ARGS(1, "json");
-			Tcl_SetObjResult(interp, check_json(objv[1]) ? g_true : g_false);
+			enum {A_cmd, A_JSON, A_objc};
+			CHECK_ARGS("json");
+			Tcl_SetObjResult(interp, check_json(objv[A_JSON]) ? g_true : g_false);
 			return TCL_OK;
 		}
 	//@end=c@>>> }]

@@ -135,6 +135,7 @@ namespace eval ::jitclib {
 			struct obstack_slot*	s = g_obstack.free;
 			struct obstack_slot*	n = NULL;
 			int i = 0;
+			//fprintf(stderr, "obstackpool release, g_obstack.free: %p\n", g_obstack.free);
 			while (s) {
 				n = s->next;
 				//fprintf(stderr, "Freeing obstack_slot: %p\n", s);

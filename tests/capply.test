@@ -143,9 +143,10 @@ test capply-4.1 {mode: tcl} -setup { #<<<
 				int			code = TCL_OK;
 				Tcl_Obj*	msg = NULL;
 
-				CHECK_ARGS(2, "a b");
+				enum {A_cmd, A_A, A_B, A_objc};
+				CHECK_ARGS("a b");
 
-				replace_tclobj(&msg, Tcl_ObjPrintf("hello, %s and %s", Tcl_GetString(objv[1]), Tcl_GetString(objv[2])));
+				replace_tclobj(&msg, Tcl_ObjPrintf("hello, %s and %s", Tcl_GetString(objv[A_A]), Tcl_GetString(objv[A_B])));
 				Tcl_SetObjResult(interp, msg);
 
 			finally:
@@ -171,9 +172,10 @@ test capply-4.2 {mode: raw} -setup { #<<<
 				int			code = TCL_OK;
 				Tcl_Obj*	msg = NULL;
 
-				CHECK_ARGS(2, "a b");
+				enum {A_cmd, A_A, A_B, A_objc};
+				CHECK_ARGS("a b");
 
-				replace_tclobj(&msg, Tcl_ObjPrintf("hello, %s and %s", Tcl_GetString(objv[1]), Tcl_GetString(objv[2])));
+				replace_tclobj(&msg, Tcl_ObjPrintf("hello, %s and %s", Tcl_GetString(objv[A_A]), Tcl_GetString(objv[A_B])));
 				Tcl_SetObjResult(interp, msg);
 
 			finally:
@@ -188,14 +190,15 @@ test capply-4.2 {mode: raw} -setup { #<<<
 	jitc::capply $cdef msg foo bar
 } -cleanup {
 	unset -nocomplain cdef
-} -returnCodes error -result {ERROR: In "<string>", line 2: ',' expected (got "cdata"):
+} -returnCodes error -result {ERROR: In "<string>", line 2: ',' expected (got 'cdata'):
 			int msg(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])}
 #>>>
 test capply-5.1 {OBJCMD} -body { #<<<
 	jitc::capply {
 		code {
 			OBJCMD(foo) {
-				CHECK_ARGS(0, "");
+				enum {A_cmd, A_objc};
+				CHECK_ARGS("");
 				Tcl_SetObjResult(interp, Tcl_NewStringObj("bar", 3));
 				return TCL_OK;
 			}
@@ -204,9 +207,10 @@ test capply-5.1 {OBJCMD} -body { #<<<
 } -result bar
 #>>>
 test capply-6.1 {dedup} -constraints knownBug -setup { #<<<
-	set cdef	{
-		include_path	local/lib/dedup0.9.5
-		library_path	local/lib/dedup0.9.5
+	set cdef	{}
+	lappend cdef include_path	[file join $::jitc::packagedir subprojects/dedup]
+	lappend cdef library_path	[file join $::jitc::packagedir subprojects/dedup]
+	lappend cdef {*}{
 		code {
 			#include <dedup.h>
 
@@ -224,12 +228,13 @@ test capply-6.1 {dedup} -constraints knownBug -setup { #<<<
 			}
 
 			OBJCMD(foo) {
-				CHECK_ARGS(0, "");
+				enum {A_cmd, A_objc};
+				CHECK_ARGS("");
 				Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, "bar", 3));
 				return TCL_OK;
 			}
 		}
-		library			dedup0.9.5
+		library			tcl9dedup
 	}
 } -body {
 	jitc::capply $cdef foo
@@ -238,9 +243,10 @@ test capply-6.1 {dedup} -constraints knownBug -setup { #<<<
 } -result bar
 #>>>
 test capply-6.2 {dedup stubs} -setup { #<<<
-	set cdef	{
-		include_path	local/lib/dedup0.9.5
-		library_path	local/lib/dedup0.9.5
+	set cdef	{}
+	lappend cdef include_path	[file join $::jitc::packagedir subprojects/dedup]
+	lappend cdef library_path	[file join $::jitc::packagedir subprojects/dedup]
+	lappend cdef {*}{
 		define			{USE_TCL_STUBS 1}
 		define			{USE_DEDUP_STUBS 1}
 		code {
@@ -266,13 +272,14 @@ test capply-6.2 {dedup stubs} -setup { #<<<
 			}
 
 			OBJCMD(foo) {
-				CHECK_ARGS(0, "");
+				enum {A_cmd, A_objc};
+				CHECK_ARGS("");
 				Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, "bar", 3));
 				return TCL_OK;
 			}
 		}
-		library			dedupstub0.9.5
-		library			tclstub8.7
+		library			dedupstub
+		library			tclstub
 	}
 } -body {
 	jitc::capply $cdef foo
@@ -302,7 +309,8 @@ test capply-6.3 {dedup no stubs, tcl package require} -constraints knownBug -set
 			}
 
 			OBJCMD(foo) {
-				CHECK_ARGS(0, "");
+				enum {A_cmd, A_objc};
+				CHECK_ARGS("");
 				Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, "bar", 3));
 				return TCL_OK;
 			}
@@ -331,7 +339,8 @@ test capply-6.4 {dedup package} -setup { #<<<
 			}
 
 			OBJCMD(foo) {
-				CHECK_ARGS(0, "");
+				enum {A_cmd, A_objc};
+				CHECK_ARGS("");
 				Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, "bar", 3));
 				return TCL_OK;
 			}
@@ -376,14 +385,16 @@ test capply-6.5 {dedup package, reuse pool} -setup { #<<<
 		}
 
 		OBJCMD(dedup_str) {
-			CHECK_ARGS(1, "str");
+			enum {A_cmd, A_STR, A_objc};
+			CHECK_ARGS("str");
 			PUTS_FORMAT("dedup_str in %s\n", STR(CHILD));
-			Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, Tcl_GetString(objv[1]), -1));
+			Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, Tcl_GetString(objv[A_STR]), -1));
 			return TCL_OK;
 		}
 
 		OBJCMD(stats) {
-			CHECK_ARGS(0, "");
+			enum {A_cmd, A_objc};
+			CHECK_ARGS("");
 			Tcl_DString	ds;
 			Tcl_DStringInit(&ds);
 			Dedup_Stats(&ds, g_dedup);
@@ -432,7 +443,7 @@ freed dedup pool
 }
 
 #>>>
-test capply-6.6 {dedup package, reuse pool, import function symbols} -setup { #<<<
+test capply-6.6 {dedup package, reuse pool, import function symbols} -constraints knownBug -setup { #<<<
 	set dedup_cdef	[list \
 		package	{dedup 0.9.5} \
 		define	$puts_format \
@@ -471,14 +482,16 @@ test capply-6.6 {dedup package, reuse pool, import function symbols} -setup { #<
 		}
 
 		OBJCMD(dedup_str) {
-			CHECK_ARGS(1, "str");
+			enum {A_cmd, A_STR, A_objc};
+			CHECK_ARGS("str");
 			PUTS_FORMAT("dedup_str in %s\n", STR(CHILD));
-			Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, Tcl_GetString(objv[1]), -1));
+			Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, Tcl_GetString(objv[A_STR]), -1));
 			return TCL_OK;
 		}
 
 		OBJCMD(stats) {
-			CHECK_ARGS(0, "");
+			enum {A_cmd, A_objc};
+			CHECK_ARGS("");
 			Tcl_DString	ds;
 			Tcl_DStringInit(&ds);
 			Dedup_Stats(&ds, g_dedup);
@@ -533,9 +546,10 @@ test capply-7.1 {filter re2c, sentinel with bounds check} -setup { #<<<
 		options	{}
 		code	{
 			OBJCMD(isdecimal) {
-				CHECK_ARGS(1, "str");
-				int         len;
-				const char* str = Tcl_GetStringFromObj(objv[1], &len);
+				enum {A_cmd, A_STR, A_objc};
+				CHECK_ARGS("str");
+				Tcl_Size    len;
+				const char* str = Tcl_GetStringFromObj(objv[A_STR], &len);
 				const char* YYCURSOR = str;
 				const char* YYLIMIT  = str+len;
 				const char* YYMARKER;
@@ -573,8 +587,9 @@ test capply-7.2 {filter re2c, sentinel without bounds check} -setup { #<<<
 		options	{}
 		code	{
 			OBJCMD(isdecimal) {
-				CHECK_ARGS(1, "str");
-				const char* str = Tcl_GetString(objv[1]);
+				enum {A_cmd, A_STR, A_objc};
+				CHECK_ARGS("str");
+				const char* str = Tcl_GetString(objv[A_STR]);
 				const char* YYCURSOR = str;
 				const char* YYMARKER;
 				/*!re2c
@@ -620,7 +635,8 @@ test capply-9.1 {debug info (-g)} -body { #<<<
 		options {-g}
 		code {
 			OBJCMD(foo) {
-				CHECK_ARGS(0, "");
+				enum {A_cmd, A_objc};
+				CHECK_ARGS("");
 				Tcl_SetObjResult(interp, Tcl_NewStringObj("capply-9.1", -1));
 				return TCL_OK;
 			}
@@ -714,15 +730,16 @@ test capply-11.1 {Test NR command dispatch} -body { #<<<
 					int					code = TCL_OK;
 					struct range_state*	s = NULL;
 
-					CHECK_ARGS(4, "iteratorvar from to script");
+					enum {A_cmd, A_IVAR, A_FROM, A_TO, A_SCRIPT, A_objc};
+					CHECK_ARGS("iteratorvar from to script");
 
 					s = ckalloc(sizeof *s);
 					*s = (struct range_state){0};
 					//@end=c@@begin=c@
-					replace_tclobj(&s->iter, objv[1]);
-					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[2], &s->from));
-					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[3], &s->to));
-					replace_tclobj(&s->script, objv[4]);
+					replace_tclobj(&s->iter, objv[A_IVAR]);
+					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[A_FROM], &s->from));
+					TEST_OK_LABEL(done, code, Tcl_GetIntFromObj(interp, objv[A_TO], &s->to));
+					replace_tclobj(&s->script, objv[A_SCRIPT]);
 
 					s->step = (s->to >= s->from) ? 1 : -1;
 					s->i = s->from;

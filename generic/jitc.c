@@ -1,8 +1,12 @@
-#include "jitcInt.h"
-#include "tip445.h"
+#include <jitcInt.h>
+#include <tip445.h>
 #include <sys/stat.h>
+#include <names.h>
 
-TCL_DECLARE_MUTEX(g_tcc_mutex);
+TCL_DECLARE_MUTEX(g_pkgdir_mutex)
+static Tcl_Obj* g_pkgdir = NULL;
+
+TCL_DECLARE_MUTEX(g_tcc_mutex)
 
 typedef const char* (cdef_initstubs)(Tcl_Interp* interp, const char* ver);
 typedef int (cdef_init)(Tcl_Interp* interp);
@@ -40,7 +44,9 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 			// l can be NULL here if we're here because the interp is being deleted (and so free_interp_cx has been called)
 			replace_tclobj(&releasename, l ? l->lit[LIT_RELEASE] : Tcl_NewStringObj("release", -1));
 			if (TCL_OK == Tcl_DictObjGet(r->interp, r->symbols, releasename, &releasesymboladdr) && releasesymboladdr) {
-				cdef_release*	release = Tcl_FindSymbol(NULL, r->handle, "release");
+				void* releaseaddr = Tcl_FindSymbol(NULL, r->handle, "release");
+				cdef_release*	release;
+				memcpy(&release, &releaseaddr, sizeof(release));
 				if (release) (release)(r->interp);
 			}
 			replace_tclobj(&releasename, NULL);
@@ -60,10 +66,10 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 	replace_tclobj(&r->cdef, NULL);
 	if (r->debugfiles) {
 		Tcl_Obj**	fv;
-		int			fc;
+		Tcl_Size	fc;
 
 		if (TCL_OK == Tcl_ListObjGetElements(NULL, r->debugfiles, &fc, &fv)) {
-			for (int i=0; i<fc; i++) {
+			for (Tcl_Size i=0; i<fc; i++) {
 				if (TCL_OK != Tcl_FSDeleteFile(fv[i])) {
 					// TODO: what?
 				}
@@ -86,7 +92,7 @@ static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup) //{{{
 	Tcl_ObjInternalRep*		ir = Tcl_FetchInternalRep(src, &jitc_objtype);
 	struct jitc_intrep*		r = ir->twoPtrValue.ptr1;
 	struct interp_cx*		l = Tcl_GetAssocData(r->interp, "jitc", NULL);
-	Tcl_ObjInternalRep		newir = {0};
+	Tcl_ObjInternalRep		newir = {.twoPtrValue = {0}}; // defend against gcc 15.2's broken treatment of unions
 	struct jitc_instance*	instance = NULL;
 
 	// Shouldn't ever need to happen, but if it does we have to recompile from source.
@@ -112,7 +118,7 @@ void update_jitc_string_rep(Tcl_Obj* obj) //{{{
 {
 	Tcl_ObjInternalRep*	ir = Tcl_FetchInternalRep(obj, &jitc_objtype);
 	struct jitc_intrep*	r = ir->twoPtrValue.ptr1;
-	int					newstring_len;
+	Tcl_Size			newstring_len;
 	const char*			newstring = Tcl_GetStringFromObj(r->cdef, &newstring_len);
 
 	Tcl_InvalidateStringRep(obj);	// Just in case, panic below if obj->bytes != NULL
@@ -122,10 +128,10 @@ void update_jitc_string_rep(Tcl_Obj* obj) //{{{
 
 // Internal API {{{
 // Interface with GDB JIT API {{{
-TCL_DECLARE_MUTEX(gdb_jit_mutex);
+TCL_DECLARE_MUTEX(gdb_jit_mutex)
 
 /* GDB puts a breakpoint in this function.  */
-void __attribute__((noinline)) __jit_debug_register_code() { };
+void __attribute__((noinline)) __jit_debug_register_code() { }
 
 /* Make sure to specify the version statically, because the
    debugger may check the version before we can set it.  */
@@ -239,8 +245,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	};
 	int					mode = MODE_TCL;
 	Tcl_Obj**			ov;
-	int					oc;
-	int					i;
+	Tcl_Size			oc;
+	Tcl_Size			i;
 	Tcl_Obj*			debugpath = NULL;
 	struct TCCState*	tcc = NULL;
 	int					mutexheld = 0;
@@ -265,12 +271,13 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, cdef, &oc, &ov));
 	if (oc % 2 == 1)
-		THROW_PRINTF_LABEL(finally, code, "cdef must be a list with an even number of elements (got %d): %s", oc, Tcl_GetString(cdef));
+		THROW_PRINTF_LABEL(finally, code, "cdef must be a list with an even number of elements (got %" TCL_SIZE_MODIFIER "d): %s", oc, Tcl_GetString(cdef));
 
 	// First pass through the parts to check for a debugpath setting
 	for (i=0; i<oc; i+=2) {
-		enum partenum	part;
-		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
+		int	partidx;
+		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
+		enum partenum	part = partidx;
 		_Pragma("GCC diagnostic push")
 		_Pragma("GCC diagnostic ignored \"-Wswitch\"")
 		switch (part) {
@@ -285,7 +292,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 			case PART_SYMBOLS:
 				{
 					Tcl_Obj**	sv;
-					int			sc;
+					Tcl_Size	sc;
 					struct jitc_intrep*	ur;
 
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, ov[i+1], &sc, &sv));
@@ -327,7 +334,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		case MODE_TCL:
 			{
 				Tcl_Obj**			ov;
-				int					oc;
+				Tcl_Size			oc;
 				Tcl_Obj*			includepath = NULL;
 				Tcl_Obj*			librarypath = NULL;
 				Tcl_Obj*			tccpath = NULL;
@@ -342,9 +349,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				tcc_set_lib_path(tcc, Tcl_GetString(tccpath));
 
 				TEST_OK_LABEL(modetclfinally, code, Tcl_ListObjGetElements(interp, includepath, &oc, &ov));
-				for (int i=0; i<oc; i++) tcc_add_include_path(tcc, Tcl_GetString(ov[i]));
+				for (Tcl_Size i=0; i<oc; i++) tcc_add_include_path(tcc, Tcl_GetString(ov[i]));
 				TEST_OK_LABEL(modetclfinally, code, Tcl_ListObjGetElements(interp, librarypath, &oc, &ov));
-				for (int i=0; i<oc; i++)
+				for (Tcl_Size i=0; i<oc; i++)
 					if (-1 == tcc_add_library_path(tcc, Tcl_GetString(ov[i])))
 						THROW_PRINTF_LABEL(modetclfinally, code, "Error adding library path \"%s\"", Tcl_GetString(ov[i]));
 				tcc_define_symbol(tcc, "USE_TCL_STUBS", "1");
@@ -387,8 +394,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	// Second pass through the parts to process PART_PACKAGE and PART_USE directives
 	for (i=0; i<oc; i+=2) {
-		enum partenum		part;
-		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
+		int	partidx;
+		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
+		enum partenum	part = partidx;
 		_Pragma("GCC diagnostic push")
 		_Pragma("GCC diagnostic ignored \"-Wswitch\"")
 		switch (part) {
@@ -400,7 +408,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 			case PART_PACKAGE: //{{{
 				{
-					int			pc;
+					Tcl_Size	pc;
 					Tcl_Obj**	pv = NULL;
 					Tcl_Obj*	cmd[3] = {0};
 
@@ -499,7 +507,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 					TEST_OK_LABEL(usedone, code, Jitc_GetExportSymbolsFromObj(interp, useobj, &use_symbols));
 
 					if (use_headers) {
-						int			headerstrlen;
+						Tcl_Size	headerstrlen;
 						const char*	headerstr = Tcl_GetStringFromObj(use_headers, &headerstrlen);
 						Tcl_DStringAppend(&preamble, headerstr, headerstrlen);
 					}
@@ -526,7 +534,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	tcc_set_output_type(tcc, TCC_OUTPUT_DLL);
 
 	if (add_symbol_queue) {
-		int			qc;
+		Tcl_Size	qc;
 		Tcl_Obj**	qv = NULL;
 
 		TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, add_symbol_queue, &qc, &qv));
@@ -534,14 +542,14 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 		if (qc % 2 != 0)
 			THROW_ERROR_LABEL(finally, code, "add_symbol_queue must have an even number of elements");
 
-		for (int i=0; i<qc; i+=2) {
-			int			sc;
+		for (Tcl_Size i=0; i<qc; i+=2) {
+			Tcl_Size	sc;
 			Tcl_Obj**	sv = NULL;
 			Tcl_Obj*	useobj		= qv[i];
 			Tcl_Obj*	use_symbols	= qv[i+1];
 
 			TEST_OK_LABEL(usedone, code, Tcl_ListObjGetElements(interp, use_symbols, &sc, &sv));
-			for (int s=0; s<sc; s++) {
+			for (Tcl_Size s=0; s<sc; s++) {
 				void*	val = NULL;
 				TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, useobj, sv[s], &val));
 				tcc_add_symbol(tcc, Tcl_GetString(sv[s]), val);
@@ -553,18 +561,19 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	// Third pass through the parts to process PART_EXPORT directives	(export headers must be appended to preamble after use ones)
 	for (i=0; i<oc; i+=2) {
-		enum partenum		part;
-		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
+		int	partidx;
+		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
+		enum partenum	part = partidx;
 		_Pragma("GCC diagnostic push")
 		_Pragma("GCC diagnostic ignored \"-Wswitch\"")
 		switch (part) {
 			case PART_EXPORT: //{{{
 				{
 					Tcl_Obj**	ev = NULL;
-					int			ec;
+					Tcl_Size	ec;
 
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, ov[i+1], &ec, &ev));
-					for (int ei=0; ei<ec; ei+=2) {
+					for (Tcl_Size ei=0; ei<ec; ei+=2) {
 						static const char* exportkeys[] = {
 							"symbols",
 							"header",
@@ -574,8 +583,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 							EXPORT_SYMBOLS,
 							EXPORT_HEADER
 						} exportkey;
+						int exportkeyidx;
 
-						TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ev[ei], exportkeys, "key", TCL_EXACT, &exportkey));
+						TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ev[ei], exportkeys, "key", TCL_EXACT, &exportkeyidx));
+						exportkey = exportkeyidx;
 						_Pragma("GCC diagnostic push")
 						_Pragma("GCC diagnostic warning \"-Wswitch\"")
 						switch (exportkey) {
@@ -584,7 +595,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 								break;
 							case EXPORT_HEADER:
 								{
-									int			headerstrlen;
+									Tcl_Size	headerstrlen;
 									const char*	headerstr = Tcl_GetStringFromObj(ev[ei+1], &headerstrlen);
 
 									replace_tclobj(&exported_headers, ev[ei+1]);
@@ -606,10 +617,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
 	for (i=0; i<oc; i+=2) {
-		enum partenum	part;
 		Tcl_Obj*		v = ov[i+1];
 
-		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &part));
+		int partidx;
+		TEST_OK_LABEL(finally, code, Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
+		enum partenum	part = partidx;
+
 		switch (part) {
 			case PART_OPTIONS:
 			case PART_MODE:
@@ -623,7 +636,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 			case PART_CODE: //{{{
 				{
 					Tcl_DString		c;
-					int				len;
+					Tcl_Size		len;
 					const char*		str = Tcl_GetStringFromObj(v, &len);
 
 					Tcl_DStringInit(&c);
@@ -638,8 +651,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 						replace_tclobj(&in, Tcl_NewStringObj(Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
 						TEST_OK_LABEL(filtererror, code, Tcl_ListObjAppendElement(interp, filtercmd, in));
 						TEST_OK_LABEL(filtererror, code, Tcl_EvalObjEx(interp, filtercmd, 0));
-						Tcl_DStringTrunc(&c, 0);
-						int filtered_len;
+						Tcl_DStringSetLength(&c, 0);
+						Tcl_Size filtered_len;
 						const char* filtered_str = Tcl_GetStringFromObj(Tcl_GetObjResult(interp), &filtered_len);
 						Tcl_DStringAppend(&c, filtered_str, filtered_len);
 						//fprintf(stderr, "// transformed code (with %s): %.*s", Tcl_GetString(filter), filtered_len, filtered_str);
@@ -656,7 +669,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 					if (debugpath) { // Write out to a temporary file instead, and try to arrange for it for be unlinked when intrep is freed {{{
 						replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj*[]){
 							debugpath,
-							Tcl_ObjPrintf("%p_%d.c", tcc, codeseq++)	// TODO: use name(tcc) for a friendly name instead?
+							//Tcl_ObjPrintf("%p_%d.c", (void*)tcc, codeseq++)	// TODO: use name(tcc) for a friendly name instead?
+							Tcl_ObjPrintf("%s_%d.c", name(tcc), codeseq++)
 						}));
 						replace_tclobj(&debugfile, Tcl_FSJoinPath(pathelements, 2));
 						TEST_OK_LABEL(codeerror, code, Tcl_ListObjAppendElement(interp, debugfiles, debugfile));
@@ -704,13 +718,13 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 				{
 					// treat this as another code object+symbols name to retrieve
 					Tcl_Obj**	sv;
-					int			sc;
+					Tcl_Size	sc;
 
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sc, &sv));
 					if (sc < 1)
 						THROW_ERROR_LABEL(finally, code, "Symbol definition must be a list: cdef symbol: \"", Tcl_GetString(v), "\"");
 
-					for (int i=1; i<sc; i++) {
+					for (Tcl_Size i=1; i<sc; i++) {
 						void*	val = NULL;
 						TEST_OK_LABEL(finally, code, Jitc_GetSymbolFromObj(interp, sv[0], sv[i], &val));
 						tcc_add_symbol(tcc, Tcl_GetString(sv[i]), val);
@@ -729,7 +743,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 			case PART_DEFINE:
 				{
 					Tcl_Obj**	sv;
-					int			sc;
+					Tcl_Size	sc;
 
 					TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, v, &sc, &sv));
 					if (sc < 1 || sc > 2)
@@ -744,7 +758,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 
 			case PART_FILTER:
 				{
-					int			len;
+					Tcl_Size	len;
 					Tcl_GetStringFromObj(v, &len);
 
 					replace_tclobj(&filter, len ? v : NULL);
@@ -757,12 +771,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	}
 
 	if (add_library_queue) { // Can only happen after tcc_set_output_type (tcc_add_library)
-		int			qc;
+		Tcl_Size	qc;
 		Tcl_Obj**	qv = NULL;
 
 		TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, add_library_queue, &qc, &qv));
 
-		for (int i=0; i<qc; i++)
+		for (Tcl_Size i=0; i<qc; i++)
 			if (-1 == tcc_add_library(tcc, Tcl_GetString(qv[i])))
 				THROW_ERROR_LABEL(finally, code, "Error adding library \"", Tcl_GetString(qv[i]), "\"");
 
@@ -839,7 +853,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	// Avoid a circular reference between cdef and our new jitc intrep obj
 	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
 
-	cdef_initstubs*	initstubs = Tcl_FindSymbol(interp, r->handle, "initstubs");
+	cdef_initstubs*	initstubs;
+	memcpy(&initstubs, &(void*){Tcl_FindSymbol(interp, r->handle, "initstubs")}, sizeof initstubs);
 	if (initstubs) {
 		if (NULL == (initstubs)(interp, Tcl_GetString(l->tclver)))
 			THROW_ERROR_LABEL(finally, code, "Could not init Tcl stubs");
@@ -853,7 +868,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 	Tcl_Obj* initsymboladdr = NULL;
 	TEST_OK_LABEL(finally, code, Tcl_DictObjGet(interp, r->symbols, l->lit[LIT_INIT], &initsymboladdr));
 	if (initsymboladdr) {
-		cdef_init*	init = Tcl_FindSymbol(interp, r->handle, "init");
+		cdef_init*	init;
+		memcpy(&init, &(void*){Tcl_FindSymbol(interp, r->handle, "init")}, sizeof init);
 		//fprintf(stderr, "cdef defines init, calling: %p, symbols: (%s)\n", init, Tcl_GetString(r->symbols));
 		TEST_OK_LABEL(finally, code, (init)(interp));
 	}
@@ -882,7 +898,7 @@ finally:
 		Tcl_Obj*	errorcode = NULL;
 		Tcl_Obj*	errormsg = NULL;
 		Tcl_Obj**	resv;
-		int			resc;
+		Tcl_Size	resc;
 
 		if (!compileerror_code) replace_tclobj(&compileerror_code, l->lit[LIT_BLANK]);
 
@@ -923,9 +939,9 @@ finally:
 
 	if (0 && debugfiles) {
 		Tcl_Obj**	fv;
-		int			fc;
+		Tcl_Size	fc;
 		if (TCL_OK == Tcl_ListObjGetElements(NULL, debugfiles, &fc, &fv)) {
-			for (int i=0; i<fc; i++) {
+			for (Tcl_Size i=0; i<fc; i++) {
 				if (TCL_OK != Tcl_FSDeleteFile(fv[i]) && code != TCL_ERROR) {
 					// TODO: elaborate on the error via errno?
 					Tcl_SetObjResult(interp, Tcl_ObjPrintf("Error deleting debug file: \"%s\"", Tcl_GetString(fv[i])));
@@ -1030,6 +1046,26 @@ static void free_interp_cx(ClientData cdata, Tcl_Interp* interp) //{{{
 
 	ckfree(l);
 	l = NULL;
+}
+
+//}}}
+int pkgdir_path(Tcl_Interp* interp, const char* tail, Tcl_Obj** res) //{{{
+{
+	int			code = TCL_OK;
+	Tcl_Obj*	tailobj = NULL;
+
+	Tcl_MutexLock(&g_pkgdir_mutex);
+
+	if (!g_pkgdir)
+		THROW_ERROR_LABEL(finally, code, "Package directory not set.");
+
+	replace_tclobj(&tailobj, Tcl_NewStringObj(tail, -1));
+	replace_tclobj(res, Tcl_FSJoinToPath(g_pkgdir, 1, &tailobj));
+
+finally:
+	Tcl_MutexUnlock(&g_pkgdir_mutex);
+	replace_tclobj(&tailobj,	NULL);
+	return code;
 }
 
 //}}}
@@ -1179,15 +1215,15 @@ static int _bind_invoke_curried(ClientData cdata, Tcl_Interp* interp, int objc, 
 #define STATIC_ARGS_SPACE	10
 	Tcl_Obj*				o_static[STATIC_ARGS_SPACE];
 	Tcl_Obj**				ov = NULL;
-	int						oc = 0;
+	Tcl_Size				oc = 0;
 	Tcl_Obj**				cv = NULL;
-	int						cc, arg = 0;
+	Tcl_Size				cc, arg = 0;
 
 	TEST_OK_LABEL(finally, code, Tcl_ListObjGetElements(interp, binding->curryargs, &cc, &cv));
 	oc = cc + objc;
 	ov = oc <= STATIC_ARGS_SPACE ? o_static : ckalloc(sizeof(Tcl_Obj*) * oc);
 	ov[arg++] = objv[0];
-	for (int i=0; i<cc; i++)   ov[arg++] = cv[i];
+	for (Tcl_Size i=0; i<cc; i++)   ov[arg++] = cv[i];
 	for (int i=1; i<objc; i++) ov[arg++] = objv[i];
 
 	code = (binding->resolved)(NULL, interp, oc, ov);
@@ -1269,7 +1305,8 @@ static int symbols_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *
 	int				code = TCL_OK;
 	Tcl_Obj*		symbols = NULL;
 
-	CHECK_ARGS(1, "cdef");
+	enum {A_cmd, A_CDEF, A_objc};
+	CHECK_ARGS("cdef");
 
 	TEST_OK_LABEL(finally, code, Jitc_GetSymbolsFromObj(interp, objv[1], &symbols));
 	Tcl_SetObjResult(interp, symbols);
@@ -1285,7 +1322,8 @@ static int mkdtemp_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *
 	int				code = TCL_OK;
 	char*     template = NULL;
 
-	CHECK_ARGS(1, "template");
+	enum {A_cmd, A_TEMPLATE, A_objc};
+	CHECK_ARGS("template");
 
 	template = strdup(Tcl_GetString(objv[1]));
 
@@ -1336,11 +1374,30 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 	//Tcl_Namespace*		ns = NULL;
 	struct cmd*			c = cmds;
 	struct interp_cx*	l = NULL;
+	Tcl_Obj*			script_fn = NULL;
 
 #if USE_TCL_STUBS
 	if (Tcl_InitStubs(interp, TCL_VERSION, 0) == NULL)
 		return TCL_ERROR;
 #endif
+
+	if (!g_pkgdir) {
+		Tcl_MutexLock(&g_pkgdir_mutex);
+		if (!g_pkgdir) {
+			code = Tcl_EvalEx(interp, "file dirname [file normalize [info script]]", -1, 0);
+			if (code == TCL_OK) {
+				replace_tclobj(&g_pkgdir, Tcl_DuplicateObj(Tcl_GetObjResult(interp)));
+				// Paranoia: force our copy to be an unshared pure string
+				Tcl_GetString(g_pkgdir);
+				Tcl_FreeInternalRep(g_pkgdir);
+			}
+		}
+		Tcl_MutexUnlock(&g_pkgdir_mutex);
+		if (code != TCL_OK) goto finally;
+	}
+
+	TEST_OK_LABEL(finally, code, pkgdir_path(interp, "jitc.tcl", &script_fn));
+	TEST_OK_LABEL(finally, code, Tcl_EvalFile(interp, Tcl_GetString(script_fn)));
 
 	//ns = Tcl_CreateNamespace(interp, NS, NULL, NULL);
 	//TEST_OK_LABEL(finally, code, Tcl_Export(interp, ns, "*", 0));
@@ -1396,13 +1453,18 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 	if (flags == TCL_UNLOAD_DETACH_FROM_PROCESS) {
 		//fprintf(stderr, "jitc unloading, finalizing mutexes\n");
 		Tcl_MutexFinalize(&gdb_jit_mutex);
-		gdb_jit_mutex = NULL;
 		Tcl_MutexFinalize(&g_tcc_mutex);
-		g_tcc_mutex = NULL;
+
+		Tcl_MutexLock(&g_pkgdir_mutex);
+		replace_tclobj(&g_pkgdir, NULL);
+		Tcl_MutexUnlock(&g_pkgdir_mutex);
+		Tcl_MutexFinalize(&g_pkgdir_mutex);
 	} else {
 		//fprintf(stderr, "jitc detaching from interp\n");
 		// TODO: remove commands
 	}
+
+	names_shutdown();
 
 	return code;
 }

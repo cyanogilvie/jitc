@@ -1,12 +1,14 @@
+#include <config.h>
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-#include "tclstuff.h"
+#include <tclstuff.h>
 #include <libtcc.h>
-#include "jitc.h"
+#include <jitc.h>
 #include "valgrind/memcheck.h"
 
 // pointer to/from int from tclInt.h

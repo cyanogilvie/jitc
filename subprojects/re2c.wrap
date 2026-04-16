@@ -1,0 +1,10 @@
+[wrap-file]
+directory = re2c-4.3
+source_url = https://github.com/skvadrik/re2c/releases/download/4.3/re2c-4.3.tar.xz
+source_filename = re2c-4.3.tar.xz
+source_hash = 51e88d6d6b6ab03eb7970276aca7e0db4f8e29c958b84b561d2fdcb8351c7150
+patch_directory = re2c
+
+[provide]
+dependency_names = re2c
+program_names = re2c

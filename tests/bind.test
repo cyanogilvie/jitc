@@ -38,7 +38,8 @@ test bind-1.1 {no curry} -setup { #<<<
 		code {
 			OBJCMD(hello)
 			{
-				CHECK_ARGS(0, "");
+				enum {A_cmd, A_objc};
+				CHECK_ARGS("");
 				Tcl_SetObjResult(interp, Tcl_NewStringObj("hello, bind", -1));
 				return TCL_OK;
 			}
@@ -56,12 +57,13 @@ test bind-2.1 {curry} -setup { #<<<
 		code {
 			OBJCMD(hello)
 			{
-				CHECK_ARGS(3, "a b c");
+				enum {A_cmd, A_A, A_B, A_C, A_objc};
+				CHECK_ARGS("a b c");
 				Tcl_SetObjResult(interp, Tcl_ObjPrintf("cmd(%s), a(%s), b(%s), c(%s)",
-					Tcl_GetString(objv[0]),
-					Tcl_GetString(objv[1]),
-					Tcl_GetString(objv[2]),
-					Tcl_GetString(objv[3])
+					Tcl_GetString(objv[A_cmd]),
+					Tcl_GetString(objv[A_A]),
+					Tcl_GetString(objv[A_B]),
+					Tcl_GetString(objv[A_C])
 				));
 				return TCL_OK;
 			}
@@ -88,7 +90,8 @@ coroutine main eval {
 
 					OBJCMD(hello)
 					{
-						CHECK_ARGS(1, "script");
+						enum {A_cmd, A_SCRIPT, A_objc};
+						CHECK_ARGS("script");
 						Tcl_NRAddCallback(interp, bottom, NULL, NULL, NULL, NULL);
 						return Tcl_NREvalObj(interp, objv[1], 0);
 					}

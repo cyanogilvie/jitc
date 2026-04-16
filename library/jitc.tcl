@@ -12,30 +12,33 @@ namespace eval ::jitc {
 		variable tccpath
 
 		set dir	[file normalize [file dirname [info script]]]
-		#puts stderr "in build dir: [file exists [file join $dir ../generic/jitc.c]], dir is ($dir)"
-		if {[file exists [file join $dir ../generic/jitc.c]]} {
-			set packagedir	[file dirname $dir]
-			set tccpath		[file join $packagedir local/lib/tcc]
-			set re2cpath	[file join $packagedir local/bin/re2c]
-			set packccpath	[file join $packagedir local/bin/packcc]
-			set lemonpath	[file join $packagedir local/bin/lemon]
 
-			lappend includepath	[file join $packagedir generic]
-			lappend includepath	[file join $packagedir local/lib/tcc/include]
-			lappend librarypath	[file join $packagedir local/lib/tcc]
-			lappend includepath	[file join $packagedir local/include]
-			set jitclib $dir
+		set builddir_sentinel	[file join $dir __builddir]
+		if {[file readable $builddir_sentinel]} {
+			set fd			[open $builddir_sentinel r]
+			set packagedir	[try {string trim [read $fd]} finally {close $fd}]
+			set tccpath		[file join $packagedir interned_deps prefix lib tcc]
+			set re2cpath	[file join $packagedir subprojects re2c-4.3 re2c]
+			lappend includepath	[file join $packagedir interned_deps prefix lib tcc include]
 		} else {
 			set packagedir	$dir
 			set tccpath		$packagedir
 			set re2cpath	[file join $packagedir re2c]
-			set packccpath	[file join $packagedir packcc]
-			set lemonpath	[file join $packagedir lemon]
-
-			lappend includepath	[file join $packagedir include]
-			lappend librarypath	$packagedir
-			set jitclib $packagedir
 		}
+
+		set srcdir_sentinel	[file join $dir __srcdir]
+		if {[file readable $srcdir_sentinel]} {
+			set fd			[open $srcdir_sentinel r]
+			set srcdir		[try {string trim [read $fd]} finally {close $fd}]
+			# These aren't staged in the builddir:
+			lappend includepath	[file join $srcdir tools chaos-pp]
+			lappend includepath	[file join $srcdir tools order-pp inc]
+		}
+
+		lappend includepath	[file join $packagedir include]
+		set packccpath	[file join $packagedir packcc]
+		set lemonpath	[file join $packagedir lemon]
+		set jitclib		[file join $packagedir jitclib]
 
 		foreach path [list \
 			[tcl::pkgconfig get includedir,runtime] \
@@ -67,8 +70,7 @@ namespace eval ::jitc {
 			lappend librarypath $path
 		}
 
-		load [file join $packagedir libjitc0.5.6.so] jitc
-		tcl::tm::path add $jitclib
+		tcl::tm::path add [file join $packagedir]
 	} [namespace current]]
 
 	proc _build_compile_error {code errorstr args} { #<<<
@@ -79,6 +81,8 @@ namespace eval ::jitc {
 			default	{error "Wrong args"}
 		}
 		set lines	[split $code \n]
+		#puts stderr "errorstr: ($errorstr)"
+		#puts stderr "lines\n[join [lmap l $lines {format {%4d: %s} [incr _lno] $l}] \n]"
 		if {0 && ![info exists ::jitc::_parsing_errors]} {
 			set ::jitc::_parsing_errors	1	;# prevent endless recursion if parse_tcc_errors fails to build
 			try {
@@ -100,6 +104,7 @@ namespace eval ::jitc {
 		foreach error $errors {
 			lassign $error lvl fn line msg
 			if {$line ne {}} {
+				if {$line == 0} {set line 1}
 				append error_report	$sep [format "%s: In \"%s\", line %d: %s:\n%s" [string toupper $lvl] $fn $line $msg [lindex $lines $line-1]]
 			} else {
 				append error_report	$sep [format "%s: In \"%s\": %s" [string toupper $lvl] $fn $msg]
@@ -118,7 +123,6 @@ namespace eval ::jitc {
 
 	#>>>
 	proc re2c args { #<<<
-		variable packagedir
 		variable re2cpath
 
 		if {[llength $args] == 0} {
@@ -131,7 +135,6 @@ namespace eval ::jitc {
 
 	#>>>
 	proc packcc args { #<<<
-		variable packagedir
 		variable packccpath
 		error "Not implemented yet"
 
@@ -147,7 +150,6 @@ namespace eval ::jitc {
 
 	#>>>
 	proc lemon args { #<<<
-		variable packagedir
 		variable lemonpath
 		error "Not implemented yet"
 

@@ -128,8 +128,9 @@ namespace eval ::jitclib {
 			//>>>
 			OBJCMD(asciilower) //<<<
 			{
-				CHECK_ARGS(1, "str");
-				Tcl_SetObjResult(interp, GetAsciiLowerFromObj(objv[1]));
+				enum {A_cmd, A_STR, A_objc};
+				CHECK_ARGS("str");
+				Tcl_SetObjResult(interp, GetAsciiLowerFromObj(objv[A_STR]));
 				return TCL_OK;
 			}
 
