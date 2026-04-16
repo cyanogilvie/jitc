@@ -131,3 +131,6 @@ if os.path.isdir(src):
 
 # --- Install include/ (tclstuff.h, chaos-pp, order-pp) ---
 subdir('include')
+
+# --- Documentation ---
+subdir('doc')

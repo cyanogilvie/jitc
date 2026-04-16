@@ -1,0 +1,61 @@
+name: Build and Release
+
+on: push
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build pandoc zip
+        pip3 install --user meson
+
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Build and test (native, meson fallback)
+      run: |
+        meson setup build
+        meson compile -C build
+        meson test -C build --print-errorlogs
+
+    - name: Extract version
+      id: version
+      run: |
+        ver=$(meson introspect build --projectinfo | python3 -c 'import sys,json; print(json.load(sys.stdin)["version"])')
+        echo "version=${ver}" >> "$GITHUB_OUTPUT"
+        echo "project=jitc-${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+    - name: Create source tarball
+      run: |
+        project="${{ steps.version.outputs.project }}"
+        meson compile -C build doc/doc
+        meson dist -C build --no-tests --allow-dirty --formats xztar
+        tar xf build/meson-dist/jitc-*.tar.xz -C /tmp
+        mv "/tmp/jitc-${{ steps.version.outputs.version }}" "/tmp/${project}"
+        tar czf "/tmp/${project}.tar.gz" -C /tmp "${project}"
+        cd /tmp && zip -rq "${project}-source.zip" "${project}"
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-artifacts
+        path: |
+          /tmp/${{ steps.version.outputs.project }}.tar.gz
+          /tmp/${{ steps.version.outputs.project }}-source.zip
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/v')
+      with:
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+        files: |
+          /tmp/${{ steps.version.outputs.project }}.tar.gz
+          /tmp/${{ steps.version.outputs.project }}-source.zip

@@ -1,6 +1,9 @@
-% jitc(3) 0.5 | Just In Time C for Tcl
-% Cyan Ogilvie
-% 0.5
+---
+title: @PACKAGE_NAME@
+section: "n"
+header: Tcl-extensions
+adjusting: l
+---
 
 # JITC
 
@@ -9,15 +12,15 @@ Just In Time C for Tcl
 
 ## SYNOPSIS
 
-**package require jitc** ?0.5?
+**package require @PACKAGE_NAME@** ?@PACKAGE_VERSION@?
 
-**jitc::capply** *cdef* *symbol* ?*arg* ...?\
-**jitc::bind** *name* *cdef* *symbol* ?*curryarg* ...?\
-**jitc::symbols** *cdef*\
-**jitc::packageinclude**\
-**jitc::re2c** ?*option* ...? *source*\
-**jitc::packcc** ?*option* ...? *source*\
-**jitc::lemon** ?*option* ...? *source*
+**@PACKAGE_NAME@::capply** *cdef* *symbol* ?*arg* ...?\
+**@PACKAGE_NAME@::bind** *name* *cdef* *symbol* ?*curryarg* ...?\
+**@PACKAGE_NAME@::symbols** *cdef*\
+**@PACKAGE_NAME@::packageinclude**\
+**@PACKAGE_NAME@::re2c** ?*option* ...? *source*\
+**@PACKAGE_NAME@::packcc** ?*option* ...? *source*\
+**@PACKAGE_NAME@::lemon** ?*option* ...? *source*
 
 
 ## DESCRIPTION
@@ -435,10 +438,7 @@ packcc: https://en.wikipedia.org/wiki/PackCC, lemon: https://sqlite.org/src/doc/
 
 ## PROJECT STATUS
 
-Work in progress, only very basic testing has been done.  Using it anywhere that matters would be
-very brave indeed.
-
-Actually, this is already in heavy production use for us and working well, at least in the subset that
+This is already in heavy production use for us and working well, at least in the subset that
 we're using, but **use** has problems (possibly only when using the musl c library).  Also, musl doesn't
 unload DLLs when dlclose is called, so the compiled objects will leak.  In practice this hasn't created a
 critical problem for us (we primarily ship on alpine linux containers, which use musl), because we've found
@@ -455,16 +455,20 @@ clone it like:
 git clone --recurse-submodules https://github.com/cyanogilvie/jitc
 ```
 
-Building is the normal TEA steps:
+Building uses meson:
 
 ```
-autoconf
-./configure
-make
-make install
+meson setup build
+meson compile -C build
+meson test -C build
+meson install -C build
 ```
 
-Tcl 9 is not yet supported, but will be as soon as I get time to do it.  Tcl 8.7 is currently supported.
+Both Tcl 8.6 and 9.0 are supported.  To build against a specific Tcl installation, set `PKG_CONFIG_PATH`:
+
+```
+PKG_CONFIG_PATH=/path/to/tcl/lib/pkgconfig meson setup build
+```
 
 
 ## TODO
@@ -482,12 +486,11 @@ Tcl 9 is not yet supported, but will be as soon as I get time to do it.  Tcl 8.7
 
 ## LICENSE
 
-This package is Copyright 2022 Cyan Ogilvie, and is made available under the
+This package is Copyright 2022-2026 Cyan Ogilvie, and is made available under the
 same license terms as the Tcl Core.  The TCC compiler is LGPL.  This package
 does not distribute object code or source code from TCC and so doesn't trigger
 any GPL issues, but if you build this package and distribute the result you
 will need to ensure that you are in compliance with the terms of the TCC LGPL
-
 license.  The git submodules for the linked tools each have their own license:
 TinyCC is LGPL; re2c is public domain; packcc is MIT; lemon and sqlite are
 public domain.
