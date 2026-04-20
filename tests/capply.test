@@ -837,6 +837,32 @@ test capply-12.1 {Test debug info} -constraints inDebugger -setup { #<<<
 	unset -nocomplain tmpdir
 } -result notreached
 #>>>
+test capply-13.1 {c99 declare var in for, no -std declared} -body { #<<<
+	jitc::capply {code {
+		OBJCMD(foo) {
+			int acc=0;
+			for (int i=0; i<10; ++i) {
+				acc += i;
+			}
+			Tcl_SetObjResult(interp, Tcl_NewIntObj(acc));
+			return TCL_OK;
+		}
+	}} foo
+} -result 45
+#>>>
+test capply-13.2 {c99 declare var in for, no -std=c11} -body { #<<<
+	jitc::capply {options {-std=c11} code {
+		OBJCMD(foo) {
+			int acc=0;
+			for (int i=0; i<10; ++i) {
+				acc += i;
+			}
+			Tcl_SetObjResult(interp, Tcl_NewIntObj(acc));
+			return TCL_OK;
+		}
+	}} foo
+} -result 45
+#>>>
 
 test tmp-1.1 {} -constraints SIGTRAP -body {
 	file delete -force /tmp/tmpdebug
