@@ -513,8 +513,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct jitc_intrep** rPtr) //{{{
 					}
 					if (use_symbols) {
 						if (!add_symbol_queue) replace_tclobj(&add_symbol_queue, Tcl_NewListObj(2, NULL));
-						TEST_OK_LABEL(freevals, code, Tcl_ListObjAppendElement(interp, add_symbol_queue, useobj));
-						TEST_OK_LABEL(freevals, code, Tcl_ListObjAppendElement(interp, add_symbol_queue, use_symbols));
+						TEST_OK_LABEL(usedone, code, Tcl_ListObjAppendElement(interp, add_symbol_queue, useobj));
+						TEST_OK_LABEL(usedone, code, Tcl_ListObjAppendElement(interp, add_symbol_queue, use_symbols));
 					}
 
 				usedone:
