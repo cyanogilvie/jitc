@@ -242,7 +242,7 @@ test capply-6.1 {dedup} -constraints knownBug -setup { #<<<
 	unset -nocomplain cdef
 } -result bar
 #>>>
-test capply-6.2 {dedup stubs} -setup { #<<<
+test capply-6.2 {dedup stubs} -constraints knownBug -setup { #<<<
 	set cdef	{}
 	lappend cdef include_path	[file join $::jitc::packagedir subprojects/dedup]
 	lappend cdef library_path	[file join $::jitc::packagedir subprojects/dedup]

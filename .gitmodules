@@ -10,10 +10,6 @@
 	path = tools/sqlite
 	url = https://github.com/sqlite/sqlite.git
 	shallow = true
-[submodule "dedup"]
-	path = subprojects/dedup
-	url = https://github.com/cyanogilvie/dedup.git
-	shallow = true
 [submodule "teabase"]
 	path = teabase
 	url = https://github.com/cyanogilvie/teabase

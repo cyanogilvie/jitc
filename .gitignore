@@ -1,6 +1,5 @@
-subprojects/re2c-*
-subprojects/packagecache
-subprojects/.wraplock
+/subprojects/*/
+/subprojects/.wraplock
 tags
 *.swp
 *.swo

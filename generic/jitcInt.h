@@ -2,10 +2,12 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <defer.h>
 #include <tclstuff.h>
 #include <libtcc.h>
 #include <jitc.h>

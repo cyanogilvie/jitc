@@ -205,26 +205,22 @@ err:
 
 static int memfs_root(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //{{{
 {
-	int				code = TCL_OK;
-
-	CHECK_ARGS(0, "");
+	enum {A_cmd, A_objc};
+	CHECK_ARGS("");
 
 	if (!mountpoint)
-		THROW_ERROR_LABEL(done, code, "No mountpoint");
+		THROW_ERROR("No mountpoint");
 
 	Tcl_SetObjResult(interp, Tcl_NewStringObj(mountpoint, -1));
 
-done:
-	return code;
+	return TCL_OK;
 }
 
 //}}}
 
 int Memfs_Init(Tcl_Interp* interp) //{{{
 {
-	int							code = TCL_OK;
-
-	Tcl_MutexLock(&g_memfs_init_mutex);
+	Tcl_MutexLock(&g_memfs_init_mutex);		defer { Tcl_MutexUnlock(&g_memfs_init_mutex); };
 
 	if (!g_initialized) {
 		Tcl_CreateThread(&g_memfs_tid, memfs_thread, NULL, TCL_THREAD_STACK_DEFAULT, TCL_THREAD_JOINABLE);
@@ -234,24 +230,19 @@ int Memfs_Init(Tcl_Interp* interp) //{{{
 		Tcl_MutexUnlock(&g_memfs_startup_mutex);
 
 		fprintf(stderr, "Got memfs thread startup result: %d\n", g_thread_startup_result);
-		code = g_thread_startup_result;
-		if (code != TCL_OK) goto done;
+		TEST_OK(g_thread_startup_result);
 
 		g_initialized = 1;
 	}
 
 	Tcl_CreateObjCommand(interp, "::jitc::_memfs_root", memfs_root, NULL, NULL);
 
-done:
-	Tcl_MutexUnlock(&g_memfs_init_mutex);
-	return code;
+	return TCL_OK;
 }
 
 //}}}
 int Memfs_Unload(Tcl_Interp* interp) //{{{
 {
-	int				code = TCL_OK;
-
 	if (fuse) {
 #if 0
 		fprintf(stderr, "Calling fuse_exit\n");
@@ -284,7 +275,7 @@ int Memfs_Unload(Tcl_Interp* interp) //{{{
 	g_memfs_startup_mutex = NULL;
 	Tcl_ConditionFinalize(&startup);
 
-	return code;
+	return TCL_OK;
 }
 
 //}}}

@@ -1,0 +1,8 @@
+[wrap-git]
+clone-recursive = true
+url = https://github.com/cyanogilvie/dedup
+revision = v0.9.14
+depth = 1
+
+[provide]
+dependency_names = dedup

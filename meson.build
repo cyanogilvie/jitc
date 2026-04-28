@@ -1,6 +1,6 @@
 project('jitc', 'c',
   version:          '0.7.2',
-  default_options:  ['c_std=c11', 'warning_level=3', 'werror=true'],
+  default_options:  ['c_std=gnu2y,gnu23,gnu2x', 'warning_level=3', 'werror=true'],
   meson_version:    '>=1.3.0',
 )
 
@@ -12,7 +12,10 @@ if get_option('debug')
   add_project_arguments(cc.get_supported_arguments(['-ggdb3']), language: 'c')
 endif
 
-add_project_arguments('-Wno-missing-field-initializers', '-Wno-unused-parameter', language: 'c')
+add_project_arguments(cc.get_supported_arguments([
+  '-Wno-missing-field-initializers',
+  '-Wno-unused-parameter',
+]), language: 'c')
 
 # --- Configuration data (becomes config.h) ---
 conf = configuration_data()
@@ -20,6 +23,7 @@ conf.set10('TESTMODE', get_option('testmode'))
 
 # TIP445 shim for Tcl 8.6 compat
 tea_want_shims = ['tip445']
+tea_want_defer = true
 
 # --- Accumulator variables for teabase ---
 deps = []
@@ -82,15 +86,10 @@ re2c_subproj = subproject('re2c', default_options: ['pkg_install_dir=' + pkg_dir
 re2c_exe = re2c_subproj.get_variable('re2c_exe')
 
 # --- dedup as meson subproject (test dependency) ---
-dedup_subproj = subproject('dedup')
+dedup_dep = dependency('dedup', fallback: ['dedup', 'dedup_dep'])
 
 # --- Teabase main (builds shared_module, sets up tests) ---
 subdir('teabase')
-
-# Add dedup subproject's package dir to TCLLIBPATH so tests can find it
-_dedup_devenv = environment()
-_dedup_devenv.append('TCLLIBPATH', meson.project_build_root() / 'subprojects' / 'dedup' / 'teabase', separator: ' ')
-meson.add_devenv(_dedup_devenv)
 
 # --- Configure the public header from .h.in ---
 configure_file(
