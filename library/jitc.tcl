@@ -19,6 +19,7 @@ namespace eval ::jitc {
 			set packagedir	[try {string trim [read $fd]} finally {close $fd}]
 			set re2cpath	[file join $packagedir subprojects/re2c-4.3/re2c]
 			set tccpath		[file join $packagedir subprojects/tinycc]
+			#lappend librarypath [file join $packagedir subprojects/tinycc]
 		} else {
 			set packagedir	$dir
 			set tccpath		$packagedir

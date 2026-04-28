@@ -1,5 +1,5 @@
 project('jitc', 'c',
-  version:          '0.7.4',
+  version:          '0.7.5',
   default_options:  ['c_std=gnu2y,gnu23,gnu2x', 'warning_level=3', 'werror=true'],
   meson_version:    '>=1.3.0',
 )
@@ -15,6 +15,7 @@ endif
 add_project_arguments(cc.get_supported_arguments([
   '-Wno-missing-field-initializers',
   '-Wno-unused-parameter',
+  '-Wno-deprecated-octal-literals',
 ]), language: 'c')
 
 # --- Configuration data (becomes config.h) ---

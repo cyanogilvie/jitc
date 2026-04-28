@@ -251,7 +251,36 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 
 	Tcl_DString	preamble; Tcl_DStringInit(&preamble);		defer { Tcl_DStringFree(&preamble); };
 
+	Tcl_Obj*	debugfiles = NULL;
+	defer {
+		if (debugfiles) {
+			Tcl_Obj**	fv;
+			Tcl_Size	fc;
+			if (TCL_OK == Tcl_ListObjGetElements(NULL, debugfiles, &fc, &fv)) {
+				for (Tcl_Size i=0; i<fc; i++) {
+					if (TCL_OK != Tcl_FSDeleteFile(fv[i])) {
+						// TODO: what?
+					}
+				}
+			}
+			replace_tclobj(&debugfiles, NULL);
+		}
+	}
+
 	struct jitc_intrep*	r = NULL;
+	defer {
+		if (r) {
+			replace_tclobj(&r->symbols,		NULL);
+			replace_tclobj(&r->cdef,		NULL);
+			replace_tclobj(&r->debugfiles,	NULL);
+			r->interp = NULL;
+			if (r->handle) {
+				Tcl_FSUnloadFile(interp, r->handle);
+				r->handle = NULL;
+			}
+			ckfree(r);
+		}
+	}
 
 #define CHECK_TCC_SIMPLE(tccfunc) \
 	do { \
@@ -571,22 +600,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	// Hack around wchar confusion on musl / aarch64
 	tcc_define_symbol(tcc, "__DEFINED_wchar_t", "");
 
-	Tcl_Obj*	debugfiles = NULL;
 	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
-	defer {
-		if (debugfiles) {
-			Tcl_Obj**	fv;
-			Tcl_Size	fc;
-			if (TCL_OK == Tcl_ListObjGetElements(NULL, debugfiles, &fc, &fv)) {
-				for (Tcl_Size i=0; i<fc; i++) {
-					if (TCL_OK != Tcl_FSDeleteFile(fv[i])) {
-						// TODO: what?
-					}
-				}
-			}
-			replace_tclobj(&debugfiles, NULL);
-		}
-	}
 
 	unsigned codeseq = 1;
 	for (i=0; i<oc; i+=2) {
@@ -649,7 +663,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 						replace_tclobj(&debugfile, Tcl_FSJoinPath(pathelements, 2));
 						TEST_OK(Tcl_ListObjAppendElement(interp, debugfiles, debugfile));
 
+#if __STDC_VERSION__ == 202311L
 						Tcl_Channel	chan = Tcl_FSOpenFileChannel(interp, debugfile, "w", 0o400);
+#else
+						// gcc-14 claims c23 but chokes on octal literals
+						Tcl_Channel	chan = Tcl_FSOpenFileChannel(interp, debugfile, "w", 0400);
+#endif
 						if (!chan) return TCL_ERROR;
 						defer { if (chan) Tcl_Close(interp, chan); }
 
@@ -761,19 +780,6 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		.exported_headers	= exported_headers,
 	};
 	used = exported_headers = exported_symbols = NULL;	// Transfer their refs (if any) to r->export_*
-	defer {
-		if (r) {
-			replace_tclobj(&r->symbols,		NULL);
-			replace_tclobj(&r->cdef,		NULL);
-			replace_tclobj(&r->debugfiles,	NULL);
-			r->interp = NULL;
-			if (r->handle) {
-				Tcl_FSUnloadFile(interp, r->handle);
-				r->handle = NULL;
-			}
-			ckfree(r);
-		}
-	}
 
 	{
 		char		template[] = P_tmpdir "/jitc_XXXXXX";
