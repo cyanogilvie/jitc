@@ -334,6 +334,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	// Set some mode-dependent defaults
 	switch (mode) {
 		case MODE_TCL:
+		case MODE_RAW:
 			{
 				Tcl_Obj*	includepath = NULL;		defer { replace_tclobj(&includepath,	NULL); }
 				Tcl_Obj*	librarypath = NULL;		defer { replace_tclobj(&librarypath,	NULL); }
@@ -356,26 +357,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 				for (Tcl_Size i=0; i<oc; i++)
 					CHECK_TCC(tcc_add_library_path(tcc, Tcl_GetString(ov[i])),
 						"Error adding library path \"%s\"", Tcl_GetString(ov[i]));
-				tcc_define_symbol(tcc, "USE_TCL_STUBS", "1");
 
-				Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
-			}
-			break;
-
-		case MODE_RAW:
-			{
-				Tcl_Obj*	tccpath = NULL;		defer { replace_tclobj(&tccpath, NULL); }
-				Tcl_Obj*	tccinclude = NULL;	defer { replace_tclobj(&tccinclude, NULL); }
-
-				replace_tclobj(&tccpath, Tcl_ObjGetVar2(interp, l->lit[LIT_TCC_VAR], NULL, TCL_LEAVE_ERR_MSG));
-				if (tccpath == NULL) return TCL_ERROR;
-				replace_tclobj(&tccinclude, Tcl_FSJoinToPath(tccpath, 1, (Tcl_Obj*[]){
-					l->lit[LIT_INCLUDE]
-				}));
-				//fprintf(stderr, "mode raw, setting tcc dir to %s, adding lib path %s and include path %s\n", Tcl_GetString(tccpath), Tcl_GetString(tccpath), Tcl_GetString(tccinclude));
-				tcc_set_lib_path(tcc, Tcl_GetString(tccpath));
-				tcc_add_include_path(tcc, Tcl_GetString(tccinclude));
-				CHECK_TCC(tcc_add_library_path(tcc, Tcl_GetString(tccpath)), "Error adding library path \"%s\"", Tcl_GetString(tccpath));
+				if (mode == MODE_TCL) {
+					tcc_define_symbol(tcc, "USE_TCL_STUBS", "1");
+					Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
+				}
 			}
 			break;
 

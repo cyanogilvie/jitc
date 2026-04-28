@@ -1,5 +1,5 @@
 project('jitc', 'c',
-  version:          '0.7.2',
+  version:          '0.7.3',
   default_options:  ['c_std=gnu2y,gnu23,gnu2x', 'warning_level=3', 'werror=true'],
   meson_version:    '>=1.3.0',
 )
@@ -60,9 +60,9 @@ genstubs = custom_target('genstubs',
 
 deps += declare_dependency(sources: genstubs)
 
-# --- Tinycc via interned_deps ---
-subdir('interned_deps')
-deps += interned_deps_dep
+tinycc = subproject('tinycc', default_options: ['runtime_install_dir=' + pkg_dir])
+libtcc_dep = dependency('libtcc')
+deps += libtcc_dep
 
 # --- Build tools: packcc, lemon (single C files) ---
 # These are shipped with the installed package for end-user JIT use.
@@ -112,21 +112,6 @@ stubs_lib = static_library(meson.project_name() + 'stub',
 
 # --- Install jitclib Tcl modules ---
 subdir('jitclib')
-
-# --- Install tcc runtime into pkg_dir/tcc/ ---
-py = import('python').find_installation()
-meson.add_install_script(py, '-c',
-  '''
-import os, shutil, sys
-src = sys.argv[1]
-destdir = os.environ.get("DESTDIR", "")
-dst = destdir + sys.argv[2]
-if os.path.isdir(src):
-    shutil.copytree(src, dst, dirs_exist_ok=True)
-''',
-  tcc_runtime_dir,
-  pkg_dir,
-)
 
 # --- Install include/ (tclstuff.h, chaos-pp, order-pp) ---
 subdir('include')

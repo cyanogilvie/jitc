@@ -1,9 +1,0 @@
-services:
-    benchmark:
-        image: cyanogilvie/ubuntu-tcl:22.04-8.7a4-1-optimized
-        volumes:
-            - ./:/src/jitc:ro
-        working_dir: /build
-        entrypoint: /src/jitc/build_and_benchmark.sh
-
-# vim: expandtab

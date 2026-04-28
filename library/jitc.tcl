@@ -17,9 +17,8 @@ namespace eval ::jitc {
 		if {[file readable $builddir_sentinel]} {
 			set fd			[open $builddir_sentinel r]
 			set packagedir	[try {string trim [read $fd]} finally {close $fd}]
-			set tccpath		[file join $packagedir interned_deps prefix lib tcc]
-			set re2cpath	[file join $packagedir subprojects re2c-4.3 re2c]
-			lappend includepath	[file join $packagedir interned_deps prefix lib tcc include]
+			set re2cpath	[file join $packagedir subprojects/re2c-4.3/re2c]
+			set tccpath		[file join $packagedir subprojects/tinycc]
 		} else {
 			set packagedir	$dir
 			set tccpath		$packagedir
@@ -31,8 +30,9 @@ namespace eval ::jitc {
 			set fd			[open $srcdir_sentinel r]
 			set srcdir		[try {string trim [read $fd]} finally {close $fd}]
 			# These aren't staged in the builddir:
-			lappend includepath	[file join $srcdir tools chaos-pp]
-			lappend includepath	[file join $srcdir tools order-pp inc]
+			lappend includepath [file join $srcdir subprojects/tinycc/include]
+			lappend includepath	[file join $srcdir tools/chaos-pp]
+			lappend includepath	[file join $srcdir tools/order-pp/inc]
 		}
 
 		lappend includepath	[file join $packagedir include]

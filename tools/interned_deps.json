@@ -1,9 +1,0 @@
-{
-  "deps": {
-    "tinycc": {
-      "source":  "tinycc",
-      "builder": "autoconf",
-      "configure_flags": ["--debug", "--dwarf=5", "--extra-cflags=-fPIC"]
-    }
-  }
-}
