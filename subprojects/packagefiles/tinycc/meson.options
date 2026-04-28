@@ -1,0 +1,19 @@
+option('install_tcc',
+  type:        'boolean',
+  value:       false,
+  description: 'Install the tcc executable. Built unconditionally because libtcc1.a is compiled with it.',
+)
+
+option('runtime_install_dir',
+  type:        'string',
+  value:       '',
+  description: 'Install dir for the tcc runtime tree (libtcc1.a, helper objects, runtime headers). Empty means "<libdir>/tcc". Headers go into <runtime_install_dir>/include.',
+)
+
+option('dwarf_version',
+  type:        'integer',
+  min:         0,
+  max:         5,
+  value:       5,
+  description: 'Default DWARF version emitted by tcc when -g is used. 0 keeps stabs as the default.',
+)

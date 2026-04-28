@@ -1,4 +1,5 @@
 /subprojects/*/
+!/subprojects/packagefiles/
 /subprojects/.wraplock
 tags
 *.swp
