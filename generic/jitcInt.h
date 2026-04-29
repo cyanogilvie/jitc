@@ -84,7 +84,11 @@ enum {
 	LIT_INITSTUBS,
 	LIT_INIT,
 	LIT_RELEASE,
+#if STUBSMODE
 	LIT_TCLSTUBLIB_CMD,
+#else
+	LIT_TCLLIB_CMD,
+#endif
 	LIT_TCLVER_CMD,
 	LIT_SIZE
 };
@@ -92,7 +96,11 @@ extern const char*	lit_str[];
 
 struct interp_cx {
 	Tcl_Obj*				lit[LIT_SIZE];
+#if STUBSMODE
 	Tcl_Obj*				tclstublib;
+#else
+	Tcl_Obj*				tcllib;
+#endif
 	Tcl_Obj*				tclver;
 	struct jitc_instance	instance_head;
 	struct jitc_instance	instance_tail;

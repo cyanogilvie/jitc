@@ -153,6 +153,7 @@ const char* lit_str[] = {
 	"init",
 	"release",
 	"return -level 0 tclstub[if {![package vsatisfies [info tclversion] 9.0-]} {info tclversion}]",
+	"return -level 0 tcl[info tclversion]",
 	"info tclversion",
 	NULL
 };
@@ -772,9 +773,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		replace_tclobj(&add_library_queue, NULL);
 	}
 
-#if STUBSMODE
 	if (mode == MODE_TCL)
+#if STUBSMODE
 		CHECK_TCC(tcc_add_library(tcc, Tcl_GetString(l->tclstublib)));
+#else
+		CHECK_TCC(tcc_add_library(tcc, Tcl_GetString(l->tcllib)));
 #endif
 
 	//struct jitc_intrep*	r = ckalloc(sizeof *r);
@@ -945,7 +948,11 @@ static void free_interp_cx(ClientData cdata, Tcl_Interp* interp) //{{{
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], NULL);
 
+#if STUBSMODE
 	replace_tclobj(&l->tclstublib, NULL);
+#else
+	replace_tclobj(&l->tcllib, NULL);
+#endif
 	replace_tclobj(&l->tclver, NULL);
 
 	ckfree(l);
@@ -1256,8 +1263,13 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 		replace_tclobj(&l->lit[i], Tcl_NewStringObj(lit_str[i], -1));
 
 
+#if STUBSMODE
 	TEST_OK(Tcl_EvalObjEx(interp, l->lit[LIT_TCLSTUBLIB_CMD], 0));
 	replace_tclobj(&l->tclstublib, Tcl_GetObjResult(interp));
+#else
+	TEST_OK(Tcl_EvalObjEx(interp, l->lit[LIT_TCLLIB_CMD], 0));
+	replace_tclobj(&l->tcllib, Tcl_GetObjResult(interp));
+#endif
 	TEST_OK(Tcl_EvalObjEx(interp, l->lit[LIT_TCLVER_CMD], 0));
 	replace_tclobj(&l->tclver, Tcl_GetObjResult(interp));
 

@@ -71,7 +71,7 @@ namespace eval ::jitc {
 			lappend librarypath $path
 		}
 
-		tcl::tm::path add [file join $packagedir]
+		tcl::tm::path add [file join $packagedir tm]
 	} [namespace current]]
 
 	proc _build_compile_error {code errorstr args} { #<<<

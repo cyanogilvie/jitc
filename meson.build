@@ -1,5 +1,5 @@
 project('jitc', 'c',
-  version:          '0.7.6',
+  version:          '0.7.7',
   default_options:  ['c_std=gnu2y,gnu23,gnu2x', 'warning_level=3', 'werror=true'],
   meson_version:    '>=1.3.0',
 )
@@ -35,7 +35,6 @@ tea_want_defer = true
 deps          = []
 inc           = []
 teaconf_files = []
-devenv        = environment()
 
 # --- Package sources ---
 inc += include_directories('generic')
@@ -75,20 +74,24 @@ lemon_exe = executable('lemon',
   install_dir: pkg_dir,
 )
 
+# For packcc and lemon:
+tea_host_env.prepend('PATH', meson.project_build_root())
+
 # --- re2c as meson subproject (always built, never found on system) ---
 # Pass pkg_dir so re2c installs alongside the package.
 re2c_subproj = subproject('re2c', default_options: ['pkg_install_dir=' + pkg_dir])
 re2c_exe = re2c_subproj.get_variable('re2c_exe')
+tea_host_env.prepend('PATH', fs.parent(re2c_exe.full_path()))
 
 # --- dedup as meson subproject (test dependency) ---
-dedup_dep = dependency('dedup', version: '>=0.9.16', fallback: ['dedup', 'dedup_dep'])
-devenv.prepend('TCLLIBPATH', dedup_dep.get_variable('tcl_pkg_path'), separator: ' ')
+dedup_dep = dependency('dedup', version: '>=0.9.19', fallback: ['dedup', 'dedup_dep'])
+tea_host_env.prepend('TCLLIBPATH', dedup_dep.get_variable('tcl_pkg_path'), separator: ' ')
 
 # --- Teabase main (builds shared_module, sets up tests) ---
 subdir('teabase')
 
 # --- Install jitclib Tcl modules ---
-subdir('jitclib')
+subdir('tm/jitclib')
 
 # --- Install include/ (tclstuff.h, chaos-pp, order-pp) ---
 subdir('include')
