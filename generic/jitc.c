@@ -388,7 +388,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 						"Error adding library path \"%s\"", Tcl_GetString(ov[i]));
 
 				if (mode == MODE_TCL) {
+#if STUBSMODE
 					tcc_define_symbol(tcc, "USE_TCL_STUBS", "1");
+#endif
 					Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
 				}
 			}
@@ -646,9 +648,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 						Tcl_ResetResult(interp);
 					}
 
+#if STUBSMODE
 					if (mode == MODE_TCL)
 						CHECK_TCC(tcc_compile_string(tcc, "#include <tcl.h>\nconst char* _initstubs(Tcl_Interp* interp, const char* ver) {return Tcl_InitStubs(interp, ver, 0);}"),
 									"%s", "Error compiling _initstubs");
+#endif
 
 					if (debugpath) { // Write out to a temporary file instead, and try to arrange for it for be unlinked when intrep is freed {{{
 						Tcl_Obj*	pathelements = NULL;	defer { replace_tclobj(&pathelements, NULL); };
@@ -768,8 +772,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		replace_tclobj(&add_library_queue, NULL);
 	}
 
+#if STUBSMODE
 	if (mode == MODE_TCL)
 		CHECK_TCC(tcc_add_library(tcc, Tcl_GetString(l->tclstublib)));
+#endif
 
 	//struct jitc_intrep*	r = ckalloc(sizeof *r);
 	r = ckalloc(sizeof *r);
@@ -815,11 +821,13 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	// Avoid a circular reference between cdef and our new jitc intrep obj
 	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
 
+#if STUBSMODE
 	cdef_initstubs*	initstubs;
 	memcpy(&initstubs, &(void*){Tcl_FindSymbol(interp, r->handle, "initstubs")}, sizeof initstubs);
 	if (initstubs)
 		if (NULL == (initstubs)(interp, Tcl_GetString(l->tclver)))
 			THROW_ERROR("Could not init Tcl stubs");
+#endif
 
 	/* On some platforms, Tcl_FindSymbol returns the address for _init when
 	 * asked for init, which trips us up when we want to see if an init handler

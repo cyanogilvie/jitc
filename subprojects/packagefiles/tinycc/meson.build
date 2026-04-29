@@ -141,7 +141,7 @@ libtcc = static_library('tcc',
   c_args:               ['-DONE_SOURCE=1'],
   include_directories:  tinycc_inc,
   pic:                  true,
-  install:              true,
+  install:              not meson.is_subproject(),
 )
 
 libtcc_dep = declare_dependency(
@@ -150,7 +150,9 @@ libtcc_dep = declare_dependency(
 )
 meson.override_dependency('libtcc', libtcc_dep)
 
-install_headers('libtcc.h')
+if not meson.is_subproject()
+  install_headers('libtcc.h')
+endif
 
 # === tcc executable (always built; needed to compile libtcc1.a) ==========
 tcc_exe_deps = []
@@ -174,7 +176,7 @@ tcc_exe = executable('tcc',
   include_directories:  tinycc_inc,
   link_with:            libtcc,
   dependencies:         tcc_exe_deps,
-  install:              get_option('install_tcc'),
+  install:              not meson.is_subproject() and get_option('install_tcc'),
 )
 
 # In a cross build, tcc_exe is a host-machine binary and meson can't run

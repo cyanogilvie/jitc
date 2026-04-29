@@ -61,9 +61,10 @@ proc main {} {
 				}
 
 				OBJCMD(isdecimal) {
-					CHECK_ARGS(1, "str");
-					int         len;
-					const char* str = Tcl_GetStringFromObj(objv[1], &len);
+					enum {A_cmd, A_STR, A_objc};
+					CHECK_ARGS("str");
+					Tcl_Size    len;
+					const char* str = Tcl_GetStringFromObj(objv[A_STR], &len);
 					const char* YYCURSOR = str;
 					const char* YYLIMIT  = str+len;
 					const char* YYMARKER;
@@ -93,9 +94,10 @@ proc main {} {
             filter  {jitc::re2c --no-debug-info --case-ranges}
             code    { //@begin=c@
 				OBJCMD(isdecimal) {
-					CHECK_ARGS(1, "str");
-					int         len;
-					const char* str = Tcl_GetStringFromObj(objv[1], &len);
+					enum {A_cmd, A_STR, A_objc};
+					CHECK_ARGS("str");
+					Tcl_Size    len;
+					const char* str = Tcl_GetStringFromObj(objv[A_STR], &len);
 					const char* YYCURSOR = str;
 					const char* YYLIMIT  = str+len;
 					const char* YYMARKER;

@@ -1,2 +1,5 @@
 option('testmode', type: 'boolean', value: false,
   description: 'Build with whitebox testing hooks exposed')
+
+option('stubsmode', type: 'boolean', value: false,
+  description: 'Link the jit code with Tcl via stubs')

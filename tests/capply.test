@@ -324,7 +324,7 @@ test capply-6.3 {dedup no stubs, tcl package require} -constraints knownBug -set
 #>>>
 test capply-6.4 {dedup package} -setup { #<<<
 	set cdef	{
-		package	{dedup 0.9.5}
+		package	{dedup 0.9.16}
 		code {
 			struct dedup_pool*	g_dedup = NULL;
 
