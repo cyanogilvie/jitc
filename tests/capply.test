@@ -353,11 +353,11 @@ test capply-6.4 {dedup package} -setup { #<<<
 } -result bar
 #>>>
 test capply-6.5 {dedup package, reuse pool} -setup { #<<<
-	set debugopts	[if 0 {
+	set debugopts	[if 1 {
 		set debugdir	/tmp/jitc_capply-6.5
 		file mkdir $debugdir
 		file delete {*}[glob -type f -nocomplain [file join $debugdir *]]
-		list options.{-g} debug $debugdir
+		list options {-g} debug $debugdir
 	}]
 	set dedup_cdef	[list \
 		{*}$debugopts \

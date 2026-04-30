@@ -15,6 +15,8 @@ typedef int (cdef_release)(Tcl_Interp* interp);
 static void free_jitc_internal_rep(Tcl_Obj* obj);
 static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
 static void update_jitc_string_rep(Tcl_Obj* obj);
+static int  jit_register_obj(Tcl_Interp* interp, struct jitc_intrep* r, const char* obj_path);
+static void jit_unregister_obj(struct jitc_intrep* r);
 
 Tcl_ObjType jitc_objtype = {
 	"Jitc",
@@ -34,6 +36,8 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 	instance->prev->next = instance->next;
 	//*instance = (struct jitc_instance){};
 	ckfree(instance);  instance = NULL;  ir->twoPtrValue.ptr2 = NULL;
+
+	jit_unregister_obj(r);
 
 	if (r->tcc) {
 		if (r->symbols && r->interp) {
@@ -134,6 +138,75 @@ void __attribute__((noinline)) __jit_debug_register_code() { }
 /* Make sure to specify the version statically, because the
    debugger may check the version before we can set it.  */
 struct jit_descriptor __jit_debug_descriptor = { 1, 0, 0, 0 };
+
+// Slurp an ELF .o file produced by elf_output_obj() and register it
+// with any attached debugger via the GDB JIT interface. The descriptor
+// list, action_flag and relevant_entry must be mutated atomically with
+// respect to the breakpoint hit in __jit_debug_register_code(), so the
+// whole sequence is held under gdb_jit_mutex.
+//
+// On success r->jit_symbols.symfile_addr owns a malloc'd buffer holding
+// the .o contents; jit_unregister_obj() unlinks the entry and frees it.
+static int jit_register_obj(Tcl_Interp* interp, struct jitc_intrep* r, const char* obj_path) //{{{
+{
+	FILE*	fp = fopen(obj_path, "rb");
+	if (!fp) THROW_PRINTF("Could not open debug object \"%s\" for jit registration: %s", obj_path, strerror(errno));
+	defer { if (fp) fclose(fp); };
+
+	if (fseek(fp, 0, SEEK_END) != 0) THROW_PRINTF("fseek end on \"%s\": %s", obj_path, strerror(errno));
+	long	size = ftell(fp);
+	if (size < 0) THROW_PRINTF("ftell on \"%s\": %s", obj_path, strerror(errno));
+	rewind(fp);
+
+	char*	buf = malloc(size);
+	if (!buf) THROW_PRINTF("malloc(%ld) for debug object \"%s\" failed", size, obj_path);
+
+	if ((long)fread(buf, 1, size, fp) != size) {
+		free(buf);
+		THROW_PRINTF("Short read from \"%s\"", obj_path);
+	}
+
+	r->jit_symbols.symfile_addr = buf;
+	r->jit_symbols.symfile_size = (uint64_t)size;
+
+	Tcl_MutexLock(&gdb_jit_mutex);
+	r->jit_symbols.prev_entry = NULL;
+	r->jit_symbols.next_entry = __jit_debug_descriptor.first_entry;
+	if (__jit_debug_descriptor.first_entry)
+		__jit_debug_descriptor.first_entry->prev_entry = &r->jit_symbols;
+	__jit_debug_descriptor.first_entry    = &r->jit_symbols;
+	__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
+	__jit_debug_descriptor.action_flag    = JIT_REGISTER_FN;
+	__jit_debug_register_code();
+	Tcl_MutexUnlock(&gdb_jit_mutex);
+
+	return TCL_OK;
+}
+
+//}}}
+static void jit_unregister_obj(struct jitc_intrep* r) //{{{
+{
+	if (!r->jit_symbols.symfile_addr) return;	// never registered
+
+	Tcl_MutexLock(&gdb_jit_mutex);
+	if (r->jit_symbols.prev_entry)
+		r->jit_symbols.prev_entry->next_entry = r->jit_symbols.next_entry;
+	else
+		__jit_debug_descriptor.first_entry    = r->jit_symbols.next_entry;
+	if (r->jit_symbols.next_entry)
+		r->jit_symbols.next_entry->prev_entry = r->jit_symbols.prev_entry;
+
+	__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
+	__jit_debug_descriptor.action_flag    = JIT_UNREGISTER_FN;
+	__jit_debug_register_code();
+	Tcl_MutexUnlock(&gdb_jit_mutex);
+
+	free((void*)r->jit_symbols.symfile_addr);
+	r->jit_symbols.symfile_addr = NULL;
+	r->jit_symbols.symfile_size = 0;
+}
+
+//}}}
 // Interface with GDB JIT API }}}
 
 const char* lit_str[] = {
@@ -269,6 +342,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	struct jitc_intrep*	r = NULL;
 	defer {
 		if (r) {
+			jit_unregister_obj(r);
 			replace_tclobj(&r->symbols,		NULL);
 			replace_tclobj(&r->cdef,		NULL);
 			replace_tclobj(&r->debugfiles,	NULL);
@@ -793,8 +867,17 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			Tcl_ObjPrintf("0x%" PRIxPTR ".o", (uintptr_t)tcc)
 		}));
 		replace_tclobj(&debugobj, Tcl_FSJoinPath(pathelements, 2));
-		TEST_OK(Tcl_ListObjAppendElement(interp, debugfiles, debugobj));
 		CHECK_TCC(elf_output_obj(tcc, Tcl_GetString(debugobj)), "Error writing debug object \"%s\"", Tcl_GetString(debugobj));
+		// jit_register_obj() slurps the file into a malloc'd buffer that
+		// the GDB JIT interface holds onto; nothing reads the .o from
+		// disk after that, so unlink it immediately. The source file
+		// (tracked in debugfiles) stays — gdb opens it by the path
+		// embedded in DWARF when stepping into JIT'd code.
+		int rc = jit_register_obj(interp, r, Tcl_GetString(debugobj));
+		if (TCL_OK != Tcl_FSDeleteFile(debugobj)) {
+			// best-effort; don't fail the compile over a stale .o
+		}
+		if (rc != TCL_OK) return rc;
 	}
 
 	replace_tclobj(&r->symbols, Tcl_NewDictObj());
