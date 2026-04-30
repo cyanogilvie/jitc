@@ -56,6 +56,7 @@ struct jitc_intrep {
 	Tcl_Obj*				symbols;
 	Tcl_Obj*				cdef;
 	Tcl_Obj*				debugfiles;
+	Tcl_Obj*				debugdir;			// If non-NULL, jitc auto-allocated this dir via mkdtemp() and will rmdir() it after debugfiles cleanup
 	Tcl_Interp*				interp;
 	Tcl_Obj*				exported_symbols;
 	Tcl_Obj*				exported_headers;

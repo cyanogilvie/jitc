@@ -79,6 +79,10 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 		}
 	}
 	replace_tclobj(&r->debugfiles, NULL);
+	if (r->debugdir) {
+		Tcl_FSRemoveDirectory(r->debugdir, 0, NULL);	// best-effort; jitc-owned dir
+		replace_tclobj(&r->debugdir, NULL);
+	}
 	replace_tclobj((Tcl_Obj**)&ir->twoPtrValue.ptr2, NULL);
 	replace_tclobj(&r->exported_symbols, NULL);
 	replace_tclobj(&r->exported_headers, NULL);
@@ -324,6 +328,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	Tcl_DString	preamble; Tcl_DStringInit(&preamble);		defer { Tcl_DStringFree(&preamble); };
 
 	Tcl_Obj*	debugfiles = NULL;
+	Tcl_Obj*	debugdir   = NULL;	// non-NULL: jitc-owned mkdtemp() dir to rmdir after debugfiles cleanup
 	defer {
 		if (debugfiles) {
 			Tcl_Obj**	fv;
@@ -337,6 +342,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			}
 			replace_tclobj(&debugfiles, NULL);
 		}
+		if (debugdir) {
+			Tcl_FSRemoveDirectory(debugdir, 0, NULL);	// best-effort
+			replace_tclobj(&debugdir, NULL);
+		}
 	}
 
 	struct jitc_intrep*	r = NULL;
@@ -346,6 +355,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			replace_tclobj(&r->symbols,		NULL);
 			replace_tclobj(&r->cdef,		NULL);
 			replace_tclobj(&r->debugfiles,	NULL);
+			replace_tclobj(&r->debugdir,	NULL);
 			r->interp = NULL;
 			if (r->tcc) {
 				tcc_delete(r->tcc);
@@ -598,6 +608,19 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	// name-mangling that broke cross-module symbol resolution on musl.
 	if (debugpath)
 		CHECK_TCC(tcc_set_options(tcc, "-g"));
+
+	// If the user enabled debug via `options` (-g, -gdwarf-N, ...) but
+	// didn't supply a debug path, allocate a per-cdef tempdir so we can
+	// still write the source (gdb opens it via the path embedded in
+	// DWARF) and so the .o we register with the JIT interface has
+	// somewhere to land between elf_output_obj and the immediate unlink.
+	if (!debugpath && tcc_get_debug(tcc)) {
+		char tmpl[] = P_tmpdir "/jitc_dbg_XXXXXX";
+		if (mkdtemp(tmpl) == NULL) THROW_POSIX("Could not create debug temp directory");
+		replace_tclobj(&debugpath, Tcl_NewStringObj(tmpl, -1));
+		replace_tclobj(&debugdir, debugpath);
+	}
+
 	tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
 
 	if (add_symbol_queue) {
@@ -843,7 +866,6 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		CHECK_TCC(tcc_add_library(tcc, Tcl_GetString(l->tcllib)));
 #endif
 
-	//struct jitc_intrep*	r = ckalloc(sizeof *r);
 	r = ckalloc(sizeof *r);
 	*r = (struct jitc_intrep){
 		.interp				= interp,
@@ -873,11 +895,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		// disk after that, so unlink it immediately. The source file
 		// (tracked in debugfiles) stays — gdb opens it by the path
 		// embedded in DWARF when stepping into JIT'd code.
-		int rc = jit_register_obj(interp, r, Tcl_GetString(debugobj));
+		int code = jit_register_obj(interp, r, Tcl_GetString(debugobj));
 		if (TCL_OK != Tcl_FSDeleteFile(debugobj)) {
 			// best-effort; don't fail the compile over a stale .o
 		}
-		if (rc != TCL_OK) return rc;
+		if (code != TCL_OK) return code;
 	}
 
 	replace_tclobj(&r->symbols, Tcl_NewDictObj());
@@ -909,6 +931,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 
 	replace_tclobj(&r->debugfiles, debugfiles);
 	replace_tclobj(&debugfiles, NULL);
+
+	replace_tclobj(&r->debugdir, debugdir);
+	replace_tclobj(&debugdir, NULL);
 
 	// Hand ownership of the TCCState to the intrep — it must outlive any
 	// function pointers we hand out via tcc_get_symbol.
