@@ -15,7 +15,7 @@ typedef int (cdef_release)(Tcl_Interp* interp);
 static void free_jitc_internal_rep(Tcl_Obj* obj);
 static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
 static void update_jitc_string_rep(Tcl_Obj* obj);
-static int  jit_register_obj(Tcl_Interp* interp, struct jitc_intrep* r, const char* obj_path);
+static void jit_register_obj(struct jitc_intrep* r, void* buf, unsigned long size);
 static void jit_unregister_obj(struct jitc_intrep* r);
 
 Tcl_ObjType jitc_objtype = {
@@ -150,33 +150,17 @@ void __attribute__((noinline)) __jit_debug_register_code() { }
    debugger may check the version before we can set it.  */
 struct jit_descriptor __jit_debug_descriptor = { 1, 0, 0, 0 };
 
-// Slurp an ELF .o file produced by elf_output_obj() and register it
-// with any attached debugger via the GDB JIT interface. The descriptor
-// list, action_flag and relevant_entry must be mutated atomically with
-// respect to the breakpoint hit in __jit_debug_register_code(), so the
-// whole sequence is held under gdb_jit_mutex.
+// Register an in-memory ELF .o (as produced by elf_output_obj_to_mem)
+// with any attached debugger via the GDB JIT interface. Takes ownership
+// of `buf` — the descriptor entry holds it until jit_unregister_obj()
+// frees it with libc free() (which matches open_memstream's allocator).
 //
-// On success r->jit_symbols.symfile_addr owns a malloc'd buffer holding
-// the .o contents; jit_unregister_obj() unlinks the entry and frees it.
-static int jit_register_obj(Tcl_Interp* interp, struct jitc_intrep* r, const char* obj_path) //{{{
+// The descriptor list, action_flag and relevant_entry must be mutated
+// atomically with respect to the breakpoint hit in
+// __jit_debug_register_code(), so the whole sequence is held under
+// gdb_jit_mutex.
+static void jit_register_obj(struct jitc_intrep* r, void* buf, unsigned long size) //{{{
 {
-	FILE*	fp = fopen(obj_path, "rb");
-	if (!fp) THROW_PRINTF("Could not open debug object \"%s\" for jit registration: %s", obj_path, strerror(errno));
-	defer { if (fp) fclose(fp); };
-
-	if (fseek(fp, 0, SEEK_END) != 0) THROW_PRINTF("fseek end on \"%s\": %s", obj_path, strerror(errno));
-	long	size = ftell(fp);
-	if (size < 0) THROW_PRINTF("ftell on \"%s\": %s", obj_path, strerror(errno));
-	rewind(fp);
-
-	char*	buf = malloc(size);
-	if (!buf) THROW_PRINTF("malloc(%ld) for debug object \"%s\" failed", size, obj_path);
-
-	if ((long)fread(buf, 1, size, fp) != size) {
-		free(buf);
-		THROW_PRINTF("Short read from \"%s\"", obj_path);
-	}
-
 	r->jit_symbols.symfile_addr = buf;
 	r->jit_symbols.symfile_size = (uint64_t)size;
 
@@ -190,8 +174,6 @@ static int jit_register_obj(Tcl_Interp* interp, struct jitc_intrep* r, const cha
 	__jit_debug_descriptor.action_flag    = JIT_REGISTER_FN;
 	__jit_debug_register_code();
 	Tcl_MutexUnlock(&gdb_jit_mutex);
-
-	return TCL_OK;
 }
 
 //}}}
@@ -617,10 +599,11 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		CHECK_TCC(tcc_set_options(tcc, "-g"));
 
 	// If the user enabled debug via `options` (-g, -gdwarf-N, ...) but
-	// didn't supply a debug path, allocate a per-cdef tempdir so we can
-	// still write the source (gdb opens it via the path embedded in
-	// DWARF) and so the .o we register with the JIT interface has
-	// somewhere to land between elf_output_obj and the immediate unlink.
+	// didn't supply a debug path, allocate a per-cdef tempdir for the
+	// source files tcc_compile_string_file writes — gdb opens those via
+	// the path embedded in DWARF when stepping into JIT'd code. The .o
+	// itself goes straight from tinycc into a malloc'd buffer registered
+	// with the GDB JIT interface; nothing about it touches disk.
 	if (!debugpath && tcc_get_debug(tcc)) {
 		char tmpl[] = P_tmpdir "/jitc_dbg_XXXXXX";
 		if (mkdtemp(tmpl) == NULL) THROW_POSIX("Could not create debug temp directory");
@@ -885,28 +868,16 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	CHECK_TCC(tcc_relocate(tcc), "Error relocating compiled code into memory");
 
 	if (debugpath) {
-		// elf_output_obj writes the post-relocate sections (incl. .debug_*)
-		// to a .o file. gdb can load it via `add-symbol-file <path>` to get
-		// source-line breakpoints in the JIT'd code.
-		Tcl_Obj*	pathelements = NULL;	defer { replace_tclobj(&pathelements, NULL); };
-		Tcl_Obj*	debugobj = NULL;		defer { replace_tclobj(&debugobj, NULL); };
-
-		replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj*[]){
-			debugpath,
-			Tcl_ObjPrintf("0x%" PRIxPTR ".o", (uintptr_t)tcc)
-		}));
-		replace_tclobj(&debugobj, Tcl_FSJoinPath(pathelements, 2));
-		CHECK_TCC(elf_output_obj(tcc, Tcl_GetString(debugobj)), "Error writing debug object \"%s\"", Tcl_GetString(debugobj));
-		// jit_register_obj() slurps the file into a malloc'd buffer that
-		// the GDB JIT interface holds onto; nothing reads the .o from
-		// disk after that, so unlink it immediately. The source file
-		// (tracked in debugfiles) stays — gdb opens it by the path
-		// embedded in DWARF when stepping into JIT'd code.
-		int code = jit_register_obj(interp, r, Tcl_GetString(debugobj));
-		if (TCL_OK != Tcl_FSDeleteFile(debugobj)) {
-			// best-effort; don't fail the compile over a stale .o
-		}
-		if (code != TCL_OK) return code;
+		// Compose the post-relocate ELF (incl. .debug_*) directly into a
+		// malloc'd buffer and hand it to the GDB JIT interface — no
+		// tempfile, no slurp, no unlink. The buffer's lifetime is the
+		// intrep's; jit_unregister_obj() frees it on teardown. The source
+		// file (tracked in debugfiles) stays on disk: gdb opens it via
+		// the path embedded in DWARF when stepping into JIT'd code.
+		void*			obj_buf  = NULL;
+		unsigned long	obj_size = 0;
+		CHECK_TCC(elf_output_obj_to_mem(tcc, &obj_buf, &obj_size), "Error composing debug object");
+		jit_register_obj(r, obj_buf, obj_size);
 	}
 
 	replace_tclobj(&r->symbols, Tcl_NewDictObj());
