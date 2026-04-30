@@ -60,7 +60,7 @@ struct jitc_intrep {
 	Tcl_Obj*				exported_symbols;
 	Tcl_Obj*				exported_headers;
 	Tcl_Obj*				used;				// Hold references to the foreign cdefs to prevent them from being freed under us
-	Tcl_LoadHandle			handle;
+	struct TCCState*		tcc;				// Owns the relocated in-memory code; tcc_delete() frees it
 	struct jit_code_entry	jit_symbols;
 };
 

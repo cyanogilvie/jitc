@@ -18,16 +18,6 @@ tcltest::testConstraint inDebugger	[expr {
 	$tracerpid != 0
 }]
 
-# True everywhere except on musl, where cross-module symbol resolution
-# between JIT'd cdefs (the `symbols` and `use` features) currently leaves
-# imported globals dangling. Tests that exercise this path are gated with
-# -constraints muslKnownBug so they run on glibc and skip on musl.
-tcltest::testConstraint muslKnownBug	[expr {
-	!($::tcl_platform(os) eq "Linux" &&
-	  [file exists /proc/self/maps] &&
-	  [string match *ld-musl* [readfile /proc/self/maps]])
-}]
-
 # Send debug output via puts so that the test's -output handling can capure it
 set puts_format	{{PUTS_FORMAT(fmt, ...)} {do {					\
 		Tcl_Obj*	cmd = NULL;						\
@@ -90,7 +80,7 @@ test capply-2.1 {missing symbol} -body { #<<<
 			//@end=c@
 		}
 	} hellox foo bar
-} -returnCodes error -errorCode {TCL LOOKUP LOAD_SYMBOL hellox} -match regexp -result {^cannot find symbol "hellox": (.*/dll\.so: undefined symbol|Symbol not found): _hellox}
+} -returnCodes error -errorCode {TCL LOOKUP LOAD_SYMBOL hellox} -result {cannot find symbol "hellox"}
 #>>>
 test capply-3.1 {exception} -body { #<<<
 	jitc::capply {
@@ -362,7 +352,7 @@ test capply-6.4 {dedup package} -setup { #<<<
 	unset -nocomplain cdef
 } -result bar
 #>>>
-test capply-6.5 {dedup package, reuse pool} -constraints muslKnownBug -setup { #<<<
+test capply-6.5 {dedup package, reuse pool} -setup { #<<<
 	set debugopts	[if 0 {
 		set debugdir	/tmp/jitc_capply-6.5
 		file mkdir $debugdir
@@ -663,7 +653,7 @@ test capply-9.1 {debug info (-g)} -body { #<<<
 	} foo
 } -result capply-9.1
 #>>>
-test capply-10.1 {use, jitclib, jitclib::json} -constraints muslKnownBug -setup { #<<<
+test capply-10.1 {use, jitclib, jitclib::json} -setup { #<<<
 	package require jitclib::json
 } -body {
 	list \

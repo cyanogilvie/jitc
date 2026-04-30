@@ -35,7 +35,7 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 	//*instance = (struct jitc_instance){};
 	ckfree(instance);  instance = NULL;  ir->twoPtrValue.ptr2 = NULL;
 
-	if (r->handle) {
+	if (r->tcc) {
 		if (r->symbols && r->interp) {
 			struct interp_cx*	l = Tcl_GetAssocData(r->interp, "jitc", NULL);
 			Tcl_Obj*	releasename = NULL;
@@ -44,20 +44,18 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 			// l can be NULL here if we're here because the interp is being deleted (and so free_interp_cx has been called)
 			replace_tclobj(&releasename, l ? l->lit[LIT_RELEASE] : Tcl_NewStringObj("release", -1));
 			if (TCL_OK == Tcl_DictObjGet(r->interp, r->symbols, releasename, &releasesymboladdr) && releasesymboladdr) {
-				void* releaseaddr = Tcl_FindSymbol(NULL, r->handle, "release");
-				cdef_release*	release;
-				memcpy(&release, &releaseaddr, sizeof(release));
+				cdef_release*	release = NULL;
+				void*			addr = tcc_get_symbol(r->tcc, "release");
+				memcpy(&release, &addr, sizeof release);
 				if (release) (release)(r->interp);
 			}
 			replace_tclobj(&releasename, NULL);
 		}
 
-		//Tcl_InterpState	state = Tcl_SaveInterpState(r->interp, 0);
-		if (TCL_OK != Tcl_FSUnloadFile(r->interp, r->handle)) {
-			fprintf(stderr, "Error unloading jit dll: %s\n", Tcl_GetString(Tcl_GetObjResult(r->interp)));
-		}
-		r->handle = NULL;
-		//Tcl_RestoreInterpState(r->interp, state);
+		Tcl_MutexLock(&g_tcc_mutex);
+		tcc_delete(r->tcc);
+		Tcl_MutexUnlock(&g_tcc_mutex);
+		r->tcc = NULL;
 	}
 
 	replace_tclobj(&r->symbols, NULL);
@@ -275,9 +273,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			replace_tclobj(&r->cdef,		NULL);
 			replace_tclobj(&r->debugfiles,	NULL);
 			r->interp = NULL;
-			if (r->handle) {
-				Tcl_FSUnloadFile(interp, r->handle);
-				r->handle = NULL;
+			if (r->tcc) {
+				tcc_delete(r->tcc);
+				r->tcc = NULL;
 			}
 			ckfree(r);
 		}
@@ -357,7 +355,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 
 	Tcl_MutexLock(&g_tcc_mutex);		defer { Tcl_MutexUnlock(&g_tcc_mutex); };
 
-	struct TCCState*	tcc = tcc_new();		defer { tcc_delete(tcc); }
+	struct TCCState*	tcc = tcc_new();		defer { if (tcc) tcc_delete(tcc); }
 	tcc_set_error_func(tcc, &compile_errors, errfunc);
 	CHECK_TCC(tcc_set_options(tcc, "-Wl,--enable-new-dtags"));
 
@@ -519,10 +517,14 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 #pragma GCC diagnostic pop
 	}
 
-	//fprintf(stderr, "compiling: %s\n", Tcl_GetString(cdef));
-	//tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
-	//tcc_set_output_type(tcc, TCC_OUTPUT_OBJ);
-	tcc_set_output_type(tcc, TCC_OUTPUT_DLL);
+	// Compile-to-memory: tcc_relocate places code in malloc'd, mprotect'd
+	// memory (no .so on disk, no dlopen). Symbols are resolved via
+	// tcc_get_symbol against TCC's own symbol table. This avoids both
+	// musl's dlclose-leaks-mappings behavior and the dlsym _init/init
+	// name-mangling that broke cross-module symbol resolution on musl.
+	if (debugpath)
+		CHECK_TCC(tcc_set_options(tcc, "-g"));
+	tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
 
 	if (add_symbol_queue) {
 		Tcl_Size	qc;
@@ -655,7 +657,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 									"%s", "Error compiling _initstubs");
 #endif
 
-					if (debugpath) { // Write out to a temporary file instead, and try to arrange for it for be unlinked when intrep is freed {{{
+					if (debugpath) { // tcc_compile_string_file writes the source to debugfile (because -g is set) for gdb to attribute lines to {{{
 						Tcl_Obj*	pathelements = NULL;	defer { replace_tclobj(&pathelements, NULL); };
 						Tcl_Obj*	debugfile = NULL;		defer { replace_tclobj(&debugfile, NULL); };
 
@@ -668,23 +670,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 						replace_tclobj(&debugfile, Tcl_FSJoinPath(pathelements, 2));
 						TEST_OK(Tcl_ListObjAppendElement(interp, debugfiles, debugfile));
 
-#if __STDC_VERSION__ == 202311L
-						Tcl_Channel	chan = Tcl_FSOpenFileChannel(interp, debugfile, "w", 0o400);
-#else
-						// gcc-14 claims c23 but chokes on octal literals
-						Tcl_Channel	chan = Tcl_FSOpenFileChannel(interp, debugfile, "w", 0400);
-#endif
-						if (!chan) return TCL_ERROR;
-						defer { if (chan) Tcl_Close(interp, chan); }
-
-						const int c_len = Tcl_DStringLength(&c);
-						const int wrote = Tcl_WriteChars(chan, Tcl_DStringValue(&c), c_len);
-						if (wrote != c_len)
-							THROW_PRINTF("Tried to write %d characters to %s, only managed %d", c_len, Tcl_GetString(debugfile), wrote);
-						TEST_OK(Tcl_Close(interp, chan));
-						chan = NULL;
-
-						CHECK_TCC(tcc_add_file(tcc, Tcl_GetString(debugfile)), "Error compiling file \"%s\"", Tcl_GetString(debugfile));
+						int rc = tcc_compile_string_file(tcc, Tcl_DStringValue(&c), Tcl_GetString(debugfile));
+						if (rc == -1 || compile_errors)
+							replace_tclobj(&compileerror_code, Tcl_NewStringObj(Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
+						CHECK_TCC(rc, "Error compiling file \"%s\"", Tcl_GetString(debugfile));
 						//}}}
 					} else {
 						int rc = tcc_compile_string(tcc, Tcl_DStringValue(&c));
@@ -790,33 +779,23 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	};
 	used = exported_headers = exported_symbols = NULL;	// Transfer their refs (if any) to r->export_*
 
-	{
-		char		template[] = P_tmpdir "/jitc_XXXXXX";
-		Tcl_Obj*	tmp_fn = NULL;				defer { replace_tclobj(&tmp_fn, NULL); }
-		Tcl_DString	dllfn;
-		Tcl_DStringInit(&dllfn);				defer { Tcl_DStringFree(&dllfn); }
+	CHECK_TCC(tcc_relocate(tcc), "Error relocating compiled code into memory");
 
-		char*	base = mkdtemp(template);
-		if (base == NULL) THROW_POSIX("Error creating temporary base directory");
-		defer { if (-1 == rmdir(base)) perror("rmdir"); }
+	if (debugpath) {
+		// elf_output_obj writes the post-relocate sections (incl. .debug_*)
+		// to a .o file. gdb can load it via `add-symbol-file <path>` to get
+		// source-line breakpoints in the JIT'd code.
+		Tcl_Obj*	pathelements = NULL;	defer { replace_tclobj(&pathelements, NULL); };
+		Tcl_Obj*	debugobj = NULL;		defer { replace_tclobj(&debugobj, NULL); };
 
-		Tcl_DStringAppend(&dllfn, base, sizeof(template)-1);
-		Tcl_DStringAppend(&dllfn, "/dll.so", -1);
-		replace_tclobj(&tmp_fn, Tcl_NewStringObj(Tcl_DStringValue(&dllfn), Tcl_DStringLength(&dllfn)));
-
-		CHECK_TCC(tcc_output_file(tcc, Tcl_DStringValue(&dllfn)), "Error writing DLL file \"%s\"", Tcl_DStringValue(&dllfn));
-		defer { if (-1 == unlink(Tcl_GetString(tmp_fn))) perror("unlink"); }
-
-		TEST_OK(Tcl_LoadFile(interp, tmp_fn, NULL, 0, NULL, &r->handle));
+		replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj*[]){
+			debugpath,
+			Tcl_ObjPrintf("0x%" PRIxPTR ".o", (uintptr_t)tcc)
+		}));
+		replace_tclobj(&debugobj, Tcl_FSJoinPath(pathelements, 2));
+		TEST_OK(Tcl_ListObjAppendElement(interp, debugfiles, debugobj));
+		CHECK_TCC(elf_output_obj(tcc, Tcl_GetString(debugobj)), "Error writing debug object \"%s\"", Tcl_GetString(debugobj));
 	}
-
-	/*
-	for (int i=0; i<tcc->nb_runtime_mem; i+=2) {
-		const ptrdiff_t rtsize = tcc->runtime_mem[i];
-		void*			rtptr = tcc->runtime_mem[i+1];
-		fprintf(stderr, "Runtime mem: %ld bytes at %p\n", rtsize, rtptr);
-	}
-	*/
 
 	replace_tclobj(&r->symbols, Tcl_NewDictObj());
 	tcc_list_symbols(tcc, r->symbols, list_symbols_dict);
@@ -825,29 +804,33 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
 
 #if STUBSMODE
-	cdef_initstubs*	initstubs;
-	memcpy(&initstubs, &(void*){Tcl_FindSymbol(interp, r->handle, "initstubs")}, sizeof initstubs);
-	if (initstubs)
-		if (NULL == (initstubs)(interp, Tcl_GetString(l->tclver)))
-			THROW_ERROR("Could not init Tcl stubs");
+	{
+		cdef_initstubs*	initstubs = NULL;
+		void*			initstubsaddr = tcc_get_symbol(tcc, "_initstubs");
+		memcpy(&initstubs, &initstubsaddr, sizeof initstubs);
+		if (initstubs)
+			if (NULL == (initstubs)(interp, Tcl_GetString(l->tclver)))
+				THROW_ERROR("Could not init Tcl stubs");
+	}
 #endif
 
-	/* On some platforms, Tcl_FindSymbol returns the address for _init when
-	 * asked for init, which trips us up when we want to see if an init handler
-	 * has been defined, so we have to use the list of symbols we got from
-	 * tcc_list_symbols instead of Tcl_FindSymbol(... "init")
-	 */
-	Tcl_Obj* initsymboladdr = NULL;
-	TEST_OK(Tcl_DictObjGet(interp, r->symbols, l->lit[LIT_INIT], &initsymboladdr));
-	if (initsymboladdr) {
-		cdef_init*	init;
-		memcpy(&init, &(void*){Tcl_FindSymbol(interp, r->handle, "init")}, sizeof init);
-		//fprintf(stderr, "cdef defines init, calling: %p, symbols: (%s)\n", init, Tcl_GetString(r->symbols));
-		TEST_OK((init)(interp));
+	{
+		cdef_init*	init = NULL;
+		void*		initaddr = tcc_get_symbol(tcc, "init");
+		memcpy(&init, &initaddr, sizeof init);
+		if (init) {
+			//fprintf(stderr, "cdef defines init, calling: %p, symbols: (%s)\n", init, Tcl_GetString(r->symbols));
+			TEST_OK((init)(interp));
+		}
 	}
 
 	replace_tclobj(&r->debugfiles, debugfiles);
 	replace_tclobj(&debugfiles, NULL);
+
+	// Hand ownership of the TCCState to the intrep — it must outlive any
+	// function pointers we hand out via tcc_get_symbol.
+	r->tcc = tcc;
+	tcc = NULL;
 
 	*rPtr = r;
 	r = NULL;
@@ -982,22 +965,13 @@ int Jitc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* cdef, Tcl_Obj* symbol, vo
 
 	TEST_OK(get_r_from_obj(interp, cdef, &r));
 
-#if 0
-	Tcl_Obj*			valobj = NULL;
-
-	TEST_OK(Tcl_DictObjGet(interp, r->symbols, symbol, &valobj));
-	if (valobj) {
-		Tcl_WideInt	w;
-		TEST_OK(Tcl_GetWideIntFromObj(interp, valobj, &w));
-		*val = UINT2PTR(w);
-	} else {
-		Tcl_SetErrorCode(interp, "JITC", "SYMBOL", Tcl_GetString(symbol), NULL);
-		THROW_ERROR("Symbol not found: \"", Tcl_GetString(symbol), "\"");
+	const char*	symstr = Tcl_GetString(symbol);
+	*val = tcc_get_symbol(r->tcc, symstr);
+	if (*val == NULL) {
+		Tcl_SetErrorCode(interp, "TCL", "LOOKUP", "LOAD_SYMBOL", symstr, NULL);
+		Tcl_SetObjResult(interp, Tcl_ObjPrintf("cannot find symbol \"%s\"", symstr));
+		return TCL_ERROR;
 	}
-#else
-	*val = Tcl_FindSymbol(interp, r->handle, Tcl_GetString(symbol));
-	if (*val == NULL) return TCL_ERROR;
-#endif
 
 	return TCL_OK;
 }
