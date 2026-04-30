@@ -80,7 +80,14 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 	}
 	replace_tclobj(&r->debugfiles, NULL);
 	if (r->debugdir) {
-		Tcl_FSRemoveDirectory(r->debugdir, 0, NULL);	// best-effort; jitc-owned dir
+		Tcl_Obj* errstr = NULL;
+		Tcl_FSRemoveDirectory(r->debugdir, 0, &errstr);	// best-effort; jitc-owned dir
+		if (errstr) {
+			// Tcl_FSRemoveDirectory sets errstr to an unowned Tcl_Obj,
+			// bounce the refcount here to release it
+			Tcl_IncrRefCount(errstr);
+			Tcl_DecrRefCount(errstr);
+		}
 		replace_tclobj(&r->debugdir, NULL);
 	}
 	replace_tclobj((Tcl_Obj**)&ir->twoPtrValue.ptr2, NULL);

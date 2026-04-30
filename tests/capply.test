@@ -872,6 +872,15 @@ test capply-13.2 {c99 declare var in for, no -std=c11} -body { #<<<
 	}} foo
 } -result 45
 #>>>
+test capply-14.1 {Implicit debug directory handling triggered by "-g" (test under a debugger, break on "do_foo"} -body { #<<<
+	jitc::capply {options {-g} code {
+		OBJCMD(do_foo) {
+			Tcl_SetObjResult(interp, Tcl_NewStringObj("did_foo", -1));
+			return TCL_OK;
+		}
+	}} do_foo
+} -result did_foo
+#>>>
 
 test tmp-1.1 {} -constraints SIGTRAP -body {
 	file delete -force /tmp/tmpdebug
