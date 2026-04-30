@@ -82,6 +82,16 @@ else
   triplet = '@0@-@1@-@2@'.format(arch_t, os_t, abi_t)
 endif
 
+# Multiarch detection. Debian/Ubuntu put startup files under
+# /usr/lib/<triplet>/ (both for glibc and for Ubuntu's musl-dev).
+# Alpine, Gentoo, Arch and most others put them directly in /usr/lib/.
+# When CONFIG_TRIPLET is defined, tcc only searches the triplet path
+# for crti.o etc. — so on non-multiarch systems we must leave it
+# undefined to fall back to the bare /usr/lib search.
+use_triplet = not meson.is_cross_build() \
+  and (host_os == 'linux' or is_bsd) \
+  and fs.is_file('/usr/lib' / triplet / 'crti.o')
+
 # === Install directories ==================================================
 prefix              = get_option('prefix')
 libdir              = get_option('libdir')
@@ -111,7 +121,9 @@ conf.set       ('CC_NAME',              'CC_' + cc_short)
 conf.set       ('GCC_MAJOR',            gcc_major)
 conf.set       ('GCC_MINOR',            gcc_minor)
 conf.set       (tcc_target_define,      1)
-conf.set_quoted('CONFIG_TRIPLET',       triplet)
+if use_triplet
+  conf.set_quoted('CONFIG_TRIPLET',     triplet)
+endif
 conf.set_quoted('CONFIG_TCCDIR',        prefix / runtime_install_dir)
 conf.set       ('CONFIG_TCC_PREDEFS',   1)
 
