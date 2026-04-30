@@ -6,7 +6,7 @@ if {"bench" ni [info commands bench]} {
 package require jitc
 
 proc main {} {
-	bench re2c-1.1 {invoke latency} -batch auto -setup { #<<<
+	bench re2c-1.1 {invoke latency} -setup { #<<<
 		set in { //@begin=c@
 			#include <assert.h>
 
@@ -42,7 +42,7 @@ proc main {} {
 		unset -nocomplain in
 	} -result 1
 	#>>>
-	bench re2c-2.1 {Check a decimal number} -batch auto -setup { #<<<
+	bench re2c-2.1 {Check a decimal number} -setup { #<<<
 		set cdef_cached {
 			filter  {jitc::re2c --no-debug-info --case-ranges}
 			code    { //@begin=c@

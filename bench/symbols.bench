@@ -26,7 +26,7 @@ proc main {} {
 		}
 	}
 
-	bench symbols-1.1 {list symbols} -batch auto -setup { #<<<
+	bench symbols-1.1 {list symbols} -setup { #<<<
 	} -compare {
 		index {
 			expr {"sym" in [jitc::symbols $stdcdef]}

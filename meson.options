@@ -3,3 +3,6 @@ option('testmode', type: 'boolean', value: false,
 
 option('stubsmode', type: 'boolean', value: false,
   description: 'Link the jit code with Tcl via stubs')
+
+option('benchmark', type: 'feature', value: 'disabled',
+  description: 'Enable benchmarks (auto: enable if all deps are found)')

@@ -7,6 +7,10 @@ project('tinycc', 'c',
 fs = import('fs')
 cc = meson.get_compiler('c')
 
+add_project_arguments(cc.get_supported_arguments([
+  '-Wno-deprecated-octal-literals',
+]), language: 'c')
+
 # === Target architecture ==================================================
 arch = host_machine.cpu_family()
 arch_to_target = {
@@ -32,6 +36,21 @@ bsd_targetos = {
 }
 is_bsd = host_os in bsd_targetos
 
+# musl libc detection. The autoconf flow requires the user to pass
+# --config-musl explicitly; we auto-detect by looking for __GLIBC__ on
+# Linux. Drives CONFIG_TCC_MUSL (which lib/bcheck.c uses to skip the
+# glibc-only __ctype_b_loc / __libc_freeres paths) and the triplet ABI.
+is_musl = false
+if host_os == 'linux'
+  is_musl = not cc.compiles(
+    '''#include <features.h>
+#ifndef __GLIBC__
+# error not glibc
+#endif
+''',
+    name: 'glibc detection')
+endif
+
 # === Triplet ==============================================================
 arch_t = {
   'x86':     'i386',
@@ -49,9 +68,13 @@ os_t = {
   'windows': 'win32',
   'cygwin':  'win32',
 }.get(host_os, host_os)
-abi_t = 'gnu'
+libc_t = 'gnu'
+if is_musl
+  libc_t = 'musl'
+endif
+abi_t = libc_t
 if arch == 'arm'
-  abi_t = 'gnueabihf'
+  abi_t = libc_t + 'eabihf'
 endif
 if is_pe or is_macho
   triplet = '@0@-@1@'.format(arch_t, os_t)
@@ -101,6 +124,14 @@ endif
 if is_bsd
   conf.set('TARGETOS_' + bsd_targetos[host_os], 1)
 endif
+if is_musl
+  conf.set('CONFIG_TCC_MUSL', 1)
+  # ELF interpreter path embedded in tcc-produced executables. tcc.h has
+  # built-in defaults for glibc but not musl; without this, binaries
+  # compiled by libtcc on Alpine would point at /lib64/ld-linux-*.so.2.
+  conf.set_quoted('CONFIG_TCC_ELFINTERP',
+    '/lib/ld-musl-@0@.so.1'.format(arch_t))
+endif
 
 dwarf = get_option('dwarf_version')
 if dwarf > 0
@@ -133,23 +164,6 @@ tccdefs_h = custom_target('tccdefs_h',
   command:  [c2str, '@INPUT@', '@OUTPUT@'],
 )
 
-# === libtcc.a (single-source build) ======================================
-
-libtcc = static_library('tcc',
-  'libtcc.c',
-  tccdefs_h,
-  c_args:               ['-DONE_SOURCE=1'],
-  include_directories:  tinycc_inc,
-  pic:                  true,
-  install:              not meson.is_subproject(),
-)
-
-libtcc_dep = declare_dependency(
-  link_with:            libtcc,
-  include_directories:  [include_directories('.'), include_directories('include')],
-)
-meson.override_dependency('libtcc', libtcc_dep)
-
 if not meson.is_subproject()
   install_headers('libtcc.h')
 endif
@@ -168,6 +182,17 @@ if not is_pe
     tcc_exe_deps += thread_dep
   endif
 endif
+
+# === libtcc.a (single-source build) ======================================
+
+libtcc = static_library('tcc',
+  'libtcc.c',
+  tccdefs_h,
+  c_args:               ['-DONE_SOURCE=1'],
+  include_directories:  tinycc_inc,
+  pic:                  true,
+  install:              not meson.is_subproject(),
+)
 
 tcc_exe = executable('tcc',
   'tcc.c',
@@ -252,6 +277,7 @@ libtcc1_a = custom_target('libtcc1_a',
   input:        archive_objs,
   output:       'libtcc1.a',
   command:      [tcc_for_libtcc1, '-ar', 'rcs', '@OUTPUT@', '@INPUT@'],
+  build_by_default: true,
   install:      true,
   install_dir:  runtime_install_dir,
 )
@@ -262,6 +288,7 @@ foreach s : extra_srcs
     input:        s,
     output:       fs.stem(s) + '.o',
     command:      compile_with_tcc,
+    build_by_default: true,
     install:      true,
     install_dir:  runtime_install_dir,
   )
@@ -272,6 +299,7 @@ bcheck_o = custom_target('bcheck_o',
   input:        'lib/bcheck.c',
   output:       'bcheck.o',
   command:      [tcc_for_libtcc1, '-c', '@INPUT@', '-o', '@OUTPUT@', '-bt'] + tcc_xflags,
+  build_by_default: true,
   install:      true,
   install_dir:  runtime_install_dir,
 )
@@ -302,3 +330,13 @@ install_headers(
 #   tcc_runtime_files = tinycc.get_variable('tcc_runtime_files')
 tcc_runtime_dir   = build_dir
 tcc_runtime_files = [libtcc1_a, bcheck_o] + extra_objs
+
+libtcc_dep = declare_dependency(
+  link_with:            libtcc,
+  include_directories:  [include_directories('.'), include_directories('include')],
+  #variables: {
+  #  'test_depends': tcc_runtime_files,
+  #},
+)
+meson.override_dependency('libtcc', libtcc_dep)
+

@@ -11,7 +11,7 @@ proc readfile fn {
 }
 
 proc main {} {
-	bench jitc_json-1.1 {test a json doc for validity} -batch auto -setup { #<<<
+	bench jitc_json-1.1 {test a json doc for validity} -setup { #<<<
 		package require jitclib::json
 		package require rl_json
 		set a	{ {"foo": "bar", "baz": [1, 2, 3]}}
@@ -46,7 +46,7 @@ proc main {} {
 	} -result {1 0}
 	#>>>
 	if {[file exists /tmp/items9.json]} {
-	bench jitc_json-2.1 {validate a large JSON doc} -batch auto -setup { #<<<
+	bench jitc_json-2.1 {validate a large JSON doc} -setup { #<<<
 		package require jitclib::json
 		package require rl_json
 		set doc	[readfile /tmp/items9.json]
