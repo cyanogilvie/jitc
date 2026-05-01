@@ -190,7 +190,7 @@ some helpful macros and utilities are included:
 | **INIT** | Expands to the standard initialization hook export: "int init(Tcl_Interp\* interp)". |
 | **RELEASE** | Expands to the standard release hook export: "void release(Tcl_Interp\* interp)". |
 | **OBJCMD**(*name*) | Defines a Tcl_ObjCmdProc named *name*.  **cdata** is the passed ClientData, **interp** is the Tcl_Interp, **objc** holds the count of arguments and **objv** is an array of Tcl_Obj pointers to the arguments. |
-| **CHECK_ARGS**(*expecting*, *msg*) | Checks that the count of arguments passed to the command matches *expecting* (in addition to the command argument itself).  If not, an error message is left in the **interp** containing *msg* and we return **TCL_ERROR**. |
+| **CHECK_ARGS**(*msg*) | Checks that the count of arguments passed to the command matches **A_objc** (in addition to the command argument itself identified by **A_cmd**).  If not, an error message is left in the **interp** containing *msg* and we return **TCL_ERROR**.  The usual idiom is to define an enum to assign symbolic labels to the argument numbers, see the examples. |
 | **TEST_OK_LABEL**(*label*, *code*, *checked_command*) | Test the return code from *checked_command* and store it in *code*.  If it differs from **TCL_OK** jump to the label *label*.  Useful to implement exception handling that releases any allocated resources and returns *code* at the end of the function. |
 | **replace_tclobj**(*varPtr*, *replacement*) | Assign the Tcl_Obj pointed to by *replacement* into the variable whose address is *varPtr*, managing the refCount for the Tcl_Objs.  If the variable being assigned to already pointed to a Tcl_Obj, its refcount is decremented.  If *replacement* is non-NULL its refcount is incremented. |
 
@@ -235,7 +235,7 @@ set cdef [string trim { code {
 
     int accumulate(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
     {
-        int len;
+        Tcl_Size len;
         const char* str;
 
         if (objc != 2) {
@@ -309,9 +309,10 @@ jitc::capply {
         }
 
         OBJCMD(isdecimal) {
-            CHECK_ARGS(1, "str");
-            int         len;
-            const char* str = Tcl_GetStringFromObj(objv[1], &len);
+            enum {A_cmd, A_STR, A_objc};
+            CHECK_ARGS("str");
+            Tcl_Size    len;
+            const char* str = Tcl_GetStringFromObj(objv[A_STR], &len);
             const char* YYCURSOR = str;
             const char* YYLIMIT  = str+len;
             const char* YYMARKER;
@@ -375,9 +376,10 @@ set cdef {
         }
 
         OBJCMD(dedup) {
-            CHECK_ARGS(1, "string");
-            int len;
-            const char* str = Tcl_GetStringFromObj(objv[1], &len);
+            enum {A_cmd, A_STR, A_objc};
+            CHECK_ARGS("string");
+            Tcl_Size len;
+            const char* str = Tcl_GetStringFromObj(objv[A_STR], &len);
             Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, str, len));
             return TCL_OK;
         }

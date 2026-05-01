@@ -4,7 +4,7 @@ Just In Time C for Tcl
 
 ## SYNOPSIS
 
-**package require jitc** ?0.5?
+**package require jitc** ?0.7.11?
 
 **jitc::capply** *cdef* *symbol* ?*arg* …?  
 **jitc::bind** *name* *cdef* *symbol* ?*curryarg* …?  
@@ -22,7 +22,7 @@ and reference-counted memory management for the compiled objects.
 
 There are several other similar projects (critcl, tcc4tcl, etc.), but
 this package takes a different design approach: treating C code and
-related settings as a value stored in a Tcl\_Obj and doing the
+related settings as a value stored in a Tcl_Obj and doing the
 compilation as needed, caching the result and freeing the memory when
 the last reference goes away.
 
@@ -32,25 +32,28 @@ The compiler supports the most of the C99 and C11 C language standards.
 
 ## COMMANDS
 
-  - **jitc::capply** *cdef* *symbol* ?*arg* …?  
-    Execute *symbol* in the compiled *cdef* as a Tcl\_ObjCmdProc. If
-    *symbol* points to something other than a Tcl\_ObjCmdProc things are
-    likely to get interesting quickly.
-  - **jitc::bind** *name* *cdef* *symbol* ?*curryarg* …?  
-    Register *name* as a command that invokes *symbol* in *def*.
-    *symbol* must be a Tcl\_ObjCmdProc or you’re in for a bad time. If
-    any *curryarg*s are supplied they are prepended to any args passed
-    to *symbol* when *name* is invoked.
-  - **jitc::symbols** *cdef*  
-    Return a list of the symbols in *cdef*.
-  - **jitc::packageinclude**  
-    Return the path for the headers bundled with this package.
-  - **jitc::re2c** ?*option* …? *source*  
-    Process the C source code *source* through the bundled **re2c**.
-    *option*s are as understood by **re2c** (see **re2c**(1)). The
-    modified source code is returned. Useful as a filter (see the
-    **filter** part) to implement very fast regular expression based
-    lexers.
+**jitc::capply** *cdef* *symbol* ?*arg* …?  
+Execute *symbol* in the compiled *cdef* as a Tcl_ObjCmdProc. If *symbol*
+points to something other than a Tcl_ObjCmdProc things are likely to get
+interesting quickly.
+
+**jitc::bind** *name* *cdef* *symbol* ?*curryarg* …?  
+Register *name* as a command that invokes *symbol* in *def*. *symbol*
+must be a Tcl_ObjCmdProc or you’re in for a bad time. If any *curryarg*s
+are supplied they are prepended to any args passed to *symbol* when
+*name* is invoked.
+
+**jitc::symbols** *cdef*  
+Return a list of the symbols in *cdef*.
+
+**jitc::packageinclude**  
+Return the path for the headers bundled with this package.
+
+**jitc::re2c** ?*option* …? *source*  
+Process the C source code *source* through the bundled **re2c**.
+*option*s are as understood by **re2c** (see **re2c**(1)). The modified
+source code is returned. Useful as a filter (see the **filter** part) to
+implement very fast regular expression based lexers.
 
 ## CDEF FORMAT
 
@@ -58,139 +61,132 @@ The *cdef* argument to **jitc::capply** and **jitc::symbols** is a list
 of pairs of elements: *part* and *value*. When compiling and linking the
 code the parts are applied in sequence. *part* must be one of:
 
-  - **code**  
-    *value* is a chunk of C code as a string.
+**code**  
+*value* is a chunk of C code as a string.
 
-  - **file**  
-    *value* names a file containing C code. Cannot currently refer to a
-    path handled by a Tcl VFS plugin.
+**file**  
+*value* names a file containing C code. Cannot currently refer to a path
+handled by a Tcl VFS plugin.
 
-  - **mode**  
-    Select the mode of operation *value*, which must be either **tcl**
-    (the default), or **raw**. **tcl** mode automatically sets up
-    include and library search paths to link to the running Tcl
-    interpreter, and includes a header file which brings in **tcl.h**
-    and defines a handful of convenience macros for implementing Tcl
-    commands in C (see the **CONVENIENCE MACROS** section). Mode **raw**
-    turns off this behaviour.
+**mode**  
+Select the mode of operation *value*, which must be either **tcl** (the
+default), or **raw**. **tcl** mode automatically sets up include and
+library search paths to link to the running Tcl interpreter, and
+includes a header file which brings in **tcl.h** and defines a handful
+of convenience macros for implementing Tcl commands in C (see the
+**CONVENIENCE MACROS** section). Mode **raw** turns off this behaviour.
 
-  - **debug**  
-    *value* names a filesystem path (which must exist, and be a
-    directory) into which to write copies of the code sections specified
-    by **code** parts. This is useful when debugging the code, so that
-    the debugger can find the source code. The files are removed when
-    the *cdef* is freed (except if the program crashes, in which case
-    having the files left behind is beneficial for examining the
-    resulting core file in a debugger).
+**debug**  
+*value* names a filesystem path (which must exist, and be a directory)
+into which to write copies of the code sections specified by **code**
+parts. This is useful when debugging the code, so that the debugger can
+find the source code. The files are removed when the *cdef* is freed
+(except if the program crashes, in which case having the files left
+behind is beneficial for examining the resulting core file in a
+debugger).
 
-  - **options**  
-    *value* contains an option string as would be passed to **tcc(1)**.
-    For example, to turn on debugging and all warnings, and bounds
-    checking: **-g -Wall -b**.
+**options**  
+*value* contains an option string as would be passed to **tcc(1)**. For
+example, to turn on debugging and all warnings, and bounds checking:
+**-g -Wall -b**.
 
-  - **include\_path**  
-    Add the path in *value* to the paths searched for include files.
+**include_path**  
+Add the path in *value* to the paths searched for include files.
 
-  - **sysinclude\_path**  
-    Add the path in *value* to the paths searched for system include
-    files.
+**sysinclude_path**  
+Add the path in *value* to the paths searched for system include files.
 
-  - **symbols**  
-    Import symbols from the *cdef* given as the first element of
-    *value*. The following (0 or more) elements of *value* name symbols
-    to import from that cdef.
+**symbols**  
+Import symbols from the *cdef* given as the first element of *value*.
+The following (0 or more) elements of *value* name symbols to import
+from that cdef.
 
-  - **library\_path**  
-    Add the path in *value* to the list of paths searched for libraries.
+**library_path**  
+Add the path in *value* to the list of paths searched for libraries.
 
-  - **library**  
-    Add the path in *value* to the libraries linked into the code.
+**library**  
+Add the path in *value* to the libraries linked into the code.
 
-  - **tccdir**  
-    Set the default path searched for the built-in tcc libraries and
-    headers. Defaults to the bundled files with this package.
+**tccdir**  
+Set the default path searched for the built-in tcc libraries and
+headers. Defaults to the bundled files with this package.
 
-  - **define**  
-    Define a preprocessor symbol. *value* must be a 2 element list, the
-    first of which is the name of the symbol and the second its value.
+**define**  
+Define a preprocessor symbol. *value* must be a 2 element list, the
+first of which is the name of the symbol and the second its value.
 
-  - **undefine**  
-    Undefine the preprocessor symbol *value*.
+**undefine**  
+Undefine the preprocessor symbol *value*.
 
-  - **package**  
-    Load and link with the Tcl package *value*, which must be a list,
-    the first element of which names the required package and the
-    remaining elements are args as accepted by the **package require**
-    Tcl command to constrain the version requirements. In addition to
-    loading the package, if it exports build information via
-    *package\_name***::pkgconfig** (Tip \#59, Tcl\_RegisterConfig) the
-    exported configuration will be used to automatically extend the
-    include and library paths searched, link in the library and
-    automatically include the package’s header file in all **code**
-    parts. The values used from the exported config are:
-    
-    | Key                | Effect                                       |
-    | ------------------ | -------------------------------------------- |
-    | header             | Added as an include in all **code** parts    |
-    | includedir,runtime | Added as a search path for headers, ala -I   |
-    | includedir,install | Added as a search path for headers, ala -I   |
-    | libdir,runtime     | Added as a search path for libraries, ala -L |
-    | libdir,install     | Added as a search path for libraries, ala -L |
-    | library            | Linked into the compiled code, ala -l        |
-    
+**package**  
+Load and link with the Tcl package *value*, which must be a list, the
+first element of which names the required package and the remaining
+elements are args as accepted by the **package require** Tcl command to
+constrain the version requirements. In addition to loading the package,
+if it exports build information via *package_name***::pkgconfig** (Tip
+\#59, Tcl_RegisterConfig) the exported configuration will be used to
+automatically extend the include and library paths searched, link in the
+library and automatically include the package’s header file in all
+**code** parts. The values used from the exported config are:
 
-    Any keys that aren’t defined are ignored.
+| Key                | Effect                                       |
+|--------------------|----------------------------------------------|
+| header             | Added as an include in all **code** parts    |
+| includedir,runtime | Added as a search path for headers, ala -I   |
+| includedir,install | Added as a search path for headers, ala -I   |
+| libdir,runtime     | Added as a search path for libraries, ala -L |
+| libdir,install     | Added as a search path for libraries, ala -L |
+| library            | Linked into the compiled code, ala -l        |
 
-  - **filter**  
-    Pass the C source code through the filter specified by *value*,
-    which must be a Tcl command prefix to which will be added an arg
-    containing the C source code and which must return the modified
-    source.
+Any keys that aren’t defined are ignored.
 
-  - **export**  
-    Declare the symbols exported from this object and the header text
-    required to use them, for use by other cdefs as described by the
-    **use** part below. *value* must be a dictionary with keys described
-    below:
-    
-    | Key         | Description                                         |
-    | ----------- | --------------------------------------------------- |
-    | **symbols** | A list of the exported symbols. Optional            |
-    | **header**  | The text of the header section to include. Optional |
-    
+**filter**  
+Pass the C source code through the filter specified by *value*, which
+must be a Tcl command prefix to which will be added an arg containing
+the C source code and which must return the modified source.
 
-  - **use**  
-    Link with the cdef given in *value*. Any symbols and header text it
-    declares in its **export** part are automatically imported.
+**export**  
+Declare the symbols exported from this object and the header text
+required to use them, for use by other cdefs as described by the **use**
+part below. *value* must be a dictionary with keys described below:
+
+| Key         | Description                                         |
+|-------------|-----------------------------------------------------|
+| **symbols** | A list of the exported symbols. Optional            |
+| **header**  | The text of the header section to include. Optional |
+
+**use**  
+Link with the cdef given in *value*. Any symbols and header text it
+declares in its **export** part are automatically imported.
 
 ## SPECIAL SYMBOLS
 
 If the *cdef* exports a symbol **init** then that is called when the
-compile is done. **init** must be a function taking a **Tcl\_Interp**
-and returning **int**: TCL\_OK if the initialization succeeded or
-TCL\_ERROR if it failed (an error message should be left in the
-interpreter result as usual in this case). Any error thrown will
-propagate to the command that caused the compilation.
+compile is done. **init** must be a function taking a **Tcl_Interp** and
+returning **int**: TCL_OK if the initialization succeeded or TCL_ERROR
+if it failed (an error message should be left in the interpreter result
+as usual in this case). Any error thrown will propagate to the command
+that caused the compilation.
 
 If the *cdef* exports a symbol **release** then it is called when the
 memory containing the compiled *cdef* is about to be freed. It must be a
-function taking **Tcl\_Interp** and returning **void**. It should
-reverse any side effects created in the interpreter by **init** or any
-of the code run in the *cdef*, and free any memory it allocated.
+function taking **Tcl_Interp** and returning **void**. It should reverse
+any side effects created in the interpreter by **init** or any of the
+code run in the *cdef*, and free any memory it allocated.
 
 ## CONVENIENCE MACROS
 
 In the default **tcl** mode (as selected by the **mode** part of the
 *cdef*), some helpful macros and utilities are included:
 
-| Macro                                                    | Description                                                                                                                                                                                                                                                                                   |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **INIT**                                                 | Expands to the standard initialization hook export: “int init(Tcl\_Interp\* interp)”.                                                                                                                                                                                                         |
-| **RELEASE**                                              | Expands to the standard release hook export: “void release(Tcl\_Interp\* interp)”.                                                                                                                                                                                                            |
-| **OBJCMD**(*name*)                                       | Defines a Tcl\_ObjCmdProc named *name*. **cdata** is the passed ClientData, **interp** is the Tcl\_Interp, **objc** holds the count of arguments and **objv** is an array of Tcl\_Obj pointers to the arguments.                                                                              |
-| **CHECK\_ARGS**(*expecting*, *msg*)                      | Checks that the count of arguments passed to the command matches *expecting* (in addition to the command argument itself). If not, an error message is left in the **interp** containing *msg* and we return **TCL\_ERROR**.                                                                  |
-| **TEST\_OK\_LABEL**(*label*, *code*, *checked\_command*) | Test the return code from *checked\_command* and store it in *code*. If it differs from **TCL\_OK** jump to the label *label*. Useful to implement exception handling that releases any allocated resources and returns *code* at the end of the function.                                    |
-| **replace\_tclobj**(*varPtr*, *replacement*)             | Assign the Tcl\_Obj pointed to by *replacement* into the variable whose address is *varPtr*, managing the refCount for the Tcl\_Objs. If the variable being assigned to already pointed to a Tcl\_Obj, its refcount is decremented. If *replacement* is non-NULL its refcount is incremented. |
+| Macro                                                 | Description                                                                                                                                                                                                                                                                                                                                                  |
+|-------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **INIT**                                              | Expands to the standard initialization hook export: “int init(Tcl_Interp\* interp)”.                                                                                                                                                                                                                                                                         |
+| **RELEASE**                                           | Expands to the standard release hook export: “void release(Tcl_Interp\* interp)”.                                                                                                                                                                                                                                                                            |
+| **OBJCMD**(*name*)                                    | Defines a Tcl_ObjCmdProc named *name*. **cdata** is the passed ClientData, **interp** is the Tcl_Interp, **objc** holds the count of arguments and **objv** is an array of Tcl_Obj pointers to the arguments.                                                                                                                                                |
+| **CHECK_ARGS**(*msg*)                                 | Checks that the count of arguments passed to the command matches **A_objc** (in addition to the command argument itself identified by **A_cmd**). If not, an error message is left in the **interp** containing *msg* and we return **TCL_ERROR**. The usual idiom is to define an enum to assign symbolic labels to the argument numbers, see the examples. |
+| **TEST_OK_LABEL**(*label*, *code*, *checked_command*) | Test the return code from *checked_command* and store it in *code*. If it differs from **TCL_OK** jump to the label *label*. Useful to implement exception handling that releases any allocated resources and returns *code* at the end of the function.                                                                                                     |
+| **replace_tclobj**(*varPtr*, *replacement*)           | Assign the Tcl_Obj pointed to by *replacement* into the variable whose address is *varPtr*, managing the refCount for the Tcl_Objs. If the variable being assigned to already pointed to a Tcl_Obj, its refcount is decremented. If *replacement* is non-NULL its refcount is incremented.                                                                   |
 
 To make these available in source code referend in **file** parts, or
 **code** parts in **raw** **mode**, include **tclstuff.h**, which is
@@ -234,7 +230,7 @@ set cdef [string trim { code {
 
     int accumulate(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
     {
-        int len;
+        Tcl_Size len;
         const char* str;
 
         if (objc != 2) {
@@ -306,9 +302,10 @@ jitc::capply {
         }
 
         OBJCMD(isdecimal) {
-            CHECK_ARGS(1, "str");
-            int         len;
-            const char* str = Tcl_GetStringFromObj(objv[1], &len);
+            enum {A_cmd, A_STR, A_objc};
+            CHECK_ARGS("str");
+            Tcl_Size    len;
+            const char* str = Tcl_GetStringFromObj(objv[A_STR], &len);
             const char* YYCURSOR = str;
             const char* YYLIMIT  = str+len;
             const char* YYMARKER;
@@ -335,7 +332,7 @@ jitc::capply {
 } isdecimal 12345
 ```
 
-Note the use of global Tcl\_Objs **g\_true** and **g\_false** to store
+Note the use of global Tcl_Objs **g_true** and **g_false** to store
 cached true and false Tcl values. This is safe to do here because this
 compiled object can only be called from this Tcl interpreter (and thus
 thread), and the created objects are released in the RELEASE handler, so
@@ -351,7 +348,7 @@ Use the **package** part mechanism to bring in the **dedup** package
 include its header, link to the lib and set up the include and library
 search paths for the compiler to find its resources. This automatic
 setup requires the package to make its build information available via
-the Tcl\_RegisterConfig (TIP 59) mechanism, as described in the
+the Tcl_RegisterConfig (TIP 59) mechanism, as described in the
 **package** part:
 
 ``` tcl
@@ -373,9 +370,10 @@ set cdef {
         }
 
         OBJCMD(dedup) {
-            CHECK_ARGS(1, "string");
-            int len;
-            const char* str = Tcl_GetStringFromObj(objv[1], &len);
+            enum {A_cmd, A_STR, A_objc};
+            CHECK_ARGS("string");
+            Tcl_Size len;
+            const char* str = Tcl_GetStringFromObj(objv[A_STR], &len);
             Tcl_SetObjResult(interp, Dedup_NewStringObj(g_dedup, str, len));
             return TCL_OK;
         }
@@ -406,23 +404,21 @@ puts "dedup pool stats:\n[jitc::capply $cdef stats]"
 
 This package exports a stubs API for use by other extensions:
 
-  - int **Jitc\_GetSymbolFromObj**(Tcl\_Interp\* *interp*, Tcl\_Obj\*
-    *cdef*, Tcl\_Obj\* *symbol*, void\*\* *val*)  
-    Retrieve the symbol *symbol* from *cdef*, compiling it if needed.
-  - int **Jitc\_GetSymbolsFromObj**(Tcl\_Interp\* *interp*, Tcl\_Obj\*
-    *cdef*, Tcl\_Obj\*\* *symbols*)  
-    Retrieve a list of all symbols in *cdef*, compiling it if needed.
-  - int **Jitc\_GetExportHeadersFromObj**(Tcl\_Interp\* *interp*,
-    Tcl\_Obj\* *cdef*, Tcl\_Obj\*\* *headers*)  
-    Retrieve the headers text exported from *cdef*, compiling it if
-    needed. *headers* may be NULL if *cdef* doesn’t declare any exported
-    header. Will still return **TCL\_OK** for this case.
-  - int **Jitc\_GetExportSymbolsFromObj**(Tcl\_Interp\* *interp*,
-    Tcl\_Obj\* *cdef*, Tcl\_Obj\*\* *symbols*)  
-    Retrieve a list of the symbols declared for export from *cdef*,
-    compiling it if needed. *symbols* may be NULL if *cdef* doesn’t
-    declare any exported symbols. Will still return **TCL\_OK** for this
-    case.
+int **Jitc_GetSymbolFromObj**(Tcl_Interp\* *interp*, Tcl_Obj\* *cdef*, Tcl_Obj\* *symbol*, void\*\* *val*)  
+Retrieve the symbol *symbol* from *cdef*, compiling it if needed.
+
+int **Jitc_GetSymbolsFromObj**(Tcl_Interp\* *interp*, Tcl_Obj\* *cdef*, Tcl_Obj\*\* *symbols*)  
+Retrieve a list of all symbols in *cdef*, compiling it if needed.
+
+int **Jitc_GetExportHeadersFromObj**(Tcl_Interp\* *interp*, Tcl_Obj\* *cdef*, Tcl_Obj\*\* *headers*)  
+Retrieve the headers text exported from *cdef*, compiling it if needed.
+*headers* may be NULL if *cdef* doesn’t declare any exported header.
+Will still return **TCL_OK** for this case.
+
+int **Jitc_GetExportSymbolsFromObj**(Tcl_Interp\* *interp*, Tcl_Obj\* *cdef*, Tcl_Obj\*\* *symbols*)  
+Retrieve a list of the symbols declared for export from *cdef*,
+compiling it if needed. *symbols* may be NULL if *cdef* doesn’t declare
+any exported symbols. Will still return **TCL_OK** for this case.
 
 ## BUGS
 
@@ -439,18 +435,15 @@ https://sqlite.org/src/doc/trunk/doc/lemon.html.
 
 ## PROJECT STATUS
 
-Work in progress, only very basic testing has been done. Using it
-anywhere that matters would be very brave indeed.
-
-Actually, this is already in heavy production use for us and working
-well, at least in the subset that we’re using, but **use** has problems
-(possibly only when using the musl c library). Also, musl doesn’t unload
-DLLs when dlclose is called, so the compiled objects will leak. In
-practice this hasn’t created a critical problem for us (we primarily
-ship on alpine linux containers, which use musl), because we’ve found
-that compiling and freeing the compiled objects to be rare in practice.
-Work is ongoing to resolve this issue though, and will probably require
-implementing a custom dynamic linker.
+This is already in heavy production use for us and working well, at
+least in the subset that we’re using, but **use** has problems (possibly
+only when using the musl c library). Also, musl doesn’t unload DLLs when
+dlclose is called, so the compiled objects will leak. In practice this
+hasn’t created a critical problem for us (we primarily ship on alpine
+linux containers, which use musl), because we’ve found that compiling
+and freeing the compiled objects to be rare in practice. Work is ongoing
+to resolve this issue though, and will probably require implementing a
+custom dynamic linker.
 
 ## BUILDING
 
@@ -459,37 +452,37 @@ requires the git submodules, so clone it like:
 
     git clone --recurse-submodules https://github.com/cyanogilvie/jitc
 
-Building is the normal TEA steps:
+Building uses meson:
 
-    autoconf
-    ./configure
-    make
-    make install
+    meson setup build
+    meson compile -C build
+    meson test -C build
+    meson install -C build
 
-Tcl 9 is not yet supported, but will be as soon as I get time to do it.
-Tcl 8.7 is currently supported.
+Both Tcl 8.6 and 9.0 are supported. To build against a specific Tcl
+installation, set `PKG_CONFIG_PATH`:
+
+    PKG_CONFIG_PATH=/path/to/tcl/lib/pkgconfig meson setup build
 
 ## TODO
 
-  - [x] Implement **init** and **release**
-  - [x] Implement **packageinclude**
-  - [x] Implement **filter**
-  - [x] Implement **jitc::re2c** wrapper
-  - [ ] Implement **jitc::packcc** wrapper
-  - [ ] Implement **jitc::lemon** wrapper
-  - [ ] Proper exceptions on compile errors
-  - [ ] More test coverage
-  - [ ] Document coverage, debugging
+- [x] Implement **init** and **release**
+- [x] Implement **packageinclude**
+- [x] Implement **filter**
+- [x] Implement **jitc::re2c** wrapper
+- [ ] Implement **jitc::packcc** wrapper
+- [ ] Implement **jitc::lemon** wrapper
+- [ ] Proper exceptions on compile errors
+- [ ] More test coverage
+- [ ] Document coverage, debugging
 
 ## LICENSE
 
-This package is Copyright 2022 Cyan Ogilvie, and is made available under
-the same license terms as the Tcl Core. The TCC compiler is LGPL. This
-package does not distribute object code or source code from TCC and so
-doesn’t trigger any GPL issues, but if you build this package and
+This package is Copyright 2022-2026 Cyan Ogilvie, and is made available
+under the same license terms as the Tcl Core. The TCC compiler is LGPL.
+This package does not distribute object code or source code from TCC and
+so doesn’t trigger any GPL issues, but if you build this package and
 distribute the result you will need to ensure that you are in compliance
-with the terms of the TCC LGPL
-
-license. The git submodules for the linked tools each have their own
-license: TinyCC is LGPL; re2c is public domain; packcc is MIT; lemon and
-sqlite are public domain.
+with the terms of the TCC LGPL license. The git submodules for the
+linked tools each have their own license: TinyCC is LGPL; re2c is public
+domain; packcc is MIT; lemon and sqlite are public domain.
