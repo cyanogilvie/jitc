@@ -355,7 +355,7 @@ the Tcl_RegisterConfig (TIP 59) mechanism, as described in the
 package require jitc
 
 set cdef {
-    package     {dedup 0.9.3}
+    package     {dedup 0.9.19}
     code        {
         struct dedup_pool* g_dedup = NULL;
 
@@ -381,7 +381,8 @@ set cdef {
         OBJCMD(stats) {
             Tcl_DString ds;
 
-            CHECK_ARGS(0, "");
+            enum {A_cmd, A_objc};
+            CHECK_ARGS("");
             Tcl_DStringInit(&ds);
             Dedup_Stats(&ds, g_dedup);
             Tcl_SetObjResult(interp,
@@ -436,25 +437,22 @@ https://sqlite.org/src/doc/trunk/doc/lemon.html.
 ## PROJECT STATUS
 
 This is already in heavy production use for us and working well, at
-least in the subset that we’re using, but **use** has problems (possibly
-only when using the musl c library). Also, musl doesn’t unload DLLs when
-dlclose is called, so the compiled objects will leak. In practice this
-hasn’t created a critical problem for us (we primarily ship on alpine
-linux containers, which use musl), because we’ve found that compiling
-and freeing the compiled objects to be rare in practice. Work is ongoing
-to resolve this issue though, and will probably require implementing a
-custom dynamic linker.
+least in the subset that we’re using. Recently the musl `dlcose` memory
+leak and **use** symbol problems have been resolved by using a new
+object code loader, so there are no remaining known problems on musl.
 
 ## BUILDING
 
-There are no external dependencies other than Tcl. Building from source
-requires the git submodules, so clone it like:
+There are no external dependencies other than Tcl. Build from the
+release tarball:
+https://github.com/cyanogilvie/jitc/releases/download/v0.7.11/jitc-v0.7.11.tar.gz
+or recursively clone the git repo:
 
     git clone --recurse-submodules https://github.com/cyanogilvie/jitc
 
 Building uses meson:
 
-    meson setup build
+    meson setup build --buildtype=release
     meson compile -C build
     meson test -C build
     meson install -C build
