@@ -2,7 +2,7 @@
 clone-recursive = true
 #url = git://repo.or.cz/tinycc.git
 url = https://github.com/cyanogilvie/tinycc.git
-revision = 24564bcc43cf68426e3128866a48febe2237154e
+revision = cb34e5eef2826527a3d188a81e4b4390da925869
 depth = 1
 patch_directory = tinycc
 
