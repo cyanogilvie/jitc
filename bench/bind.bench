@@ -21,13 +21,70 @@ proc main {} {
 			}
 		}]
 		jitc::bind registered $cdef hello
+		proc local args "::jitc::capply [list $cdef] hello {*}\$args"
+		interp alias {} alias {} ::jitc::capply $cdef hello
+		proc greet noun {format {hello, %s} $noun}
+		set noun jitc
 	} -compare {
-		capply	{ jitc::capply $cdef hello jitc }
-		cmd		{ registered jitc }
+		proc			{ greet jitc }
+		bind			{ registered jitc }
+		capply			{ ::jitc::capply $cdef hello jitc }
+		capply_local	{ local jitc }
+		capply_alias	{ alias jitc }
+		bytecode		{ format {hello, %s} $noun }
+	} -cleanup {
+		unset -nocomplain cdef noun
+		rename registered {}
+		rename local {}
+		rename alias {}
+		rename greet {}
+	} -result {hello, jitc}
+	#>>>
+	bench bind-2.1 {just dispatch} -setup { #<<<
+		set cdef	[string trim {
+			code {
+				int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+				{
+					return TCL_OK;
+				}
+			}
+		}]
+		jitc::bind registered $cdef hello
+		proc local {} "::jitc::capply [list $cdef] hello"
+		interp alias {} alias {} ::jitc::capply $cdef hello
+		proc nop {} {}
+		proc nop_args args {}		;# Gets bytecoded away
+		namespace import ::jitc::capply
+	} -compare {
+		apply_args		{ apply {args {}} }
+		apply			{ apply {{} {}} }
+		proc			{ nop }
+		proc_args		{ nop_args }
+		bytecode		{ list }
+		bind			{ registered }
+		capply			{ ::jitc::capply $cdef hello }
+		capply_import	{ capply $cdef hello }
+		capply_local	{ local }
+		capply_alias	{ alias }
+		capply_lit {
+			::jitc::capply {
+				code {
+					int hello(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+					{
+						return TCL_OK;
+					}
+				}
+			} hello
+		}
 	} -cleanup {
 		unset -nocomplain cdef
 		rename registered {}
-	} -result {hello, jitc}
+		rename local {}
+		rename alias {}
+		rename nop {}
+		rename nop_args {}
+		namespace forget capply
+	} -result {}
 	#>>>
 }
 
