@@ -1315,13 +1315,15 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 
 	// Set up interp_cx {{{
 	struct interp_cx*	l = (struct interp_cx*)ckalloc(sizeof *l);
-	*l = (struct interp_cx){};
+	*l = (struct interp_cx){
+		.instance_head.next = &l->instance_tail,
+		.instance_tail.prev = &l->instance_head,
+	};
 	Tcl_SetAssocData(interp, "jitc", free_interp_cx, l);
 	defer { if (l) Tcl_DeleteAssocData(interp, "jitc"); };
 
 	for (int i=0; i<LIT_SIZE; i++)
 		replace_tclobj(&l->lit[i], Tcl_NewStringObj(lit_str[i], -1));
-
 
 #if STUBSMODE
 	TEST_OK(Tcl_EvalObjEx(interp, l->lit[LIT_TCLSTUBLIB_CMD], 0));
@@ -1332,9 +1334,6 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 #endif
 	TEST_OK(Tcl_EvalObjEx(interp, l->lit[LIT_TCLVER_CMD], 0));
 	replace_tclobj(&l->tclver, Tcl_GetObjResult(interp));
-
-	l->instance_head.next = &l->instance_tail;
-	l->instance_tail.prev = &l->instance_head;
 	// Set up interp_cx }}}
 
 	for (struct cmd* c = cmds; c->name; c++) {
