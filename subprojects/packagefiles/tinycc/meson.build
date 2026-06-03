@@ -290,8 +290,11 @@ libtcc1_a = custom_target('libtcc1_a',
   output:       'libtcc1.a',
   command:      [tcc_for_libtcc1, '-ar', 'rcs', '@OUTPUT@', '@INPUT@'],
   build_by_default: true,
-  install:      true,
+  # When consumed as a subproject the parent installs the runtime tree into
+  # its own (versioned) package dir; see tcc_runtime_files below.
+  install:      not meson.is_subproject(),
   install_dir:  runtime_install_dir,
+  install_tag:  'runtime',
 )
 
 extra_objs = []
@@ -301,8 +304,9 @@ foreach s : extra_srcs
     output:       fs.stem(s) + '.o',
     command:      compile_with_tcc,
     build_by_default: true,
-    install:      true,
+    install:      not meson.is_subproject(),
     install_dir:  runtime_install_dir,
+    install_tag:  'runtime',
   )
 endforeach
 
@@ -312,13 +316,18 @@ bcheck_o = custom_target('bcheck_o',
   output:       'bcheck.o',
   command:      [tcc_for_libtcc1, '-c', '@INPUT@', '-o', '@OUTPUT@', '-bt'] + tcc_xflags,
   build_by_default: true,
-  install:      true,
+  install:      not meson.is_subproject(),
   install_dir:  runtime_install_dir,
+  install_tag:  'runtime',
 )
 
 # === Runtime headers =====================================================
-install_headers(
-  files(
+# tcc bundles its own copies of the compiler-provided headers (stddef.h,
+# stdarg.h, ...); libtcc needs them on its sysinclude path to preprocess user
+# code. Exposed via tcc_runtime_headers so a parent project can install them
+# into its own package dir (tagged as it sees fit); tinycc only installs them
+# itself when built standalone.
+tcc_runtime_headers = files(
     'include/float.h',
     'include/stdalign.h',
     'include/stdarg.h',
@@ -330,16 +339,18 @@ install_headers(
     'include/tgmath.h',
     'include/varargs.h',
     'tcclib.h',
-  ),
-  install_dir:  runtime_include_dir,
 )
+if not meson.is_subproject()
+  install_headers(tcc_runtime_headers, install_dir: runtime_include_dir)
+endif
 
 # === Variables for parent meson projects =================================
 # Parent projects consuming tinycc as a subproject can:
 #   tinycc      = subproject('tinycc')
 #   libtcc_dep  = dependency('libtcc')
 #   tcc_runtime = tinycc.get_variable('tcc_runtime_dir')   # build dir holding libtcc1.a
-#   tcc_runtime_files = tinycc.get_variable('tcc_runtime_files')
+#   tcc_runtime_files   = tinycc.get_variable('tcc_runtime_files')    # libtcc1.a + helper .o
+#   tcc_runtime_headers = tinycc.get_variable('tcc_runtime_headers')  # stddef.h etc.
 tcc_runtime_dir   = build_dir
 tcc_runtime_files = [libtcc1_a, bcheck_o] + extra_objs
 
