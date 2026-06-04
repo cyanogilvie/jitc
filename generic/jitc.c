@@ -216,8 +216,11 @@ const char* lit_str[] = {
 	"_initstubs",
 	"init",
 	"release",
+#if STUBSMODE
 	"return -level 0 tclstub[if {![package vsatisfies [info tclversion] 9.0-]} {info tclversion}]",
+#else
 	"return -level 0 tcl[info tclversion]",
+#endif
 	"info tclversion",
 	NULL
 };
