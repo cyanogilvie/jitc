@@ -7,9 +7,20 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <setjmp.h>
+#include <stdarg.h>
+#include <dlfcn.h>
 #include <defer.h>
 #include <tclstuff.h>
-#include <libtcc.h>
+// libslimcc.h pulls in mir.h, whose DEF_DLIST/DEF_VARR macros expand to
+// declarations followed by a ';' at file scope — legal C, but -Wpedantic
+// (jitc builds with -Werror -Wpedantic) flags the trailing semicolons. It's a
+// third-party header; silence pedantic diagnostics just across these includes.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#include "libslimcc.h"
+#include "mir-gen.h"
+#pragma GCC diagnostic pop
 #include <jitc.h>
 #include "valgrind/memcheck.h"
 
@@ -27,43 +38,31 @@
 #   define PTR2UINT(p) ((size_t)(p))
 #endif
 
-// Interface with GDB JIT API {{{
-typedef enum {
-  JIT_NOACTION = 0,
-  JIT_REGISTER_FN,
-  JIT_UNREGISTER_FN
-} jit_actions_t;
-
-struct jit_code_entry {
-  struct jit_code_entry *next_entry;
-  struct jit_code_entry *prev_entry;
-  const char *symfile_addr;
-  uint64_t symfile_size;
-};
-
-struct jit_descriptor {
-  uint32_t version;
-  /* This type should be jit_actions_t, but we use uint32_t
-     to be explicit about the bitwidth.  */
-  uint32_t action_flag;
-  struct jit_code_entry *relevant_entry;
-  struct jit_code_entry *first_entry;
-};
-
-// Interface with GDB JIT API }}}
-
+// Each cdef owns its own MIR_context_t: it holds the loaded modules and the
+// machine code MIR_gen produced for them. MIR has no per-module unload, so the
+// whole context is the unit of teardown — MIR_finish() frees all the code at
+// once when the intrep dies (the analog of tcc_delete()). Function/data
+// pointers handed out via the symbols dict stay valid for the context's life.
+//
+// (libtcc's GDB JIT-interface ELF registration is gone: MIR emits no DWARF, so
+// JIT'd frames are anonymous to gdb/perf. Documented limitation of this
+// backend; see also slimcc_options.mir_dump for textual-MIR inspection.)
 struct jitc_intrep {
-	Tcl_Obj*				symbols;
+	Tcl_Obj*				symbols;			// dict: symbol name -> code/data address (Tcl_WideInt)
 	Tcl_Obj*				cdef;
-	Tcl_Obj*				debugfiles;
-	Tcl_Obj*				debugdir;			// If non-NULL, jitc auto-allocated this dir via mkdtemp() and will rmdir() it after debugfiles cleanup
 	Tcl_Interp*				interp;
 	Tcl_Obj*				exported_symbols;
 	Tcl_Obj*				exported_headers;
 	Tcl_Obj*				used;				// Hold references to the foreign cdefs to prevent them from being freed under us
-	struct TCCState*		tcc;				// Owns the relocated in-memory code; tcc_delete() frees it
-	struct jit_code_entry	jit_symbols;
+	MIR_context_t			ctx;				// Owns the loaded modules + generated code; MIR_finish() frees it
+	int						gen_inited;			// MIR_gen_init() has run on ctx (so teardown must MIR_gen_finish())
+	void**					dlhandles;			// Libraries dlopen()'d so this cdef's code can resolve their symbols
+	int						n_dlhandles;
 };
+
+// Look up a defined symbol's address in a compiled cdef. Returns NULL if the
+// name isn't present (mirrors tcc_get_symbol()).
+void* jitc_get_symbol(struct jitc_intrep* r, const char* name);
 
 struct jitc_instance {
 	struct jitc_instance*	next;

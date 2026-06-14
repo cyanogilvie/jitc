@@ -1,0 +1,13 @@
+# MIR: the JIT substrate (codegen + interpreter) that libslimcc emits modules
+# for. Pinned here at the top level so it takes precedence over slimcc's own
+# bundled mir.wrap (nested wrap resolution), keeping both on the local fork.
+#
+# For distribution this should point at https://github.com/cyanogilvie/mir
+# (branch meson).
+[wrap-git]
+url = /home/cyan/git/mir
+revision = meson
+depth = 1
+
+[provide]
+mir = mir_dep

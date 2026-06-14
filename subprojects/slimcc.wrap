@@ -1,0 +1,14 @@
+# libslimcc: slimcc reworked as an embeddable C23+defer -> MIR JIT frontend,
+# replacing libtcc as jitc's compiler backend. The 'slimcc' dependency links
+# the static library and pulls in 'mir' via slimcc's own subprojects/mir.wrap
+# (overridden below by jitc's mir.wrap to pin the local checkout).
+#
+# For distribution this should point at https://github.com/cyanogilvie/slimcc
+# (branch mir-backend); the local path keeps iteration offline on this machine.
+[wrap-git]
+url = /home/cyan/git/slimcc
+revision = mir-backend
+depth = 1
+
+[provide]
+dependency_names = slimcc

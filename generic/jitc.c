@@ -6,7 +6,11 @@
 TCL_DECLARE_MUTEX(g_pkgdir_mutex)
 static Tcl_Obj* g_pkgdir = NULL;
 
-TCL_DECLARE_MUTEX(g_tcc_mutex)
+// Serializes the whole compile pipeline. libslimcc keeps global compiler state
+// (it's the stock slimcc front-end with a reset-between-runs model, not a
+// context struct), so concurrent slimcc_compile() calls are unsafe; this mutex
+// also guards the file-scope link-error longjmp target below.
+TCL_DECLARE_MUTEX(g_compile_mutex)
 
 typedef const char* (cdef_initstubs)(Tcl_Interp* interp, const char* ver);
 typedef int (cdef_init)(Tcl_Interp* interp);
@@ -15,8 +19,7 @@ typedef int (cdef_release)(Tcl_Interp* interp);
 static void free_jitc_internal_rep(Tcl_Obj* obj);
 static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
 static void update_jitc_string_rep(Tcl_Obj* obj);
-static void jit_register_obj(struct jitc_intrep* r, void* buf, unsigned long size);
-static void jit_unregister_obj(struct jitc_intrep* r);
+static void jitc_free_backend(struct jitc_intrep* r);
 
 Tcl_ObjType jitc_objtype = {
 	"Jitc",
@@ -37,9 +40,8 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 	//*instance = (struct jitc_instance){};
 	ckfree(instance);  instance = NULL;  ir->twoPtrValue.ptr2 = NULL;
 
-	jit_unregister_obj(r);
-
-	if (r->tcc) {
+	if (r->ctx) {
+		// Run the cdef's release() (if any) while its code is still mapped.
 		if (r->symbols && r->interp) {
 			struct interp_cx*	l = Tcl_GetAssocData(r->interp, "jitc", NULL);
 			Tcl_Obj*	releasename = NULL;
@@ -49,47 +51,22 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //{{{
 			replace_tclobj(&releasename, l ? l->lit[LIT_RELEASE] : Tcl_NewStringObj("release", -1));
 			if (TCL_OK == Tcl_DictObjGet(r->interp, r->symbols, releasename, &releasesymboladdr) && releasesymboladdr) {
 				cdef_release*	release = NULL;
-				void*			addr = tcc_get_symbol(r->tcc, "release");
+				void*			addr = jitc_get_symbol(r, "release");
 				memcpy(&release, &addr, sizeof release);
 				if (release) (release)(r->interp);
 			}
 			replace_tclobj(&releasename, NULL);
 		}
 
-		Tcl_MutexLock(&g_tcc_mutex);
-		tcc_delete(r->tcc);
-		Tcl_MutexUnlock(&g_tcc_mutex);
-		r->tcc = NULL;
+		Tcl_MutexLock(&g_compile_mutex);
+		jitc_free_backend(r);	// MIR_finish frees all the code; dlclose libraries
+		Tcl_MutexUnlock(&g_compile_mutex);
 	}
 
 	replace_tclobj(&r->symbols, NULL);
 
 	r->interp = NULL;
 	replace_tclobj(&r->cdef, NULL);
-	if (r->debugfiles) {
-		Tcl_Obj**	fv;
-		Tcl_Size	fc;
-
-		if (TCL_OK == Tcl_ListObjGetElements(NULL, r->debugfiles, &fc, &fv)) {
-			for (Tcl_Size i=0; i<fc; i++) {
-				if (TCL_OK != Tcl_FSDeleteFile(fv[i])) {
-					// TODO: what?
-				}
-			}
-		}
-	}
-	replace_tclobj(&r->debugfiles, NULL);
-	if (r->debugdir) {
-		Tcl_Obj* errstr = NULL;
-		Tcl_FSRemoveDirectory(r->debugdir, 0, &errstr);	// best-effort; jitc-owned dir
-		if (errstr) {
-			// Tcl_FSRemoveDirectory sets errstr to an unowned Tcl_Obj,
-			// bounce the refcount here to release it
-			Tcl_IncrRefCount(errstr);
-			Tcl_DecrRefCount(errstr);
-		}
-		replace_tclobj(&r->debugdir, NULL);
-	}
 	replace_tclobj((Tcl_Obj**)&ir->twoPtrValue.ptr2, NULL);
 	replace_tclobj(&r->exported_symbols, NULL);
 	replace_tclobj(&r->exported_headers, NULL);
@@ -140,67 +117,197 @@ void update_jitc_string_rep(Tcl_Obj* obj) //{{{
 //}}}
 
 // Internal API {{{
-// Interface with GDB JIT API {{{
-TCL_DECLARE_MUTEX(gdb_jit_mutex)
+// MIR link/codegen glue {{{
 
-/* GDB puts a breakpoint in this function.  */
-void __attribute__((noinline)) __jit_debug_register_code() { }
-
-/* Make sure to specify the version statically, because the
-   debugger may check the version before we can set it.  */
-struct jit_descriptor __jit_debug_descriptor = { 1, 0, 0, 0 };
-
-// Register an in-memory ELF .o (as produced by elf_output_obj_to_mem)
-// with any attached debugger via the GDB JIT interface. Takes ownership
-// of `buf` — the descriptor entry holds it until jit_unregister_obj()
-// frees it with libc free() (which matches open_memstream's allocator).
-//
-// The descriptor list, action_flag and relevant_entry must be mutated
-// atomically with respect to the breakpoint hit in
-// __jit_debug_register_code(), so the whole sequence is held under
-// gdb_jit_mutex.
-static void jit_register_obj(struct jitc_intrep* r, void* buf, unsigned long size) //{{{
+// MIR_link()'s import resolver has no client-data argument, but it doesn't
+// need one: every symbol the cdef defines itself, imports from a sibling cdef
+// (via `use`/`symbols`) or pulls from the slimcc runtime is registered with
+// MIR_load_external() before linking and never reaches here. What's left are
+// genuinely external symbols — libc, the Tcl core already loaded in this
+// process, and any package libraries we dlopen()'d with RTLD_GLOBAL — all
+// reachable through the global symbol scope. An unresolved import is not a
+// compile-time error (MIR can't tell whether it's ever reached), so it
+// resolves to a trap that fires only if the code actually calls it.
+static void unresolved_symbol_trap(void) //{{{
 {
-	r->jit_symbols.symfile_addr = buf;
-	r->jit_symbols.symfile_size = (uint64_t)size;
-
-	Tcl_MutexLock(&gdb_jit_mutex);
-	r->jit_symbols.prev_entry = NULL;
-	r->jit_symbols.next_entry = __jit_debug_descriptor.first_entry;
-	if (__jit_debug_descriptor.first_entry)
-		__jit_debug_descriptor.first_entry->prev_entry = &r->jit_symbols;
-	__jit_debug_descriptor.first_entry    = &r->jit_symbols;
-	__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
-	__jit_debug_descriptor.action_flag    = JIT_REGISTER_FN;
-	__jit_debug_register_code();
-	Tcl_MutexUnlock(&gdb_jit_mutex);
+	Tcl_Panic("jitc: call to a symbol that could not be resolved in JIT'd code");
 }
 
 //}}}
-static void jit_unregister_obj(struct jitc_intrep* r) //{{{
+static void* import_resolver(const char* name) //{{{
 {
-	if (!r->jit_symbols.symfile_addr) return;	// never registered
-
-	Tcl_MutexLock(&gdb_jit_mutex);
-	if (r->jit_symbols.prev_entry)
-		r->jit_symbols.prev_entry->next_entry = r->jit_symbols.next_entry;
-	else
-		__jit_debug_descriptor.first_entry    = r->jit_symbols.next_entry;
-	if (r->jit_symbols.next_entry)
-		r->jit_symbols.next_entry->prev_entry = r->jit_symbols.prev_entry;
-
-	__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
-	__jit_debug_descriptor.action_flag    = JIT_UNREGISTER_FN;
-	__jit_debug_register_code();
-	Tcl_MutexUnlock(&gdb_jit_mutex);
-
-	free((void*)r->jit_symbols.symfile_addr);
-	r->jit_symbols.symfile_addr = NULL;
-	r->jit_symbols.symfile_size = 0;
+	void*	addr = dlsym(RTLD_DEFAULT, name);
+	// dlsym already hands back a function as void* (POSIX guarantees the round
+	// trip); the trap fallback needs the same conversion, which -Wpedantic
+	// flags as an ISO C function->object pointer cast. Deliberate and portable.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+	return addr ? addr : (void*)unresolved_symbol_trap;
+#pragma GCC diagnostic pop
 }
 
 //}}}
-// Interface with GDB JIT API }}}
+
+// MIR raises link/codegen errors (duplicate definitions, malformed modules
+// migrated in, ...) through a context error function whose default aborts the
+// process. Route them into the compile-error path instead. Only touched while
+// holding g_compile_mutex, so the file-scope longjmp target is safe.
+static jmp_buf		g_link_jmp;
+static Tcl_Obj**	g_link_errors = NULL;	// where the active compile collects MIR diagnostics
+
+static void MIR_NO_RETURN link_error_func(MIR_error_type_t error_type, const char* format, ...) //{{{
+{
+	char	buf[1024];
+	va_list	ap;
+	va_start(ap, format);
+	vsnprintf(buf, sizeof buf, format, ap);
+	va_end(ap);
+
+	if (g_link_errors) {
+		if (*g_link_errors == NULL)
+			replace_tclobj(g_link_errors, Tcl_ObjPrintf("MIR error %d: %s", (int)error_type, buf));
+		else
+			Tcl_AppendStringsToObj(*g_link_errors, "\nMIR error: ", buf, NULL);
+	}
+	longjmp(g_link_jmp, 1);
+}
+
+//}}}
+void* jitc_get_symbol(struct jitc_intrep* r, const char* name) //{{{
+{
+	Tcl_Obj*	key = NULL;		defer { replace_tclobj(&key, NULL); };
+	Tcl_Obj*	val = NULL;
+	Tcl_WideInt	w;
+
+	if (!r->symbols) return NULL;
+	replace_tclobj(&key, Tcl_NewStringObj(name, -1));
+	if (TCL_OK != Tcl_DictObjGet(NULL, r->symbols, key, &val) || val == NULL) return NULL;
+	if (TCL_OK != Tcl_GetWideIntFromObj(NULL, val, &w)) return NULL;
+	return (void*)(intptr_t)w;
+}
+
+//}}}
+// Walk every item of every module loaded into the cdef's context and record
+// name -> address for each defined function and named data/bss object, the
+// analog of tcc_list_symbols(). Addresses are final after MIR_link() with the
+// eager gen interface (item->addr is the callable code / loaded data); a func
+// whose addr wasn't filled is generated on demand.
+static void build_symbols_dict(struct jitc_intrep* r) //{{{
+{
+	replace_tclobj(&r->symbols, Tcl_NewDictObj());
+
+	for (
+		MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(r->ctx));
+		m; m = DLIST_NEXT(MIR_module_t, m)
+	) {
+		for (
+			MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items);
+			it; it = DLIST_NEXT(MIR_item_t, it)
+		) {
+			const char*	name = NULL;
+			void*		addr = it->addr;
+
+			switch (it->item_type) {
+				case MIR_func_item:
+					name = it->u.func->name;
+					if (!addr) addr = MIR_gen(r->ctx, it);
+					break;
+				case MIR_data_item:	name = it->u.data->name;	break;
+				case MIR_bss_item:	name = it->u.bss->name;		break;
+				default: continue;
+			}
+			if (!name || !addr) continue;
+
+			Tcl_Obj*	k = NULL;	defer { replace_tclobj(&k, NULL); };
+			Tcl_Obj*	v = NULL;	defer { replace_tclobj(&v, NULL); };
+			replace_tclobj(&k, Tcl_NewStringObj(name, -1));
+			replace_tclobj(&v, Tcl_NewWideIntObj((Tcl_WideInt)(intptr_t)addr));
+			Tcl_DictObjPut(NULL, r->symbols, k, v);
+		}
+	}
+}
+
+//}}}
+// Load the compiled modules into the cdef's context and generate machine code.
+// MIR's error function is noreturn (it aborts the process by default); a setjmp
+// here converts a link/codegen failure (duplicate definition, malformed module)
+// into a TCL_ERROR carrying the message in *errors. Kept in its own small frame
+// so setjmp's clobber hazard (and -Wclobbered) stays out of compile()'s large
+// frame; only the unmodified parameters are live across the setjmp.
+static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods, Tcl_Obj** errors) //{{{
+{
+	g_link_errors = errors;
+	if (setjmp(g_link_jmp)) { g_link_errors = NULL; return TCL_ERROR; }
+
+	for (int i=0; i<nmods; i++)
+		MIR_load_module(r->ctx, mods[i]);
+
+	MIR_gen_init(r->ctx);
+	r->gen_inited = 1;
+	MIR_gen_set_optimize_level(r->ctx, 2);
+	MIR_link(r->ctx, MIR_set_gen_interface, import_resolver);
+
+	build_symbols_dict(r);
+
+	g_link_errors = NULL;
+	return TCL_OK;
+}
+
+//}}}
+// Tear down a cdef's JIT state: free the machine code (MIR_finish frees all
+// modules + generated code in the context at once) and drop the library
+// handles its code resolved against. Safe to call on a partially-built intrep.
+static void jitc_free_backend(struct jitc_intrep* r) //{{{
+{
+	if (r->ctx) {
+		if (r->gen_inited) MIR_gen_finish(r->ctx);
+		MIR_finish(r->ctx);
+		r->ctx = NULL;
+		r->gen_inited = 0;
+	}
+	// dlclose after the code that referenced these libraries is gone.
+	for (int i=0; i<r->n_dlhandles; i++)
+		if (r->dlhandles[i]) dlclose(r->dlhandles[i]);
+	if (r->dlhandles) { ckfree(r->dlhandles); r->dlhandles = NULL; }
+	r->n_dlhandles = 0;
+}
+
+//}}}
+// Make a library's symbols resolvable by JIT'd code: dlopen it into the global
+// scope (so import_resolver's dlsym(RTLD_DEFAULT) finds it) and keep the handle
+// for teardown. Tries the bare SONAME first, then lib<name>.so under each
+// supplied library path. Best-effort: a miss isn't fatal (an actually-needed
+// symbol still traps at call time) — it mirrors the loader's own search.
+static void dlopen_library(struct jitc_intrep* r, const char* name, Tcl_Obj* libpaths) //{{{
+{
+	void*	h = NULL;
+
+	if (strchr(name, '/') || strstr(name, ".so")) {
+		h = dlopen(name, RTLD_NOW | RTLD_GLOBAL);
+	} else {
+		Tcl_Obj*	soname = NULL;	defer { replace_tclobj(&soname, NULL); };
+		replace_tclobj(&soname, Tcl_ObjPrintf("lib%s.so", name));
+		h = dlopen(Tcl_GetString(soname), RTLD_NOW | RTLD_GLOBAL);
+
+		if (!h && libpaths) {
+			Tcl_Obj**	pv; Tcl_Size pc;
+			if (TCL_OK == Tcl_ListObjGetElements(NULL, libpaths, &pc, &pv)) {
+				for (Tcl_Size i=0; !h && i<pc; i++) {
+					Tcl_Obj*	cand = NULL;	defer { replace_tclobj(&cand, NULL); };
+					replace_tclobj(&cand, Tcl_ObjPrintf("%s/lib%s.so", Tcl_GetString(pv[i]), name));
+					h = dlopen(Tcl_GetString(cand), RTLD_NOW | RTLD_GLOBAL);
+				}
+			}
+		}
+	}
+	if (!h) return;
+
+	r->dlhandles = ckrealloc(r->dlhandles, sizeof(void*) * (r->n_dlhandles + 1));
+	r->dlhandles[r->n_dlhandles++] = h;
+}
+
+//}}}
+// MIR link/codegen glue }}}
 
 const char* lit_str[] = {
 	"",
@@ -225,30 +332,72 @@ const char* lit_str[] = {
 	NULL
 };
 
-static void errfunc(void* cdata, const char* msg) //{{{
+// Append the C compiler's system <...> include search dirs (detected at build
+// time, see meson.build) to a list, so JIT'd code can find <stdio.h> etc.
+// libslimcc ships only the freestanding headers and configures no system paths.
+static void append_sys_includes(Tcl_Interp* interp, Tcl_Obj* list) //{{{
 {
-	Tcl_Obj**	compile_errors = (Tcl_Obj**)cdata;
-	if (*compile_errors == NULL) {
-		replace_tclobj(compile_errors, Tcl_NewStringObj(msg, -1));
-	} else {
-		Tcl_AppendStringsToObj(*compile_errors, "\n", msg, NULL);
+#ifdef JITC_SYS_INCLUDES
+	const char*	dirs = JITC_SYS_INCLUDES;
+	const char*	p = dirs;
+	while (*p) {
+		const char*	colon = strchr(p, ':');
+		Tcl_Size	len = colon ? (Tcl_Size)(colon - p) : (Tcl_Size)strlen(p);
+		if (len) {
+			Tcl_Obj*	d = NULL;	defer { replace_tclobj(&d, NULL); };
+			replace_tclobj(&d, Tcl_NewStringObj(p, len));
+			Tcl_ListObjAppendElement(interp, list, d);
+		}
+		if (!colon) break;
+		p = colon + 1;
 	}
+#endif
 }
 
 //}}}
-static void list_symbols_dict(void* ctx, const char* name, const void* val) //{{{
+// Read an entire file (through the Tcl VFS) into a fresh string object.
+static int slurp_file(Tcl_Interp* interp, Tcl_Obj* path, Tcl_Obj** out) //{{{
 {
-	Tcl_Obj*	symbolsdict = ctx;
-	Tcl_Obj*	nameobj = NULL;		defer { replace_tclobj(&nameobj, NULL); };
-	Tcl_Obj*	valobj = NULL;		defer { replace_tclobj(&valobj, NULL); };
-	Tcl_WideInt	w = (Tcl_WideInt)val;
+	Tcl_Channel	ch = Tcl_FSOpenFileChannel(interp, path, "r", 0);
+	if (ch == NULL) return TCL_ERROR;
+	Tcl_Obj*	content = NULL;		defer { replace_tclobj(&content, NULL); };
+	replace_tclobj(&content, Tcl_NewObj());
+	if (Tcl_ReadChars(ch, content, -1, 0) < 0) {
+		Tcl_Obj*	msg = Tcl_ObjPrintf("Error reading \"%s\": %s", Tcl_GetString(path), Tcl_PosixError(interp));
+		Tcl_Close(NULL, ch);
+		Tcl_SetObjResult(interp, msg);
+		return TCL_ERROR;
+	}
+	Tcl_Close(NULL, ch);
+	replace_tclobj(out, content);
+	return TCL_OK;
+}
 
-	//fprintf(stderr, "list_symbols_dict: \"%s\"\n", name);
-	replace_tclobj(&nameobj, Tcl_NewStringObj(name, -1));
-	replace_tclobj(&valobj,  Tcl_NewWideIntObj(w));
+//}}}
+// Pull -I<dir> and -D<name>[=val] out of a tcc-style options string and feed
+// them to slimcc; everything else (warning flags, -g, linker options, ...) has
+// no slimcc equivalent and is silently ignored.
+static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* inc_list, Tcl_Obj* def_list) //{{{
+{
+	Tcl_Obj*	toks = NULL;	defer { replace_tclobj(&toks, NULL); };
+	Tcl_Obj**	tv; Tcl_Size tc;
 
-	if (TCL_OK != Tcl_DictObjPut(NULL, symbolsdict, nameobj, valobj))
-		Tcl_Panic("Failed to append symbol to list: %s: %p", name, val);
+	replace_tclobj(&toks, Tcl_NewStringObj(opts, -1));
+	TEST_OK(Tcl_ListObjGetElements(interp, toks, &tc, &tv));
+	for (Tcl_Size i=0; i<tc; i++) {
+		const char*	t = Tcl_GetString(tv[i]);
+		if (strncmp(t, "-I", 2) == 0 && t[2]) {
+			Tcl_Obj*	d = NULL;	defer { replace_tclobj(&d, NULL); };
+			replace_tclobj(&d, Tcl_NewStringObj(t+2, -1));
+			TEST_OK(Tcl_ListObjAppendElement(interp, inc_list, d));
+		} else if (strncmp(t, "-D", 2) == 0 && t[2]) {
+			Tcl_Obj*	d = NULL;	defer { replace_tclobj(&d, NULL); };
+			replace_tclobj(&d, Tcl_NewStringObj(t+2, -1));
+			TEST_OK(Tcl_ListObjAppendElement(interp, def_list, d));
+		}
+		// -U<name> has no libslimcc API equivalent; ignore.
+	}
+	return TCL_OK;
 }
 
 //}}}
@@ -306,620 +455,456 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	Tcl_Obj**	ov;
 	Tcl_Size	oc;
 	Tcl_Size	i;
-	Tcl_Obj*	debugpath = NULL;			defer { replace_tclobj(&debugpath, NULL); };
-	Tcl_Obj*	compile_errors = NULL;		defer { replace_tclobj(&compile_errors, NULL); };
-	Tcl_Obj*	filter = NULL;				defer { replace_tclobj(&filter, NULL); };
-	Tcl_Obj*	exported_headers = NULL;	defer { replace_tclobj(&exported_headers, NULL); };
-	Tcl_Obj*	exported_symbols = NULL;	defer { replace_tclobj(&exported_symbols, NULL); };
+
+	// Accumulated compiler inputs (gathered with no compile lock held, since
+	// resolving sibling-cdef symbols may recursively compile them).
+	Tcl_Obj*	inc_list     = NULL;	defer { replace_tclobj(&inc_list,     NULL); };
+	Tcl_Obj*	def_list     = NULL;	defer { replace_tclobj(&def_list,     NULL); };
+	Tcl_Obj*	libpath_list = NULL;	defer { replace_tclobj(&libpath_list, NULL); };
+	Tcl_Obj*	lib_list     = NULL;	defer { replace_tclobj(&lib_list,     NULL); };
+	Tcl_Obj*	host_syms    = NULL;	defer { replace_tclobj(&host_syms,    NULL); };	// name, addr, name, addr, ...
+	Tcl_Obj*	code_list    = NULL;	defer { replace_tclobj(&code_list,    NULL); };	// assembled source strings
+	Tcl_Obj*	file_list    = NULL;	defer { replace_tclobj(&file_list,    NULL); };	// PART_FILE paths
+
+	Tcl_Obj*	filter = NULL;				defer { replace_tclobj(&filter,            NULL); };
+	Tcl_Obj*	exported_headers = NULL;	defer { replace_tclobj(&exported_headers,  NULL); };
+	Tcl_Obj*	exported_symbols = NULL;	defer { replace_tclobj(&exported_symbols,  NULL); };
 	Tcl_Obj*	compileerror_code = NULL;	defer { replace_tclobj(&compileerror_code, NULL); };
-	Tcl_Obj*	add_library_queue = NULL;	defer { replace_tclobj(&add_library_queue, NULL); };
-	Tcl_Obj*	add_symbol_queue = NULL;	defer { replace_tclobj(&add_symbol_queue, NULL); };
-	Tcl_Obj*	used = NULL;				defer { replace_tclobj(&used, NULL); };
-	Tcl_Obj*	extra_errormsg = NULL;		defer { replace_tclobj(&extra_errormsg, NULL); };
+	Tcl_Obj*	compile_errors = NULL;		defer { replace_tclobj(&compile_errors,    NULL); };
+	Tcl_Obj*	extra_errormsg = NULL;		defer { replace_tclobj(&extra_errormsg,    NULL); };
+	Tcl_Obj*	used = NULL;				defer { replace_tclobj(&used,              NULL); };
 
-	Tcl_DString	preamble; Tcl_DStringInit(&preamble);		defer { Tcl_DStringFree(&preamble); };
+	Tcl_DString	preamble; Tcl_DStringInit(&preamble);	defer { Tcl_DStringFree(&preamble); };
 
-	Tcl_Obj*	debugfiles = NULL;
-	Tcl_Obj*	debugdir   = NULL;	// non-NULL: jitc-owned mkdtemp() dir to rmdir after debugfiles cleanup
-	defer {
-		if (debugfiles) {
-			Tcl_Obj**	fv;
-			Tcl_Size	fc;
-			if (TCL_OK == Tcl_ListObjGetElements(NULL, debugfiles, &fc, &fv)) {
-				for (Tcl_Size i=0; i<fc; i++) {
-					if (TCL_OK != Tcl_FSDeleteFile(fv[i])) {
-						// TODO: what?
-					}
-				}
-			}
-			replace_tclobj(&debugfiles, NULL);
-		}
-		if (debugdir) {
-			Tcl_FSRemoveDirectory(debugdir, 0, NULL);	// best-effort
-			replace_tclobj(&debugdir, NULL);
-		}
-	}
+	replace_tclobj(&inc_list,     Tcl_NewListObj(0, NULL));
+	replace_tclobj(&def_list,     Tcl_NewListObj(0, NULL));
+	replace_tclobj(&libpath_list, Tcl_NewListObj(0, NULL));
+	replace_tclobj(&lib_list,     Tcl_NewListObj(0, NULL));
+	replace_tclobj(&host_syms,    Tcl_NewListObj(0, NULL));
+	replace_tclobj(&code_list,    Tcl_NewListObj(0, NULL));
+	replace_tclobj(&file_list,    Tcl_NewListObj(0, NULL));
 
 	struct jitc_intrep*	r = NULL;
 	defer {
 		if (r) {
-			jit_unregister_obj(r);
-			replace_tclobj(&r->symbols,		NULL);
-			replace_tclobj(&r->cdef,		NULL);
-			replace_tclobj(&r->debugfiles,	NULL);
-			replace_tclobj(&r->debugdir,	NULL);
+			jitc_free_backend(r);
+			replace_tclobj(&r->symbols,          NULL);
+			replace_tclobj(&r->cdef,             NULL);
+			replace_tclobj(&r->used,             NULL);
+			replace_tclobj(&r->exported_symbols, NULL);
+			replace_tclobj(&r->exported_headers, NULL);
 			r->interp = NULL;
-			if (r->tcc) {
-				tcc_delete(r->tcc);
-				r->tcc = NULL;
-			}
 			ckfree(r);
 		}
 	}
-
-#define CHECK_TCC_SIMPLE(tccfunc) \
-	do { \
-		if (-1 == (tccfunc) || compile_errors) goto compile_error; \
-	} while(0)
-#define CHECK_TCC_PRINTF(tccfunc, ...) \
-	do { \
-		if (-1 == (tccfunc) || compile_errors) { \
-			replace_tclobj(&extra_errormsg, Tcl_ObjPrintf(__VA_ARGS__)); \
-			goto compile_error; \
-		} \
-	} while(0)
-#define CHECK_TCC_MACRO(_1, _2, _3, _4, _5, NAME, ...) NAME
-#define CHECK_TCC(...) CHECK_TCC_MACRO(__VA_ARGS__, \
-	CHECK_TCC_PRINTF, CHECK_TCC_PRINTF, CHECK_TCC_PRINTF, CHECK_TCC_PRINTF, \
-	CHECK_TCC_SIMPLE)(__VA_ARGS__)
 
 	TEST_OK(Tcl_ListObjGetElements(interp, cdef, &oc, &ov));
 	if (oc % 2 == 1)
 		THROW_PRINTF("cdef must be a list with an even number of elements (got %" TCL_SIZE_MODIFIER "d): %s", oc, Tcl_GetString(cdef));
 
-	// First pass through the parts to check for a debugpath setting
+	// Pass 1: mode (it gates the Tcl preamble + default include/library paths).
+	for (i=0; i<oc; i+=2) {
+		int	partidx;
+		TEST_OK(Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
+		if ((enum partenum)partidx == PART_MODE) {
+			int	modeidx;
+			TEST_OK(Tcl_GetIndexFromObj(interp, ov[i+1], modes, "mode", TCL_EXACT, &modeidx));
+			mode = modeidx;
+		}
+	}
+
+	// Default include + library search paths from the package's configured
+	// lists, plus (for finding <stdio.h> etc.) the host compiler's system
+	// include dirs. libslimcc supplies only freestanding headers itself.
+	{
+		Tcl_Obj*	includepath = NULL;	defer { replace_tclobj(&includepath, NULL); };
+		Tcl_Obj*	librarypath = NULL;	defer { replace_tclobj(&librarypath, NULL); };
+		Tcl_Obj**	pv; Tcl_Size pc;
+
+		replace_tclobj(&includepath, Tcl_ObjGetVar2(interp, l->lit[LIT_INCLUDEPATH_VAR], NULL, TCL_LEAVE_ERR_MSG));
+		if (includepath == NULL) return TCL_ERROR;
+		replace_tclobj(&librarypath, Tcl_ObjGetVar2(interp, l->lit[LIT_LIBRARYPATH_VAR], NULL, TCL_LEAVE_ERR_MSG));
+		if (librarypath == NULL) return TCL_ERROR;
+
+		TEST_OK(Tcl_ListObjGetElements(interp, includepath, &pc, &pv));
+		for (Tcl_Size j=0; j<pc; j++) TEST_OK(Tcl_ListObjAppendElement(interp, inc_list, pv[j]));
+		TEST_OK(Tcl_ListObjGetElements(interp, librarypath, &pc, &pv));
+		for (Tcl_Size j=0; j<pc; j++) TEST_OK(Tcl_ListObjAppendElement(interp, libpath_list, pv[j]));
+	}
+	append_sys_includes(interp, inc_list);
+
+	if (mode == MODE_TCL) {
+#if STUBSMODE
+		TEST_OK(Tcl_ListObjAppendElement(interp, def_list, Tcl_NewStringObj("USE_TCL_STUBS=1", -1)));
+#endif
+		Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
+	}
+
+	// Pass 2: packages and `use` — these contribute headers (to the preamble),
+	// include/library paths, libraries to dlopen, and sibling-cdef symbols to
+	// resolve. Resolving sibling symbols may recursively compile them, so this
+	// must happen before we take the compile lock.
 	for (i=0; i<oc; i+=2) {
 		int	partidx;
 		TEST_OK(Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
 		enum partenum	part = partidx;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wswitch"
-		switch (part) {
-			case PART_DEBUG:
-				replace_tclobj(&debugpath, ov[i+1]);
-				break;
-			case PART_MODE:
-				int	modeidx;
-				TEST_OK(Tcl_GetIndexFromObj(interp, ov[i+1], modes, "mode", TCL_EXACT, &modeidx));
-				mode = modeidx;
-				break;
+		Tcl_Obj*		v = ov[i+1];
 
-			// Have to pre-flight these to ensure that the compilation (if required) happens before we lock the Mutex and create the TCCState below
-			case PART_SYMBOLS:
-				{
-					Tcl_Obj**	sv;
-					Tcl_Size	sc;
-					struct jitc_intrep*	ur;
+		if (part == PART_PACKAGE) { //{{{
+			Tcl_Size	pc;
+			Tcl_Obj**	pv = NULL;
+			Tcl_Obj*	cmd[3] = {};	defer { for (int k=0; k<3; k++) replace_tclobj(&cmd[k], NULL); };
 
-					TEST_OK(Tcl_ListObjGetElements(interp, ov[i+1], &sc, &sv));
-					if (sc >= 1) {
-						if (!used) replace_tclobj(&used, Tcl_NewListObj(1, NULL));
-						TEST_OK(Tcl_ListObjAppendElement(interp, used, sv[0]));
-						TEST_OK(get_r_from_obj(interp, sv[0], &ur));
-					}
-				}
-				break;
-			case PART_USE:
-				{
-					struct jitc_intrep*	ur;
-					if (!used) replace_tclobj(&used, Tcl_NewListObj(1, NULL));
-					TEST_OK(Tcl_ListObjAppendElement(interp, used, ov[i+1]));
-					TEST_OK(get_r_from_obj(interp, ov[i+1], &ur));
-				}
-				break;
-		}
-#pragma GCC diagnostic pop
-	}
+			TEST_OK(Tcl_ListObjGetElements(interp, v, &pc, &pv));
+			if (pc < 1) THROW_ERROR("At least package name is required");
+			TEST_OK(Tcl_PkgRequireProc(interp, Tcl_GetString(pv[0]), pc-1, pv+1, NULL));
+			replace_tclobj(&cmd[0], Tcl_ObjPrintf("%s::pkgconfig", Tcl_GetString(pv[0])));
+			replace_tclobj(&cmd[1], Tcl_NewStringObj("get", 3));
+			const char* keys[] = {
+				"header",
+				"includedir,runtime",
+				"includedir,install",
+				"libdir,runtime",
+				"libdir,install",
+				"library",
+				NULL
+			};
+			enum {
+				KEY_HEADER,
+				KEY_INCLUDEDIR_RUNTIME,
+				KEY_INCLUDEDIR_INSTALL,
+				KEY_LIBDIR_RUNTIME,
+				KEY_LIBDIR_INSTALL,
+				KEY_LIBRARY,
+				KEY_END
+			};
+			Tcl_Obj*	vals[KEY_END] = {};	defer { for (int k=0; k<KEY_END; k++) replace_tclobj(&vals[k], NULL); }
 
-	if (debugpath) {
-		Tcl_StatBuf*	stat = Tcl_AllocStatBuf();	defer { ckfree(stat); };
-		if (
-				-1 == Tcl_FSStat(debugpath, stat) ||	// Doesn't exist
-				!(S_ISDIR(Tcl_GetModeFromStat(stat)))	// Not a directory
-		) THROW_ERROR("debug path \"", Tcl_GetString(debugpath), "\" doesn't exist");
-	}
+			for (int k=0; keys[k]; k++) {
+				Tcl_InterpState	state = Tcl_SaveInterpState(interp, 0);
+				replace_tclobj(&cmd[2], Tcl_NewStringObj(keys[k], -1));
+				if (TCL_OK == Tcl_EvalObjv(interp, 3, cmd, TCL_EVAL_GLOBAL))
+					replace_tclobj(&vals[k], Tcl_GetObjResult(interp));
+				Tcl_RestoreInterpState(interp, state);
+			}
 
-	Tcl_MutexLock(&g_tcc_mutex);		defer { Tcl_MutexUnlock(&g_tcc_mutex); };
+			if (vals[KEY_HEADER]) {
+				Tcl_DStringAppend(&preamble, "\n#include <", -1);
+				Tcl_DStringAppend(&preamble, Tcl_GetString(vals[KEY_HEADER]), -1);
+				Tcl_DStringAppend(&preamble, ">\n", -1);
+			}
+			if (vals[KEY_INCLUDEDIR_RUNTIME])
+				TEST_OK(Tcl_ListObjAppendElement(interp, inc_list, vals[KEY_INCLUDEDIR_RUNTIME]));
+			if (vals[KEY_INCLUDEDIR_INSTALL])
+				TEST_OK(Tcl_ListObjAppendElement(interp, inc_list, vals[KEY_INCLUDEDIR_INSTALL]));
+			if (vals[KEY_LIBDIR_RUNTIME])
+				TEST_OK(Tcl_ListObjAppendElement(interp, libpath_list, vals[KEY_LIBDIR_RUNTIME]));
+			if (vals[KEY_LIBDIR_INSTALL])
+				TEST_OK(Tcl_ListObjAppendElement(interp, libpath_list, vals[KEY_LIBDIR_INSTALL]));
+			if (vals[KEY_LIBRARY]) {
+				const char* libstr = Tcl_GetString(vals[KEY_LIBRARY]);
+				if (strncmp("lib", libstr, 3) == 0) libstr += 3;
+				TEST_OK(Tcl_ListObjAppendElement(interp, lib_list, Tcl_NewStringObj(libstr, -1)));
+			}
+		} //}}}
+		else if (part == PART_USE) { //{{{
+			Tcl_Obj*	useobj = v;
+			Tcl_Obj*	use_headers = NULL;	defer { replace_tclobj(&use_headers, NULL); };
+			Tcl_Obj*	use_symbols = NULL;	defer { replace_tclobj(&use_symbols, NULL); };
 
-	struct TCCState*	tcc = tcc_new();		defer { if (tcc) tcc_delete(tcc); }
-	tcc_set_error_func(tcc, &compile_errors, errfunc);
-	CHECK_TCC(tcc_set_options(tcc, "-Wl,--enable-new-dtags"));
+			TEST_OK(Jitc_GetExportHeadersFromObj(interp, useobj, &use_headers));
+			TEST_OK(Jitc_GetExportSymbolsFromObj(interp, useobj, &use_symbols));
 
-	// Set some mode-dependent defaults
-	switch (mode) {
-		case MODE_TCL:
-		case MODE_RAW:
-			{
-				Tcl_Obj*	includepath = NULL;		defer { replace_tclobj(&includepath,	NULL); }
-				Tcl_Obj*	librarypath = NULL;		defer { replace_tclobj(&librarypath,	NULL); }
-				Tcl_Obj*	tccpath = NULL;			defer { replace_tclobj(&tccpath,		NULL); }
-
-				replace_tclobj(&tccpath,     Tcl_ObjGetVar2(interp, l->lit[LIT_TCC_VAR], NULL, TCL_LEAVE_ERR_MSG));
-				if (tccpath == NULL) return TCL_ERROR;
-				replace_tclobj(&includepath, Tcl_ObjGetVar2(interp, l->lit[LIT_INCLUDEPATH_VAR], NULL, TCL_LEAVE_ERR_MSG));
-				if (includepath == NULL) return TCL_ERROR;
-				replace_tclobj(&librarypath, Tcl_ObjGetVar2(interp, l->lit[LIT_LIBRARYPATH_VAR], NULL, TCL_LEAVE_ERR_MSG));
-				if (librarypath == NULL) return TCL_ERROR;
-
-				tcc_set_lib_path(tcc, Tcl_GetString(tccpath));
-
-				Tcl_Obj**	ov;
-				Tcl_Size	oc;
-				TEST_OK(Tcl_ListObjGetElements(interp, includepath, &oc, &ov));
-				for (Tcl_Size i=0; i<oc; i++) tcc_add_include_path(tcc, Tcl_GetString(ov[i]));
-				TEST_OK(Tcl_ListObjGetElements(interp, librarypath, &oc, &ov));
-				for (Tcl_Size i=0; i<oc; i++)
-					CHECK_TCC(tcc_add_library_path(tcc, Tcl_GetString(ov[i])),
-						"Error adding library path \"%s\"", Tcl_GetString(ov[i]));
-
-				if (mode == MODE_TCL) {
-#if STUBSMODE
-					tcc_define_symbol(tcc, "USE_TCL_STUBS", "1");
-#endif
-					Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
+			if (use_headers) {
+				Tcl_Size	hl;
+				const char*	hs = Tcl_GetStringFromObj(use_headers, &hl);
+				Tcl_DStringAppend(&preamble, hs, hl);
+			}
+			if (use_symbols) {
+				Tcl_Obj**	sv; Tcl_Size sc;
+				if (!used) replace_tclobj(&used, Tcl_NewListObj(0, NULL));
+				TEST_OK(Tcl_ListObjAppendElement(interp, used, useobj));
+				TEST_OK(Tcl_ListObjGetElements(interp, use_symbols, &sc, &sv));
+				for (Tcl_Size s=0; s<sc; s++) {
+					void*	val = NULL;
+					TEST_OK(Jitc_GetSymbolFromObj(interp, useobj, sv[s], &val));
+					TEST_OK(Tcl_ListObjAppendElement(interp, host_syms, sv[s]));
+					TEST_OK(Tcl_ListObjAppendElement(interp, host_syms, Tcl_NewWideIntObj((Tcl_WideInt)(intptr_t)val)));
 				}
 			}
-			break;
-
-		default:
-			THROW_ERROR("Unhandled mode");
+		} //}}}
 	}
 
-	// Second pass through the parts to process PART_PACKAGE and PART_USE directives
+	// Pass 3: exported headers (appended after `use` headers so they can build
+	// on them) and the export declarations recorded on the intrep.
 	for (i=0; i<oc; i+=2) {
 		int	partidx;
 		TEST_OK(Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
-		enum partenum	part = partidx;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wswitch"
-		switch (part) {
-			case PART_OPTIONS: CHECK_TCC(tcc_set_options(tcc, Tcl_GetString(ov[i+1]))); break;	// Must be set before tcc_set_output_type
-			case PART_LIBRARY_PATH:
-				CHECK_TCC(tcc_add_library_path(tcc, Tcl_GetString(ov[i+1])), "Error adding library path \"%s\"", Tcl_GetString(ov[i+1]));
-				break;
+		if ((enum partenum)partidx != PART_EXPORT) continue;
 
-			case PART_PACKAGE: //{{{
-				{
-					Tcl_Size	pc;
-					Tcl_Obj**	pv = NULL;
-					Tcl_Obj*	cmd[3] = {};	defer { for (int i=0; i<3; i++) replace_tclobj(&cmd[i], NULL); };
-
-					// TODO: Cache these lookups
-					TEST_OK(Tcl_ListObjGetElements(interp, ov[i+1], &pc, &pv));
-					if (pc < 1) THROW_ERROR("At least package name is required");
-					TEST_OK(Tcl_PkgRequireProc(interp, Tcl_GetString(pv[0]), pc-1, pv+1, NULL));
-					replace_tclobj(&cmd[0], Tcl_ObjPrintf("%s::pkgconfig", Tcl_GetString(pv[0])));
-					replace_tclobj(&cmd[1], Tcl_NewStringObj("get", 3));
-					const char* keys[] = {
-						"header",
-						"includedir,runtime",
-						"includedir,install",
-						"libdir,runtime",
-						"libdir,install",
-						"library",
-						NULL
-					};
-					enum {
-						KEY_HEADER,
-						KEY_INCLUDEDIR_RUNTIME,
-						KEY_INCLUDEDIR_INSTALL,
-						KEY_LIBDIR_RUNTIME,
-						KEY_LIBDIR_INSTALL,
-						KEY_LIBRARY,
-						KEY_END
-					};
-					Tcl_Obj*	vals[KEY_END] = {};	defer { for (int i=0; i<KEY_END; i++) replace_tclobj(&vals[i], NULL); }
-
-					for (int i=0; keys[i]; i++) {
-						Tcl_InterpState	state = Tcl_SaveInterpState(interp, 0);
-						replace_tclobj(&cmd[2], Tcl_NewStringObj(keys[i], -1));
-						if (TCL_OK == Tcl_EvalObjv(interp, 3, cmd, TCL_EVAL_GLOBAL))
-							replace_tclobj(&vals[i], Tcl_GetObjResult(interp));
-						Tcl_RestoreInterpState(interp, state);
-					}
-
-					if (vals[KEY_HEADER]) {
-						Tcl_DStringAppend(&preamble, "\n#include <", -1);
-						Tcl_DStringAppend(&preamble, Tcl_GetString(vals[KEY_HEADER]), -1);
-						Tcl_DStringAppend(&preamble, ">\n", -1);
-					}
-
-					if (vals[KEY_INCLUDEDIR_RUNTIME])
-						tcc_add_include_path(tcc, Tcl_GetString(vals[KEY_INCLUDEDIR_RUNTIME]));
-					if (vals[KEY_INCLUDEDIR_INSTALL])
-						tcc_add_include_path(tcc, Tcl_GetString(vals[KEY_INCLUDEDIR_INSTALL]));
-					if (vals[KEY_LIBDIR_RUNTIME]) {
-						if (-1 == tcc_add_library_path(tcc, Tcl_GetString(vals[KEY_LIBDIR_RUNTIME]))) {
-							// TODO: what?
-						} else {
-							Tcl_Obj*	runpath_opt = NULL;
-							replace_tclobj(&runpath_opt, Tcl_ObjPrintf("-Wl,-rpath=%s", Tcl_GetString(vals[KEY_LIBDIR_RUNTIME])));
-							CHECK_TCC(tcc_set_options(tcc, Tcl_GetString(runpath_opt)));
-							replace_tclobj(&runpath_opt, NULL);
-						}
-					}
-					if (vals[KEY_LIBDIR_INSTALL]) {
-						if (-1 == tcc_add_library_path(tcc, Tcl_GetString(vals[KEY_LIBDIR_INSTALL]))) {
-							// TODO: what?
-						} else {
-							Tcl_Obj*	runpath_opt = NULL;
-							replace_tclobj(&runpath_opt, Tcl_ObjPrintf("-Wl,-rpath=%s", Tcl_GetString(vals[KEY_LIBDIR_INSTALL])));
-							CHECK_TCC(tcc_set_options(tcc, Tcl_GetString(runpath_opt)));
-							replace_tclobj(&runpath_opt, NULL);
-						}
-					}
-					if (vals[KEY_LIBRARY]) {
-						const char* libstr = Tcl_GetString(vals[KEY_LIBRARY]);
-						if (strncmp("lib", libstr, 3) == 0) libstr += 3;
-						if (!add_library_queue) replace_tclobj(&add_library_queue, Tcl_NewListObj(1, NULL));
-						TEST_OK(Tcl_ListObjAppendElement(interp, add_library_queue, Tcl_NewStringObj(libstr, -1)));
-					}
-				}
-				break;
-				//}}}
-			case PART_USE: //{{{
-				{
-					Tcl_Obj*	useobj = ov[i+1];
-					Tcl_Obj*	use_headers = NULL;		defer { replace_tclobj(&use_headers, NULL); };
-					Tcl_Obj*	use_symbols = NULL;		defer { replace_tclobj(&use_symbols, NULL); };
-
-					TEST_OK(Jitc_GetExportHeadersFromObj(interp, useobj, &use_headers));
-					TEST_OK(Jitc_GetExportSymbolsFromObj(interp, useobj, &use_symbols));
-
-					if (use_headers) {
-						Tcl_Size	headerstrlen;
-						const char*	headerstr = Tcl_GetStringFromObj(use_headers, &headerstrlen);
-						Tcl_DStringAppend(&preamble, headerstr, headerstrlen);
-					}
-					if (use_symbols) {
-						if (!add_symbol_queue) replace_tclobj(&add_symbol_queue, Tcl_NewListObj(2, NULL));
-						TEST_OK(Tcl_ListObjAppendElement(interp, add_symbol_queue, useobj));
-						TEST_OK(Tcl_ListObjAppendElement(interp, add_symbol_queue, use_symbols));
-					}
-				}
-				break;
-				//}}}
-		}
-#pragma GCC diagnostic pop
-	}
-
-	// Compile-to-memory: tcc_relocate places code in malloc'd, mprotect'd
-	// memory (no .so on disk, no dlopen). Symbols are resolved via
-	// tcc_get_symbol against TCC's own symbol table. This avoids both
-	// musl's dlclose-leaks-mappings behavior and the dlsym _init/init
-	// name-mangling that broke cross-module symbol resolution on musl.
-	if (debugpath)
-		CHECK_TCC(tcc_set_options(tcc, "-g"));
-
-	// If the user enabled debug via `options` (-g, -gdwarf-N, ...) but
-	// didn't supply a debug path, allocate a per-cdef tempdir for the
-	// source files tcc_compile_string_file writes — gdb opens those via
-	// the path embedded in DWARF when stepping into JIT'd code. The .o
-	// itself goes straight from tinycc into a malloc'd buffer registered
-	// with the GDB JIT interface; nothing about it touches disk.
-	if (!debugpath && tcc_get_debug(tcc)) {
-		char tmpl[] = P_tmpdir "/jitc_dbg_XXXXXX";
-		if (mkdtemp(tmpl) == NULL) THROW_POSIX("Could not create debug temp directory");
-		replace_tclobj(&debugpath, Tcl_NewStringObj(tmpl, -1));
-		replace_tclobj(&debugdir, debugpath);
-	}
-
-	tcc_set_output_type(tcc, TCC_OUTPUT_MEMORY);
-
-	if (add_symbol_queue) {
-		Tcl_Size	qc;
-		Tcl_Obj**	qv = NULL;
-
-		TEST_OK(Tcl_ListObjGetElements(interp, add_symbol_queue, &qc, &qv));
-
-		if (qc % 2 != 0)
-			THROW_ERROR("add_symbol_queue must have an even number of elements");
-
-		for (Tcl_Size i=0; i<qc; i+=2) {
-			Tcl_Size	sc;
-			Tcl_Obj**	sv = NULL;
-			Tcl_Obj*	useobj		= qv[i];
-			Tcl_Obj*	use_symbols	= qv[i+1];
-
-			TEST_OK(Tcl_ListObjGetElements(interp, use_symbols, &sc, &sv));
-			for (Tcl_Size s=0; s<sc; s++) {
-				void*	val = NULL;
-				TEST_OK(Jitc_GetSymbolFromObj(interp, useobj, sv[s], &val));
-				tcc_add_symbol(tcc, Tcl_GetString(sv[s]), val);
-			}
-		}
-
-		replace_tclobj(&add_symbol_queue, NULL);
-	}
-
-	// Third pass through the parts to process PART_EXPORT directives	(export headers must be appended to preamble after use ones)
-	for (i=0; i<oc; i+=2) {
-		int	partidx;
-		TEST_OK(Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
-		enum partenum	part = partidx;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wswitch"
-		switch (part) {
-			case PART_EXPORT: //{{{
-				{
-					Tcl_Obj**	ev = NULL;
-					Tcl_Size	ec;
-
-					TEST_OK(Tcl_ListObjGetElements(interp, ov[i+1], &ec, &ev));
-					for (Tcl_Size ei=0; ei<ec; ei+=2) {
-						static const char* exportkeys[] = {
-							"symbols",
-							"header",
-							NULL
-						};
-						enum exportkeyenum {
-							EXPORT_SYMBOLS,
-							EXPORT_HEADER
-						} exportkey;
-						int exportkeyidx;
-
-						TEST_OK(Tcl_GetIndexFromObj(interp, ev[ei], exportkeys, "key", TCL_EXACT, &exportkeyidx));
-						exportkey = exportkeyidx;
-						switch (exportkey) {
-							case EXPORT_SYMBOLS:
-								replace_tclobj(&exported_symbols, ev[ei+1]);
-								break;
-							case EXPORT_HEADER:
-								{
-									Tcl_Size	headerstrlen;
-									const char*	headerstr = Tcl_GetStringFromObj(ev[ei+1], &headerstrlen);
-
-									replace_tclobj(&exported_headers, ev[ei+1]);
-									Tcl_DStringAppend(&preamble, headerstr, headerstrlen);
-								}
-								break;
-						}
-					}
-				}
-				break;
-				//}}}
-		}
-#pragma GCC diagnostic pop
-	}
-
-	// Hack around wchar confusion on musl / aarch64
-	tcc_define_symbol(tcc, "__DEFINED_wchar_t", "");
-
-	replace_tclobj(&debugfiles, Tcl_NewListObj(0, NULL));
-
-	unsigned codeseq = 1;
-	for (i=0; i<oc; i+=2) {
-		Tcl_Obj*	v = ov[i+1];
-
-		int partidx;
-		TEST_OK(Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
-		enum partenum	part = partidx;
-
-		switch (part) {
-			case PART_OPTIONS:
-			case PART_MODE:
-			case PART_DEBUG:
-			case PART_PACKAGE:
-			case PART_USE:
-			case PART_LIBRARY_PATH:
-				/* Handled above */
-				break;
-
-			case PART_CODE: //{{{
-				{
-					Tcl_Size	len;
-					const char*	str = Tcl_GetStringFromObj(v, &len);
-
-					Tcl_DString		c;
-					Tcl_DStringInit(&c);	defer { Tcl_DStringFree(&c); };
-					Tcl_DStringAppend(&c, Tcl_DStringValue(&preamble), Tcl_DStringLength(&preamble));
-					Tcl_DStringAppend(&c, str, len);
-
-					if (filter) {
-						Tcl_Obj*	in = NULL;			defer { replace_tclobj(&in,			NULL); };
-						Tcl_Obj*	filtercmd = NULL;	defer { replace_tclobj(&filtercmd,	NULL); };
-
-						replace_tclobj(&filtercmd, Tcl_DuplicateObj(filter));
-						replace_tclobj(&in, Tcl_NewStringObj(Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
-						TEST_OK(Tcl_ListObjAppendElement(interp, filtercmd, in));
-						TEST_OK(Tcl_EvalObjEx(interp, filtercmd, 0));
-						Tcl_DStringSetLength(&c, 0);
-						Tcl_Size filtered_len;
-						const char* filtered_str = Tcl_GetStringFromObj(Tcl_GetObjResult(interp), &filtered_len);
-						Tcl_DStringAppend(&c, filtered_str, filtered_len);
-						//fprintf(stderr, "// transformed code (with %s): %.*s", Tcl_GetString(filter), filtered_len, filtered_str);
-						Tcl_ResetResult(interp);
-					}
-
-#if STUBSMODE
-					if (mode == MODE_TCL)
-						CHECK_TCC(tcc_compile_string(tcc, "#include <tcl.h>\nconst char* _initstubs(Tcl_Interp* interp, const char* ver) {return Tcl_InitStubs(interp, ver, 0);}"),
-									"%s", "Error compiling _initstubs");
-#endif
-
-					if (debugpath) { // tcc_compile_string_file writes the source to debugfile (because -g is set) for gdb to attribute lines to {{{
-						Tcl_Obj*	pathelements = NULL;	defer { replace_tclobj(&pathelements, NULL); };
-						Tcl_Obj*	debugfile = NULL;		defer { replace_tclobj(&debugfile, NULL); };
-
-						replace_tclobj(&pathelements, Tcl_NewListObj(2, (Tcl_Obj*[]){
-							debugpath,
-							Tcl_ObjPrintf("0x%" PRIxPTR "_%d.c", (uintptr_t)tcc, codeseq++)	// TODO: use name(tcc) for a friendly name instead?
-							//Tcl_ObjPrintf("%s_%d.c", name(tcc), codeseq++)
-						}));
-
-						replace_tclobj(&debugfile, Tcl_FSJoinPath(pathelements, 2));
-						TEST_OK(Tcl_ListObjAppendElement(interp, debugfiles, debugfile));
-
-						int rc = tcc_compile_string_file(tcc, Tcl_DStringValue(&c), Tcl_GetString(debugfile));
-						if (rc == -1 || compile_errors)
-							replace_tclobj(&compileerror_code, Tcl_NewStringObj(Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
-						CHECK_TCC(rc, "Error compiling file \"%s\"", Tcl_GetString(debugfile));
-						//}}}
-					} else {
-						int rc = tcc_compile_string(tcc, Tcl_DStringValue(&c));
-						if (rc == -1 || compile_errors)
-							replace_tclobj(&compileerror_code, Tcl_NewStringObj(Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
-						CHECK_TCC(rc, "Error compiling code");
-					}
+		Tcl_Obj**	ev = NULL; Tcl_Size ec;
+		TEST_OK(Tcl_ListObjGetElements(interp, ov[i+1], &ec, &ev));
+		for (Tcl_Size ei=0; ei<ec; ei+=2) {
+			static const char* exportkeys[] = { "symbols", "header", NULL };
+			enum exportkeyenum { EXPORT_SYMBOLS, EXPORT_HEADER } exportkey;
+			int exportkeyidx;
+			TEST_OK(Tcl_GetIndexFromObj(interp, ev[ei], exportkeys, "key", TCL_EXACT, &exportkeyidx));
+			exportkey = exportkeyidx;
+			switch (exportkey) {
+				case EXPORT_SYMBOLS:
+					replace_tclobj(&exported_symbols, ev[ei+1]);
+					break;
+				case EXPORT_HEADER: {
+					Tcl_Size	hl;
+					const char*	hs = Tcl_GetStringFromObj(ev[ei+1], &hl);
+					replace_tclobj(&exported_headers, ev[ei+1]);
+					Tcl_DStringAppend(&preamble, hs, hl);
 					break;
 				}
+			}
+		}
+	}
+
+	// Pass 4: everything else, in document order (so a `filter` applies to the
+	// `code` blocks that follow it). The preamble is complete by now, so each
+	// code block can be assembled with it prepended.
+	for (i=0; i<oc; i+=2) {
+		int	partidx;
+		TEST_OK(Tcl_GetIndexFromObj(interp, ov[i], parts, "part", TCL_EXACT, &partidx));
+		enum partenum	part = partidx;
+		Tcl_Obj*		v = ov[i+1];
+
+		switch (part) {
+			case PART_MODE:
+			case PART_DEBUG:		// no DWARF from MIR: debug paths are unsupported, ignored
+			case PART_TCCPATH:		// libslimcc has no external lib-path concept
+			case PART_UNDEFINE:		// no libslimcc API to undefine a macro
+			case PART_PACKAGE:
+			case PART_USE:
+			case PART_EXPORT:
 				break;
-				//}}}
 
-			case PART_FILE:
-				CHECK_TCC(tcc_add_file(tcc, Tcl_GetString(v)), "Error compiling file \"%s\"", Tcl_GetString(v));
+			case PART_OPTIONS:
+				TEST_OK(parse_options_string(interp, Tcl_GetString(v), inc_list, def_list));
 				break;
 
-			case PART_INCLUDE_PATH:		CHECK_TCC(tcc_add_include_path   (tcc, Tcl_GetString(v))); break;
-			case PART_SYSINCLUDE_PATH:	CHECK_TCC(tcc_add_sysinclude_path(tcc, Tcl_GetString(v))); break;
-			case PART_TCCPATH:			tcc_set_lib_path    (tcc, Tcl_GetString(v));               break;
-			case PART_UNDEFINE:			tcc_undefine_symbol (tcc, Tcl_GetString(v));               break;
-
-			case PART_SYMBOLS: //{{{
-				{
-					// treat this as another code object+symbols name to retrieve
-					Tcl_Obj**	sv;
-					Tcl_Size	sc;
-
-					TEST_OK(Tcl_ListObjGetElements(interp, v, &sc, &sv));
-					if (sc < 1)
-						THROW_ERROR("Symbol definition must be a list: cdef symbol: \"", Tcl_GetString(v), "\"");
-
-					for (Tcl_Size i=1; i<sc; i++) {
-						void*	val = NULL;
-						TEST_OK(Jitc_GetSymbolFromObj(interp, sv[0], sv[i], &val));
-						tcc_add_symbol(tcc, Tcl_GetString(sv[i]), val);
-					}
-				}
+			case PART_INCLUDE_PATH:
+			case PART_SYSINCLUDE_PATH:
+				TEST_OK(Tcl_ListObjAppendElement(interp, inc_list, v));
 				break;
-				//}}}
 
-			case PART_EXPORT: break;
+			case PART_LIBRARY_PATH:
+				TEST_OK(Tcl_ListObjAppendElement(interp, libpath_list, v));
+				break;
 
 			case PART_LIBRARY:
-				CHECK_TCC(tcc_add_library(tcc, Tcl_GetString(v)), "Error adding library \"%s\"", Tcl_GetString(v));
+				TEST_OK(Tcl_ListObjAppendElement(interp, lib_list, v));
 				break;
 
-			case PART_DEFINE:
-				{
-					Tcl_Obj**	sv;
-					Tcl_Size	sc;
+			case PART_DEFINE: {
+				Tcl_Obj**	sv; Tcl_Size sc;
+				TEST_OK(Tcl_ListObjGetElements(interp, v, &sc, &sv));
+				if (sc < 1 || sc > 2)
+					THROW_ERROR("Definition must be a list: name value: \"", Tcl_GetString(v), "\"");
+				Tcl_Obj*	def = NULL;	defer { replace_tclobj(&def, NULL); };
+				if (sc == 1)	replace_tclobj(&def, Tcl_DuplicateObj(sv[0]));
+				else			replace_tclobj(&def, Tcl_ObjPrintf("%s=%s", Tcl_GetString(sv[0]), Tcl_GetString(sv[1])));
+				TEST_OK(Tcl_ListObjAppendElement(interp, def_list, def));
+				break;
+			}
 
-					TEST_OK(Tcl_ListObjGetElements(interp, v, &sc, &sv));
-					if (sc < 1 || sc > 2)
-						THROW_ERROR("Definition must be a list: name value: \"", Tcl_GetString(v), "\"");
-					if (sc == 1) {
-						tcc_define_symbol(tcc, Tcl_GetString(sv[0]), "");
-					} else {
-						tcc_define_symbol(tcc, Tcl_GetString(sv[0]), Tcl_GetString(sv[1]));
-					}
+			case PART_SYMBOLS: { // sibling cdef + symbol names to link against
+				Tcl_Obj**	sv; Tcl_Size sc;
+				TEST_OK(Tcl_ListObjGetElements(interp, v, &sc, &sv));
+				if (sc < 1)
+					THROW_ERROR("Symbol definition must be a list: cdef symbol: \"", Tcl_GetString(v), "\"");
+				if (sc >= 2) {
+					if (!used) replace_tclobj(&used, Tcl_NewListObj(0, NULL));
+					TEST_OK(Tcl_ListObjAppendElement(interp, used, sv[0]));
+				}
+				for (Tcl_Size s=1; s<sc; s++) {
+					void*	val = NULL;
+					TEST_OK(Jitc_GetSymbolFromObj(interp, sv[0], sv[s], &val));
+					TEST_OK(Tcl_ListObjAppendElement(interp, host_syms, sv[s]));
+					TEST_OK(Tcl_ListObjAppendElement(interp, host_syms, Tcl_NewWideIntObj((Tcl_WideInt)(intptr_t)val)));
 				}
 				break;
+			}
 
-			case PART_FILTER:
-				{
-					Tcl_Size	len;
-					Tcl_GetStringFromObj(v, &len);
-
-					replace_tclobj(&filter, len ? v : NULL);
-				}
+			case PART_FILTER: {
+				Tcl_Size	len;
+				Tcl_GetStringFromObj(v, &len);
+				replace_tclobj(&filter, len ? v : NULL);
 				break;
+			}
+
+			case PART_FILE:
+				TEST_OK(Tcl_ListObjAppendElement(interp, file_list, v));
+				break;
+
+			case PART_CODE: { //{{{
+				Tcl_Size	len;
+				const char*	str = Tcl_GetStringFromObj(v, &len);
+
+				Tcl_DString	c; Tcl_DStringInit(&c);	defer { Tcl_DStringFree(&c); };
+				Tcl_DStringAppend(&c, Tcl_DStringValue(&preamble), Tcl_DStringLength(&preamble));
+				Tcl_DStringAppend(&c, str, len);
+
+				if (filter) {
+					Tcl_Obj*	in = NULL;			defer { replace_tclobj(&in,        NULL); };
+					Tcl_Obj*	filtercmd = NULL;	defer { replace_tclobj(&filtercmd, NULL); };
+
+					replace_tclobj(&filtercmd, Tcl_DuplicateObj(filter));
+					replace_tclobj(&in, Tcl_NewStringObj(Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
+					TEST_OK(Tcl_ListObjAppendElement(interp, filtercmd, in));
+					TEST_OK(Tcl_EvalObjEx(interp, filtercmd, 0));
+					Tcl_DStringSetLength(&c, 0);
+					Tcl_Size		fl;
+					const char*		fs = Tcl_GetStringFromObj(Tcl_GetObjResult(interp), &fl);
+					Tcl_DStringAppend(&c, fs, fl);
+					Tcl_ResetResult(interp);
+				}
+
+				Tcl_Obj*	codeobj = NULL;	defer { replace_tclobj(&codeobj, NULL); };
+				replace_tclobj(&codeobj, Tcl_NewStringObj(Tcl_DStringValue(&c), Tcl_DStringLength(&c)));
+				TEST_OK(Tcl_ListObjAppendElement(interp, code_list, codeobj));
+				break;
+			} //}}}
 
 			default:
 				THROW_ERROR("Invalid part id");
 		}
 	}
 
-	if (add_library_queue) { // Can only happen after tcc_set_output_type (tcc_add_library)
-		Tcl_Size	qc;
-		Tcl_Obj**	qv = NULL;
-
-		TEST_OK(Tcl_ListObjGetElements(interp, add_library_queue, &qc, &qv));
-
-		for (Tcl_Size i=0; i<qc; i++)
-			CHECK_TCC(tcc_add_library(tcc, Tcl_GetString(qv[i])), "Error adding library \"%s\"", Tcl_GetString(qv[i]));
-
-		replace_tclobj(&add_library_queue, NULL);
-	}
-
-	if (mode == MODE_TCL)
 #if STUBSMODE
-		CHECK_TCC(tcc_add_library(tcc, Tcl_GetString(l->tclstublib)));
-#else
-		CHECK_TCC(tcc_add_library(tcc, Tcl_GetString(l->tcllib)));
+	// In stubs mode the JIT'd code reaches Tcl through the stubs table; compile
+	// a tiny bootstrap that calls Tcl_InitStubs (resolved + the table pointers
+	// shared from this process below).
+	if (mode == MODE_TCL)
+		TEST_OK(Tcl_ListObjAppendElement(interp, code_list, Tcl_NewStringObj(
+			"#include <tcl.h>\nconst char* _initstubs(Tcl_Interp* interp, const char* ver) {return Tcl_InitStubs(interp, ver, 0);}", -1)));
 #endif
 
+	// --- Everything is gathered; now the serialized compile/link/codegen. ---
+	Tcl_MutexLock(&g_compile_mutex);
+	defer { g_link_errors = NULL; Tcl_MutexUnlock(&g_compile_mutex); };
+
 	r = ckalloc(sizeof *r);
-	*r = (struct jitc_intrep){
-		.interp				= interp,
-		.used				= used,
-		.exported_symbols	= exported_symbols,
-		.exported_headers	= exported_headers,
+	*r = (struct jitc_intrep){ .interp = interp, .ctx = MIR_init() };
+	slimcc_register_helpers(r->ctx);
+	MIR_set_error_func(r->ctx, link_error_func);
+
+	// Symbols this code links against: the slimcc runtime helpers (registered
+	// above) plus host/sibling-cdef symbols. These take priority over the
+	// import resolver.
+	{
+		Tcl_Obj**	hv; Tcl_Size hc;
+		TEST_OK(Tcl_ListObjGetElements(interp, host_syms, &hc, &hv));
+		for (Tcl_Size h=0; h+1<hc; h+=2) {
+			Tcl_WideInt	w;
+			TEST_OK(Tcl_GetWideIntFromObj(interp, hv[h+1], &w));
+			MIR_load_external(r->ctx, Tcl_GetString(hv[h]), (void*)(intptr_t)w);
+		}
+	}
+#if STUBSMODE
+	MIR_load_external(r->ctx, "Tcl_InitStubs",      (void*)Tcl_InitStubs);
+	MIR_load_external(r->ctx, "tclStubsPtr",        &tclStubsPtr);
+	MIR_load_external(r->ctx, "tclPlatStubsPtr",    &tclPlatStubsPtr);
+	MIR_load_external(r->ctx, "tclIntStubsPtr",     &tclIntStubsPtr);
+	MIR_load_external(r->ctx, "tclIntPlatStubsPtr", &tclIntPlatStubsPtr);
+#endif
+
+	// slimcc_options: build flat char* arrays from the gathered lists. The
+	// strings point into the Tcl_Obj string reps, which outlive the compile.
+	Tcl_Obj**	incv; Tcl_Size incc;
+	Tcl_Obj**	defv; Tcl_Size defc;
+	TEST_OK(Tcl_ListObjGetElements(interp, inc_list, &incc, &incv));
+	TEST_OK(Tcl_ListObjGetElements(interp, def_list, &defc, &defv));
+	const char**	incp = ckalloc(sizeof(char*) * (incc ? incc : 1));	defer { ckfree(incp); };
+	const char**	defp = ckalloc(sizeof(char*) * (defc ? defc : 1));	defer { ckfree(defp); };
+	for (Tcl_Size j=0; j<incc; j++) incp[j] = Tcl_GetString(incv[j]);
+	for (Tcl_Size j=0; j<defc; j++) defp[j] = Tcl_GetString(defv[j]);
+
+	slimcc_options	opts = {
+		.include_paths   = incp, .n_include_paths = (int)incc,
+		.defines         = defp, .n_defines       = (int)defc,
 	};
-	used = exported_headers = exported_symbols = NULL;	// Transfer their refs (if any) to r->export_*
 
-	CHECK_TCC(tcc_relocate(tcc), "Error relocating compiled code into memory");
+	// Compile each code block / file into its own module in r->ctx, collecting
+	// the handles to load + link together below. slimcc_compile reports failures
+	// through its return value (its own scratch context catches MIR build
+	// errors), so no MIR longjmp can fire in this gathering phase.
+	Tcl_Obj**	cv; Tcl_Size cc;
+	Tcl_Obj**	fv; Tcl_Size fc;
+	TEST_OK(Tcl_ListObjGetElements(interp, code_list, &cc, &cv));
+	TEST_OK(Tcl_ListObjGetElements(interp, file_list, &fc, &fv));
+	MIR_module_t*	mods = ckalloc(sizeof(MIR_module_t) * ((cc + fc) ? (cc + fc) : 1));	defer { ckfree(mods); };
+	int				nmods = 0;
 
-	if (debugpath) {
-		// Compose the post-relocate ELF (incl. .debug_*) directly into a
-		// malloc'd buffer and hand it to the GDB JIT interface — no
-		// tempfile, no slurp, no unlink. The buffer's lifetime is the
-		// intrep's; jit_unregister_obj() frees it on teardown. The source
-		// file (tracked in debugfiles) stays on disk: gdb opens it via
-		// the path embedded in DWARF when stepping into JIT'd code.
-		void*			obj_buf  = NULL;
-		unsigned long	obj_size = 0;
-		CHECK_TCC(elf_output_obj_to_mem(tcc, &obj_buf, &obj_size), "Error composing debug object");
-		jit_register_obj(r, obj_buf, obj_size);
+	for (Tcl_Size c=0; c<cc; c++) {
+		char*			err = NULL;
+		MIR_module_t	mod = slimcc_compile(r->ctx, "cdef", Tcl_GetString(cv[c]), &opts, &err);
+		if (!mod) {
+			if (err) { replace_tclobj(&compile_errors, Tcl_NewStringObj(err, -1)); free(err); }
+			else replace_tclobj(&compile_errors, Tcl_NewStringObj("compilation failed", -1));
+			replace_tclobj(&compileerror_code, cv[c]);
+			goto compile_error;
+		}
+		mods[nmods++] = mod;
+	}
+	for (Tcl_Size f=0; f<fc; f++) {
+		Tcl_Obj*	content = NULL;	defer { replace_tclobj(&content, NULL); };
+		if (TCL_OK != slurp_file(interp, fv[f], &content)) {
+			replace_tclobj(&extra_errormsg, Tcl_ObjPrintf("Error reading file \"%s\"", Tcl_GetString(fv[f])));
+			replace_tclobj(&compile_errors, Tcl_GetObjResult(interp));
+			goto compile_error;
+		}
+		char*			err = NULL;
+		MIR_module_t	mod = slimcc_compile(r->ctx, Tcl_GetString(fv[f]), Tcl_GetString(content), &opts, &err);
+		if (!mod) {
+			if (err) { replace_tclobj(&compile_errors, Tcl_NewStringObj(err, -1)); free(err); }
+			else replace_tclobj(&compile_errors, Tcl_NewStringObj("compilation failed", -1));
+			replace_tclobj(&extra_errormsg, Tcl_ObjPrintf("Error compiling file \"%s\"", Tcl_GetString(fv[f])));
+			goto compile_error;
+		}
+		mods[nmods++] = mod;
 	}
 
-	replace_tclobj(&r->symbols, Tcl_NewDictObj());
-	tcc_list_symbols(tcc, r->symbols, list_symbols_dict);
+	// Make library symbols resolvable, then load + link + generate machine code.
+	{
+		Tcl_Obj**	lv; Tcl_Size lc;
+		TEST_OK(Tcl_ListObjGetElements(interp, lib_list, &lc, &lv));
+		for (Tcl_Size j=0; j<lc; j++)
+			dlopen_library(r, Tcl_GetString(lv[j]), libpath_list);
+	}
 
-	// Avoid a circular reference between cdef and our new jitc intrep obj
+	if (TCL_OK != jitc_finish_link(r, mods, nmods, &compile_errors))
+		goto compile_error;
+
+	// Avoid a circular reference between cdef and our new jitc intrep obj.
 	replace_tclobj(&r->cdef, Tcl_DuplicateObj(cdef));
 
 #if STUBSMODE
 	{
 		cdef_initstubs*	initstubs = NULL;
-		void*			initstubsaddr = tcc_get_symbol(tcc, "_initstubs");
-		memcpy(&initstubs, &initstubsaddr, sizeof initstubs);
+		void*			a = jitc_get_symbol(r, "_initstubs");
+		memcpy(&initstubs, &a, sizeof initstubs);
 		if (initstubs)
 			if (NULL == (initstubs)(interp, Tcl_GetString(l->tclver)))
 				THROW_ERROR("Could not init Tcl stubs");
 	}
 #endif
-
 	{
 		cdef_init*	init = NULL;
-		void*		initaddr = tcc_get_symbol(tcc, "init");
-		memcpy(&init, &initaddr, sizeof init);
-		if (init) {
-			//fprintf(stderr, "cdef defines init, calling: %p, symbols: (%s)\n", init, Tcl_GetString(r->symbols));
-			TEST_OK((init)(interp));
-		}
+		void*		a = jitc_get_symbol(r, "init");
+		memcpy(&init, &a, sizeof init);
+		if (init) TEST_OK((init)(interp));
 	}
 
-	replace_tclobj(&r->debugfiles, debugfiles);
-	replace_tclobj(&debugfiles, NULL);
-
-	replace_tclobj(&r->debugdir, debugdir);
-	replace_tclobj(&debugdir, NULL);
-
-	// Hand ownership of the TCCState to the intrep — it must outlive any
-	// function pointers we hand out via tcc_get_symbol.
-	r->tcc = tcc;
-	tcc = NULL;
+	// Hand the gathered ownership to the intrep.
+	r->used             = used;				used = NULL;
+	r->exported_symbols = exported_symbols;	exported_symbols = NULL;
+	r->exported_headers = exported_headers;	exported_headers = NULL;
 
 	*rPtr = r;
 	r = NULL;
@@ -930,12 +915,13 @@ compile_error:
 	{
 		Tcl_InterpState	state = Tcl_SaveInterpState(interp, TCL_OK);	defer { if (state) Tcl_DiscardInterpState(state); };
 		const int	cmdc = extra_errormsg ? 5 : 3;
-		Tcl_Obj*	cmd[5] = {};		defer { for (int i=0; i<5; i++) replace_tclobj(&cmd[i], NULL); };
+		Tcl_Obj*	cmd[5] = {};		defer { for (int k=0; k<5; k++) replace_tclobj(&cmd[k], NULL); };
 		Tcl_Obj*	res = NULL;			defer { replace_tclobj(&res,		NULL); };
 		Tcl_Obj*	errorcode = NULL;	defer { replace_tclobj(&errorcode,	NULL); };
 		Tcl_Obj*	errormsg = NULL;	defer { replace_tclobj(&errormsg,	NULL); };
 
 		if (!compileerror_code) replace_tclobj(&compileerror_code, l->lit[LIT_BLANK]);
+		if (!compile_errors)    replace_tclobj(&compile_errors,    l->lit[LIT_BLANK]);
 
 		replace_tclobj(&cmd[0], l->lit[LIT_COMPILEERROR]);
 		replace_tclobj(&cmd[1], compileerror_code);
@@ -958,10 +944,6 @@ compile_error:
 		Tcl_SetObjResult(interp, errormsg);
 		return TCL_ERROR;
 	}
-#undef CHECK_TCC
-#undef CHECK_TCC_MACRO
-#undef CHECK_TCC_PRINTF
-#undef CHECK_TCC_SIMPLE
 }
 
 //}}}
@@ -1055,7 +1037,7 @@ int Jitc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* cdef, Tcl_Obj* symbol, vo
 	TEST_OK(get_r_from_obj(interp, cdef, &r));
 
 	const char*	symstr = Tcl_GetString(symbol);
-	*val = tcc_get_symbol(r->tcc, symstr);
+	*val = jitc_get_symbol(r, symstr);
 	if (*val == NULL) {
 		Tcl_SetErrorCode(interp, "TCL", "LOOKUP", "LOAD_SYMBOL", symstr, NULL);
 		Tcl_SetObjResult(interp, Tcl_ObjPrintf("cannot find symbol \"%s\"", symstr));
@@ -1364,8 +1346,10 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 	Tcl_DeleteAssocData(interp, "jitc");	// Have to do this here, otherwise Tcl will try to call it after we're unloaded
 	if (flags == TCL_UNLOAD_DETACH_FROM_PROCESS) {
 		//fprintf(stderr, "jitc unloading, finalizing mutexes\n");
-		Tcl_MutexFinalize(&gdb_jit_mutex);
-		Tcl_MutexFinalize(&g_tcc_mutex);
+		// Release libslimcc's process-global arena pools — the extension is
+		// detaching from the process, so nothing more will compile here.
+		slimcc_shutdown();
+		Tcl_MutexFinalize(&g_compile_mutex);
 
 		{
 			Tcl_MutexLock(&g_pkgdir_mutex);		defer { Tcl_MutexUnlock(&g_pkgdir_mutex); };

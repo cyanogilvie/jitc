@@ -9,7 +9,6 @@ namespace eval ::jitc {
 		variable re2cpath
 		variable packccpath
 		variable lemonpath
-		variable tccpath
 
 		set dir	[file normalize [file dirname [info script]]]
 
@@ -18,11 +17,8 @@ namespace eval ::jitc {
 			set fd			[open $builddir_sentinel r]
 			set packagedir	[try {string trim [read $fd]} finally {close $fd}]
 			set re2cpath	[file join $packagedir subprojects/re2c-4.3/re2c]
-			set tccpath		[file join $packagedir subprojects/tinycc]
-			#lappend librarypath [file join $packagedir subprojects/tinycc]
 		} else {
 			set packagedir	$dir
-			set tccpath		$packagedir
 			set re2cpath	[file join $packagedir re2c]
 		}
 
@@ -31,7 +27,6 @@ namespace eval ::jitc {
 			set fd			[open $srcdir_sentinel r]
 			set srcdir		[try {string trim [read $fd]} finally {close $fd}]
 			# These aren't staged in the builddir:
-			lappend includepath [file join $srcdir subprojects/tinycc/include]
 			lappend includepath	[file join $srcdir tools/chaos-pp]
 			lappend includepath	[file join $srcdir tools/order-pp/inc]
 		}
@@ -111,6 +106,12 @@ namespace eval ::jitc {
 				append error_report	$sep [format "%s: In \"%s\": %s" [string toupper $lvl] $fn $msg]
 			}
 			set sep	\n
+		}
+		# The structured parse above understands tcc's "file:line: error: msg"
+		# format. Other backends (libslimcc) format diagnostics differently and
+		# won't parse — surface their raw output rather than swallow it.
+		if {$error_report eq {} && [string trim $errorstr] ne {}} {
+			set error_report	[string trimright $errorstr]
 		}
 		list [list JITC COMPILE $errors $code] $error_report
 	}
