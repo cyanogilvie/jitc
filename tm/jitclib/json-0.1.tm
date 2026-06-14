@@ -125,8 +125,8 @@ namespace eval ::jitclib {
 		INIT {
 			replace_tclobj(&g_json,  Tcl_NewStringObj("JITC_JSON", -1));
 			replace_tclobj(&g_parse, Tcl_NewStringObj("PARSE", -1));
-			replace_tclobj(&g_true,  Tcl_NewWideIntObj(1));
-			replace_tclobj(&g_false, Tcl_NewWideIntObj(0));
+			replace_tclobj(&g_true,  Tcl_NewBooleanObj(1));
+			replace_tclobj(&g_false, Tcl_NewBooleanObj(0));
 			return TCL_OK;
 		}
 
@@ -264,12 +264,26 @@ namespace eval ::jitclib {
 										if (container) {ADD_TO_CONTAINER;} else {cond = yycterm;}
 										goto loop;
 									}
+				<value>	ws "{" ws "}" ws	{
+										jv = obstack_alloc(ob, sizeof(*jv));
+										*jv = (struct jsonval){ .type = JSON_OBJECT, .parent = container };
+										if (root == NULL) root = jv;
+										if (container) {ADD_TO_CONTAINER;} else {cond = yycterm;}
+										goto loop;
+									}
 				<value>	ws "{" ws	{
 										struct jsonval*	jv = obstack_alloc(ob, sizeof(*jv));
 										*jv = (struct jsonval){ .type = JSON_OBJECT, .parent = container };
 										container = jv;
 										if (root == NULL) root = jv;
 										cond = yyckey;
+										goto loop;
+									}
+				<value> ws "[" ws "]" ws	{
+										jv = obstack_alloc(ob, sizeof(*jv));
+										*jv = (struct jsonval){ .type = JSON_ARRAY, .parent = container };
+										if (root == NULL) root = jv;
+										if (container) {ADD_TO_CONTAINER;} else {cond = yycterm;}
 										goto loop;
 									}
 				<value> ws "[" ws	=> value {
@@ -294,14 +308,14 @@ namespace eval ::jitclib {
 									}
 
 				<objectnext> ","	:=> key
-				<objectnext> "}"	{
+				<objectnext> "}" ws	{
 										container = container->parent;
 										if (container) {ADD_TO_CONTAINER;} else {cond = yycterm;}
 										goto loop;
 									}
 
 				<arraynext> ","		:=> value
-				<arraynext> "]"		{
+				<arraynext> "]" ws	{
 										container = container->parent;
 										if (container) {ADD_TO_CONTAINER;} else {cond = yycterm;}
 										goto loop;
@@ -315,6 +329,8 @@ namespace eval ::jitclib {
 											Tcl_SetObjErrorCode(interp, Tcl_NewListObj(4, (Tcl_Obj*[]){
 												g_json, g_parse, jsonObj, Tcl_NewWideIntObj(ofs)
 											}));
+											//const size_t rem = len-ofs;
+											//fprintf(stderr, "Parse error at offset %ld: %.*s\n", ofs, rem>10?10:rem, s-1);
 											THROW_PRINTF_LABEL(done, code,
 												"Invalid JSON character at offset %ld",	ofs);
 										} else {
@@ -386,12 +402,11 @@ namespace eval ::jitclib {
 		static Tcl_Obj* g_false = NULL;
 
 		INIT {
-			replace_tclobj(&g_true,  Tcl_NewWideIntObj(1));
-			replace_tclobj(&g_false, Tcl_NewWideIntObj(0));
+			replace_tclobj(&g_true,  Tcl_NewBooleanObj(1));
+			replace_tclobj(&g_false, Tcl_NewBooleanObj(0));
 			return TCL_OK;
 		}
 
-		//@end=c@@begin=c@
 		RELEASE {
 			replace_tclobj(&g_true,  NULL);
 			replace_tclobj(&g_false, NULL);
@@ -423,7 +438,7 @@ namespace eval ::jitclib {
 				re2c:define:YYSETCONDITION	= "SETCOND";
 
 				end			= [\x00];
-				character	= [\x20-\u10ffff] \ [\\"];
+				character	= [\x20-\U0010ffff] \ [\\"];
 				digit		= [0-9];
 				digit1		= [1-9];
 				hexdigit	= [0-9a-fA-F];
@@ -475,7 +490,6 @@ namespace eval ::jitclib {
 										goto loop;
 									}
 				<value> ws "[" ws "]" ws	{
-					// Marker:FOO
 										const int stacklen = Tcl_DStringLength(&containerstack);
 										if (stacklen) { cond = (Tcl_DStringValue(&containerstack)[stacklen-1] == 'o') ? yycobjectnext : yycarraynext; } else { cond = yycterm; }
 										goto loop;
@@ -505,10 +519,11 @@ namespace eval ::jitclib {
 
 				<term> ws end		{ res = 1; goto done; }
 
-				<*> *				{ 
+				<*> *				{
 										res = 0;
-										const ptrdiff_t		ofs = s-str-1;
-										//fprintf(stderr, "Invalid JSON character at offset %ld",	ofs);
+										//const ptrdiff_t		ofs = s-str-1;
+										//size_t				rem = len-ofs;
+										//fprintf(stderr, "Parse error at ofs: %ld, len: %ld: %.*s...\n", ofs, len, rem>10?10:rem, s-1);
 										//Tcl_Panic("Invalid JSON character at offset %ld",	ofs);
 										goto done;
 									}
