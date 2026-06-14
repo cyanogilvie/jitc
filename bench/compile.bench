@@ -1,0 +1,27 @@
+bench olevel_compile-1.1 {Compile time comparison} -setup { #<<<
+	package require jitclib::json
+} -compare {
+	O0	{ jitc::capply [list {*}$::jitclib::json_check options -O0] check {"foo"} }
+	O1	{ jitc::capply [list {*}$::jitclib::json_check options -O1] check {"foo"} }
+	O2	{ jitc::capply [list {*}$::jitclib::json_check options -O2] check {"foo"} }
+	O3	{ jitc::capply [list {*}$::jitclib::json_check options -O3] check {"foo"} }
+} -result 1
+#>>>
+bench olevel_runtime-1.1 {Compile time comparison} -setup { #<<<
+	package require jitclib::json
+	set o0	[list {*}$::jitclib::json_check options -O0]
+	set o1	[list {*}$::jitclib::json_check options -O1]
+	set o2	[list {*}$::jitclib::json_check options -O2]
+	set o3	[list {*}$::jitclib::json_check options -O3]
+	set doc	[readFile /tmp/items9.json]
+} -compare {
+	O0	{ jitc::capply $o0 check $doc }
+	O1	{ jitc::capply $o1 check $doc }
+	O2	{ jitc::capply $o2 check $doc }
+	O3	{ jitc::capply $o3 check $doc }
+} -cleanup {
+	unset -nocomplain o0 o1 o2 o3 doc
+} -result 1
+#>>>
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

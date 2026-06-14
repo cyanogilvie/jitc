@@ -1,12 +1,5 @@
-if {"bench" ni [info commands bench]} {
-	package require bench
-	namespace import bench::*
-}
-
-package require jitc
-
-proc main {} {
-	set stdcdef	{
+bench symbols-1.1 {list symbols} -setup { #<<<
+	set stdcdef {
 		code { //@begin=c@
 			int init(Tcl_Interp* interp)
 			{
@@ -25,16 +18,13 @@ proc main {} {
 			//@end=c@
 		}
 	}
-
-	bench symbols-1.1 {list symbols} -setup { #<<<
-	} -compare {
-		index {
-			expr {"sym" in [jitc::symbols $stdcdef]}
-		}
-	} -result 1
-	#>>>
-}
-
-main
+} -compare {
+	index {
+		expr {"sym" in [jitc::symbols $stdcdef]}
+	}
+} -cleanup {
+	unset -nocomplain stdcdef
+} -result 1
+#>>>
 
 # vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

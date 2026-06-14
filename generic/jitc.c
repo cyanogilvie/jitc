@@ -244,7 +244,14 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 
 	MIR_gen_init(r->ctx);
 	r->gen_inited = 1;
-	MIR_gen_set_optimize_level(r->ctx, 2);
+	// MIR's levels: 0 fast RA, 1 +combiner, 2 +GVN/CCP (MIR's own default), 3+
+	// everything. jitc's workload is dominated by re2c-generated lexers, which
+	// are branch/frontend-bound: -O2/-O3 produce ~14% fewer instructions but the
+	// same cycle count, so the extra compile latency (the GVN/CCP pass roughly
+	// doubles codegen time) buys no runtime. Default to 1 — keeps register
+	// allocation + the combiner (so compute-bound cdefs aren't pessimized) at
+	// near-O0 compile cost. An explicit options -O<n> overrides this.
+	MIR_gen_set_optimize_level(r->ctx, r->opt_level >= 0 ? (unsigned)r->opt_level : 1u);
 	MIR_link(r->ctx, MIR_set_gen_interface, import_resolver);
 
 	build_symbols_dict(r);
@@ -374,10 +381,11 @@ static int slurp_file(Tcl_Interp* interp, Tcl_Obj* path, Tcl_Obj** out) //{{{
 }
 
 //}}}
-// Pull -I<dir> and -D<name>[=val] out of a tcc-style options string and feed
-// them to slimcc; everything else (warning flags, -g, linker options, ...) has
-// no slimcc equivalent and is silently ignored.
-static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* inc_list, Tcl_Obj* def_list) //{{{
+// Pull -I<dir>, -D<name>[=val] and -O<n> out of a tcc-style options string:
+// the first two feed slimcc's preprocessor, -O<n> sets the MIR codegen
+// optimization level (*opt_level, last one wins). Everything else (warning
+// flags, -g, linker options, ...) has no equivalent and is silently ignored.
+static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* inc_list, Tcl_Obj* def_list, int* opt_level) //{{{
 {
 	Tcl_Obj*	toks = NULL;	defer { replace_tclobj(&toks, NULL); };
 	Tcl_Obj**	tv; Tcl_Size tc;
@@ -394,6 +402,15 @@ static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* i
 			Tcl_Obj*	d = NULL;	defer { replace_tclobj(&d, NULL); };
 			replace_tclobj(&d, Tcl_NewStringObj(t+2, -1));
 			TEST_OK(Tcl_ListObjAppendElement(interp, def_list, d));
+		} else if (strncmp(t, "-O", 2) == 0) {
+			// -O<n> selects the MIR codegen optimization level. Bare -O means
+			// -O1 (gcc convention); -Os/-Oz/-Ofast aren't MIR levels, ignore.
+			const char*	a = t+2;
+			if (*a == '\0') {
+				*opt_level = 1;
+			} else if (a[1] == '\0' && *a >= '0' && *a <= '9') {
+				*opt_level = *a - '0';
+			}
 		}
 		// -U<name> has no libslimcc API equivalent; ignore.
 	}
@@ -455,6 +472,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	Tcl_Obj**	ov;
 	Tcl_Size	oc;
 	Tcl_Size	i;
+	int			opt_level = -1;	// MIR codegen -O<n>; -1 = MIR's default (set via options -O<n>)
 
 	// Accumulated compiler inputs (gathered with no compile lock held, since
 	// resolving sibling-cdef symbols may recursively compile them).
@@ -685,7 +703,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 				break;
 
 			case PART_OPTIONS:
-				TEST_OK(parse_options_string(interp, Tcl_GetString(v), inc_list, def_list));
+				TEST_OK(parse_options_string(interp, Tcl_GetString(v), inc_list, def_list, &opt_level));
 				break;
 
 			case PART_INCLUDE_PATH:
@@ -790,7 +808,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	defer { g_link_errors = NULL; Tcl_MutexUnlock(&g_compile_mutex); };
 
 	r = ckalloc(sizeof *r);
-	*r = (struct jitc_intrep){ .interp = interp, .ctx = MIR_init() };
+	*r = (struct jitc_intrep){ .interp = interp, .ctx = MIR_init(), .opt_level = opt_level };
 	slimcc_register_helpers(r->ctx);
 	MIR_set_error_func(r->ctx, link_error_func);
 

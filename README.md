@@ -4,7 +4,7 @@ Just In Time C for Tcl
 
 ## SYNOPSIS
 
-**package require jitc** ?0.7.11?
+**package require jitc** ?0.8.0?
 
 **jitc::capply** *cdef* *symbol* ?*arg* …?  
 **jitc::bind** *name* *cdef* *symbol* ?*curryarg* …?  
@@ -86,9 +86,24 @@ behind is beneficial for examining the resulting core file in a
 debugger).
 
 **options**  
-*value* contains an option string as would be passed to **tcc(1)**. For
-example, to turn on debugging and all warnings, and bounds checking:
-**-g -Wall -b**.
+*value* contains an option string in the style passed to **tcc(1)**. The
+string is split into a Tcl list, and the following options are honoured:
+
+- **-I** *dir* — add *dir* to the include search path (as
+  **include_path**).
+- **-D** *name* \[**=** *val*\] — predefine a preprocessor macro (as
+  **define**).
+- **-O** *n* — set the MIR code generator’s optimization level for this
+  *cdef*. *n* is 0–3 (a bare **-O** means **-O1**); higher values are
+  clamped to MIR’s maximum. **-O0** disables register allocation and
+  most optimization passes for the fastest compile, **-O2** (MIR’s
+  default if no **-O** is given) enables full register allocation and
+  the standard passes, and **-O3** adds the more expensive passes. The
+  last **-O** wins.
+
+All other options (warning flags such as **-Wall**, **-g**, linker
+options, **-U**, &c.) have no MIR/libslimcc equivalent and are silently
+ignored.
 
 **include_path**  
 Add the path in *value* to the paths searched for include files.
@@ -445,7 +460,7 @@ object code loader, so there are no remaining known problems on musl.
 
 There are no external dependencies other than Tcl. Build from the
 release tarball:
-https://github.com/cyanogilvie/jitc/releases/download/v0.7.11/jitc-v0.7.11.tar.gz
+https://github.com/cyanogilvie/jitc/releases/download/v0.8.0/jitc-v0.8.0.tar.gz
 or recursively clone the git repo:
 
     git clone --recurse-submodules https://github.com/cyanogilvie/jitc

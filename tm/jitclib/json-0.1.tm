@@ -424,6 +424,7 @@ namespace eval ::jitclib {
 			Tcl_DString					containerstack;
 
 			Tcl_DStringInit(&containerstack);
+			defer { Tcl_DStringFree(&containerstack); }
 
 			#define GETCOND()	cond
 			#define SETCOND(c)	(cond = c)
@@ -517,7 +518,7 @@ namespace eval ::jitclib {
 										goto loop;
 									}
 
-				<term> ws end		{ res = 1; goto done; }
+				<term> ws end		{ return true; }
 
 				<*> *				{
 										res = 0;
@@ -525,13 +526,9 @@ namespace eval ::jitclib {
 										//size_t				rem = len-ofs;
 										//fprintf(stderr, "Parse error at ofs: %ld, len: %ld: %.*s...\n", ofs, len, rem>10?10:rem, s-1);
 										//Tcl_Panic("Invalid JSON character at offset %ld",	ofs);
-										goto done;
+										return false;
 									}
 			*/
-		done:
-			Tcl_DStringFree(&containerstack);
-
-			return res;
 		}
 
 

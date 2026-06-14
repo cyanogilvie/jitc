@@ -56,6 +56,7 @@ struct jitc_intrep {
 	Tcl_Obj*				used;				// Hold references to the foreign cdefs to prevent them from being freed under us
 	MIR_context_t			ctx;				// Owns the loaded modules + generated code; MIR_finish() frees it
 	int						gen_inited;			// MIR_gen_init() has run on ctx (so teardown must MIR_gen_finish())
+	int						opt_level;			// MIR codegen optimization level (-O<n>); -1 = use jitc's default (O1)
 	void**					dlhandles;			// Libraries dlopen()'d so this cdef's code can resolve their symbols
 	int						n_dlhandles;
 };
