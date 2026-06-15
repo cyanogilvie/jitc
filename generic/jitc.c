@@ -155,6 +155,55 @@ static void* import_resolver(const char* name) //{{{
 static jmp_buf		g_link_jmp;
 static Tcl_Obj**	g_link_errors = NULL;	// where the active compile collects MIR diagnostics
 
+// Precompiled-preamble (header) cache. Compiling a tcl-mode cdef otherwise
+// re-tokenizes the whole tcl.h closure (~12k lines) every time, which dominates
+// the compile latency. A slimcc_pch snapshots that work for a fixed preamble;
+// we cache one per distinct (preamble, defines, include paths) so repeated
+// cdefs sharing a preamble reuse it. Keyed by those strings joined with
+// separators that can't appear in C source / paths. Only touched while holding
+// g_compile_mutex (so no extra locking); entries live for the process and are
+// freed by jitc_pch_cache_cleanup() at unload. slimcc_compile revalidates each
+// pch against on-disk header mtimes itself and falls back to an inline compile
+// if stale, so a cached pch is never a correctness hazard.
+static Tcl_HashTable	g_pch_cache;
+static int				g_pch_cache_inited = 0;
+
+static slimcc_pch* get_or_build_pch(const char* preamble, const slimcc_options* opts) //{{{
+{
+	if (!g_pch_cache_inited) { Tcl_InitHashTable(&g_pch_cache, TCL_STRING_KEYS); g_pch_cache_inited = 1; }
+
+	Tcl_DString	key; Tcl_DStringInit(&key);	defer { Tcl_DStringFree(&key); };
+	Tcl_DStringAppend(&key, preamble, -1);
+	for (int i=0; i<opts->n_defines; i++)       { Tcl_DStringAppend(&key, "\x1f", 1); Tcl_DStringAppend(&key, opts->defines[i],       -1); }
+	for (int i=0; i<opts->n_include_paths; i++) { Tcl_DStringAppend(&key, "\x1e", 1); Tcl_DStringAppend(&key, opts->include_paths[i], -1); }
+
+	int				isnew;
+	Tcl_HashEntry*	e = Tcl_CreateHashEntry(&g_pch_cache, Tcl_DStringValue(&key), &isnew);
+	slimcc_pch*		pch = isnew ? NULL : Tcl_GetHashValue(e);
+
+	// A cached pch whose headers changed on disk is rebuilt rather than left to
+	// fall back inline on every future compile.
+	if (pch && !slimcc_pch_valid(pch)) { slimcc_pch_free(pch); pch = NULL; }
+
+	if (!pch) {
+		char*	err = NULL;
+		pch = slimcc_pch_create(preamble, opts, &err);
+		free(err);	// pch build failure isn't fatal: caller compiles inline
+	}
+	if (pch) Tcl_SetHashValue(e, pch); else Tcl_DeleteHashEntry(e);
+	return pch;
+} //}}}
+
+static void jitc_pch_cache_cleanup(void) //{{{
+{
+	if (!g_pch_cache_inited) return;
+	Tcl_HashSearch	s;
+	for (Tcl_HashEntry* e = Tcl_FirstHashEntry(&g_pch_cache, &s); e; e = Tcl_NextHashEntry(&s))
+		slimcc_pch_free(Tcl_GetHashValue(e));
+	Tcl_DeleteHashTable(&g_pch_cache);
+	g_pch_cache_inited = 0;
+} //}}}
+
 static void MIR_NO_RETURN link_error_func(MIR_error_type_t error_type, const char* format, ...) //{{{
 {
 	char	buf[1024];
@@ -764,8 +813,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 				Tcl_Size	len;
 				const char*	str = Tcl_GetStringFromObj(v, &len);
 
+				// The preamble is no longer prepended here: it is supplied via a
+				// precompiled-header (opt.pch) at compile time, or prepended in
+				// the no-pch fallback below. The filter (e.g. jitc::re2c) thus
+				// runs on the cdef body alone — equivalent for text filters,
+				// which don't depend on the #include preamble.
 				Tcl_DString	c; Tcl_DStringInit(&c);	defer { Tcl_DStringFree(&c); };
-				Tcl_DStringAppend(&c, Tcl_DStringValue(&preamble), Tcl_DStringLength(&preamble));
 				Tcl_DStringAppend(&c, str, len);
 
 				if (filter) {
@@ -848,6 +901,16 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		.defines         = defp, .n_defines       = (int)defc,
 	};
 
+	// Build (or reuse) a precompiled header for the cdef's preamble, so the
+	// code blocks below skip re-tokenizing the tcl.h closure. NULL if there's
+	// no preamble (e.g. raw mode with no package headers) or the pch build
+	// failed — both handled by the per-block fallback (prepend the preamble and
+	// compile without a pch). Files are standalone TUs and never get the pch.
+	slimcc_pch*		pch = Tcl_DStringLength(&preamble)
+		? get_or_build_pch(Tcl_DStringValue(&preamble), &opts) : NULL;
+	slimcc_options	code_opts = opts;
+	code_opts.pch = pch;
+
 	// Compile each code block / file into its own module in r->ctx, collecting
 	// the handles to load + link together below. slimcc_compile reports failures
 	// through its return value (its own scratch context catches MIR build
@@ -861,7 +924,20 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 
 	for (Tcl_Size c=0; c<cc; c++) {
 		char*			err = NULL;
-		MIR_module_t	mod = slimcc_compile(r->ctx, "cdef", Tcl_GetString(cv[c]), &opts, &err);
+		const char*		body = Tcl_GetString(cv[c]);	// preamble-free (see PART_CODE)
+
+		// With a pch the preamble comes from the snapshot, so the body compiles
+		// alone. Without one, prepend the preamble here to reproduce the old
+		// single-source compile.
+		Tcl_DString		full; Tcl_DStringInit(&full);	defer { Tcl_DStringFree(&full); };
+		const char*		src = body;
+		if (!pch && Tcl_DStringLength(&preamble)) {
+			Tcl_DStringAppend(&full, Tcl_DStringValue(&preamble), Tcl_DStringLength(&preamble));
+			Tcl_DStringAppend(&full, body, -1);
+			src = Tcl_DStringValue(&full);
+		}
+
+		MIR_module_t	mod = slimcc_compile(r->ctx, "cdef", src, &code_opts, &err);
 		if (!mod) {
 			if (err) { replace_tclobj(&compile_errors, Tcl_NewStringObj(err, -1)); free(err); }
 			else replace_tclobj(&compile_errors, Tcl_NewStringObj("compilation failed", -1));
@@ -1364,6 +1440,10 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 	Tcl_DeleteAssocData(interp, "jitc");	// Have to do this here, otherwise Tcl will try to call it after we're unloaded
 	if (flags == TCL_UNLOAD_DETACH_FROM_PROCESS) {
 		//fprintf(stderr, "jitc unloading, finalizing mutexes\n");
+		// Free the precompiled-header cache before slimcc_shutdown(): pch frees
+		// recycle their arena pools back to slimcc's freelist, which shutdown
+		// then releases.
+		jitc_pch_cache_cleanup();
 		// Release libslimcc's process-global arena pools — the extension is
 		// detaching from the process, so nothing more will compile here.
 		slimcc_shutdown();
