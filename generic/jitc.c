@@ -21,6 +21,64 @@ static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
 static void update_jitc_string_rep(Tcl_Obj* obj);
 static void jitc_free_backend(struct jitc_intrep* r);
 
+// --- GDB JIT interface ---------------------------------------------------
+// Serializes mutation of the descriptor list against the debugger's read at
+// the __jit_debug_register_code breakpoint.
+TCL_DECLARE_MUTEX(g_gdb_jit_mutex)
+
+// GDB sets a breakpoint on this function; it must not be inlined or elided.
+void __attribute__((noinline)) __jit_debug_register_code(void) { __asm__ __volatile__(""); }
+
+// version must be set statically: the debugger may read it before we run.
+struct jit_descriptor __jit_debug_descriptor = { 1, 0, NULL, NULL };
+
+// Register an in-memory ELF object (from slimcc_debug_obj) with any attached
+// debugger. Takes ownership of buf — the descriptor entry holds it until
+// jit_unregister_obj() frees it with free() (matching slimcc_debug_obj's
+// allocator). The list/action_flag/relevant_entry must be mutated atomically
+// w.r.t. the breakpoint, so the whole sequence is held under the mutex.
+static void jit_register_obj(struct jitc_intrep* r, void* buf, size_t size) //{{{
+{
+	r->jit_symbols.symfile_addr = buf;
+	r->jit_symbols.symfile_size = (uint64_t)size;
+
+	Tcl_MutexLock(&g_gdb_jit_mutex);
+	r->jit_symbols.prev_entry = NULL;
+	r->jit_symbols.next_entry = __jit_debug_descriptor.first_entry;
+	if (__jit_debug_descriptor.first_entry)
+		__jit_debug_descriptor.first_entry->prev_entry = &r->jit_symbols;
+	__jit_debug_descriptor.first_entry    = &r->jit_symbols;
+	__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
+	__jit_debug_descriptor.action_flag    = JIT_REGISTER_FN;
+	__jit_debug_register_code();
+	Tcl_MutexUnlock(&g_gdb_jit_mutex);
+}
+
+//}}}
+static void jit_unregister_obj(struct jitc_intrep* r) //{{{
+{
+	if (!r->jit_symbols.symfile_addr) return;	// never registered
+
+	Tcl_MutexLock(&g_gdb_jit_mutex);
+	if (r->jit_symbols.prev_entry)
+		r->jit_symbols.prev_entry->next_entry = r->jit_symbols.next_entry;
+	else
+		__jit_debug_descriptor.first_entry    = r->jit_symbols.next_entry;
+	if (r->jit_symbols.next_entry)
+		r->jit_symbols.next_entry->prev_entry = r->jit_symbols.prev_entry;
+
+	__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
+	__jit_debug_descriptor.action_flag    = JIT_UNREGISTER_FN;
+	__jit_debug_register_code();
+	Tcl_MutexUnlock(&g_gdb_jit_mutex);
+
+	free((void*)r->jit_symbols.symfile_addr);
+	r->jit_symbols.symfile_addr = NULL;
+	r->jit_symbols.symfile_size = 0;
+}
+
+//}}}
+
 Tcl_ObjType jitc_objtype = {
 	"Jitc",
 	free_jitc_internal_rep,
@@ -277,6 +335,68 @@ static void build_symbols_dict(struct jitc_intrep* r) //{{{
 }
 
 //}}}
+// Build an ELF symbol object over every generated function (and named data) in
+// the cdef's context and register it with any attached debugger via the GDB
+// JIT interface. Function-granularity only — MIR emits no line info, so this
+// restores named frames / `break funcname` / labeled disas but not stepping.
+// Best-effort: if the object can't be built the frames just stay anonymous.
+// Runs after build_symbols_dict, so every function is already generated
+// (machine_code/code_len populated); the MIR_gen here is purely defensive.
+static void register_debug_symbols(struct jitc_intrep* r) //{{{
+{
+	int				cap = 0, n = 0;
+	slimcc_jitsym*	syms = NULL;	defer { if (syms) ckfree(syms); };
+
+	for (
+		MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(r->ctx));
+		m; m = DLIST_NEXT(MIR_module_t, m)
+	) {
+		for (
+			MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items);
+			it; it = DLIST_NEXT(MIR_item_t, it)
+		) {
+			const char*	name    = NULL;
+			const void*	addr    = NULL;
+			size_t		size    = 0;
+			int			is_func = 0;
+
+			// Functions only: the debug object anchors all symbols to one
+			// .text span (see slimcc_debug_obj), and MIR keeps a context's
+			// data far from its code, which would balloon that span. Named
+			// frames are the point anyway; data symbols add little without
+			// DWARF types.
+			switch (it->item_type) {
+				case MIR_func_item:
+					if (!it->u.func->machine_code) MIR_gen(r->ctx, it);
+					name    = it->u.func->name;
+					addr    = it->u.func->machine_code;	// the executing code, not the thunk
+					size    = it->u.func->code_len;
+					is_func = 1;
+					break;
+				default: continue;
+			}
+			if (!name || !addr) continue;
+
+			if (n == cap) {
+				cap = cap ? cap*2 : 32;
+				syms = ckrealloc(syms, sizeof(*syms) * cap);
+			}
+			syms[n++] = (slimcc_jitsym){ .name = name, .addr = addr, .size = size, .is_func = is_func };
+		}
+	}
+
+	if (n == 0) return;
+
+	void*	buf   = NULL;
+	size_t	bufsz = 0;
+	char*	err   = NULL;
+	if (slimcc_debug_obj(syms, n, &buf, &bufsz, &err) == 0)
+		jit_register_obj(r, buf, bufsz);	// hands ownership of buf to the descriptor entry
+	else if (err)
+		free(err);
+}
+
+//}}}
 // Load the compiled modules into the cdef's context and generate machine code.
 // MIR's error function is noreturn (it aborts the process by default); a setjmp
 // here converts a link/codegen failure (duplicate definition, malformed module)
@@ -305,6 +425,9 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 
 	build_symbols_dict(r);
 
+	if (r->debug)
+		register_debug_symbols(r);
+
 	g_link_errors = NULL;
 	return TCL_OK;
 }
@@ -315,6 +438,8 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 // handles its code resolved against. Safe to call on a partially-built intrep.
 static void jitc_free_backend(struct jitc_intrep* r) //{{{
 {
+	// Unhook from the debugger before the code it points at is freed.
+	jit_unregister_obj(r);
 	if (r->ctx) {
 		if (r->gen_inited) MIR_gen_finish(r->ctx);
 		MIR_finish(r->ctx);
@@ -430,11 +555,12 @@ static int slurp_file(Tcl_Interp* interp, Tcl_Obj* path, Tcl_Obj** out) //{{{
 }
 
 //}}}
-// Pull -I<dir>, -D<name>[=val] and -O<n> out of a tcc-style options string:
+// Pull -I<dir>, -D<name>[=val], -O<n> and -g out of a tcc-style options string:
 // the first two feed slimcc's preprocessor, -O<n> sets the MIR codegen
-// optimization level (*opt_level, last one wins). Everything else (warning
-// flags, -g, linker options, ...) has no equivalent and is silently ignored.
-static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* inc_list, Tcl_Obj* def_list, int* opt_level) //{{{
+// optimization level (*opt_level, last one wins), and -g (any -g* form)
+// enables GDB JIT-interface debug symbols (*debug). Everything else (other
+// warning/linker flags) has no equivalent and is silently ignored.
+static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* inc_list, Tcl_Obj* def_list, int* opt_level, int* debug) //{{{
 {
 	Tcl_Obj*	toks = NULL;	defer { replace_tclobj(&toks, NULL); };
 	Tcl_Obj**	tv; Tcl_Size tc;
@@ -460,6 +586,11 @@ static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* i
 			} else if (a[1] == '\0' && *a >= '0' && *a <= '9') {
 				*opt_level = *a - '0';
 			}
+		} else if (strncmp(t, "-g", 2) == 0) {
+			// Any -g form (-g, -ggdb, -gdwarf-N, ...) requests debug. MIR has no
+			// line/type info, so all variants reduce to function-granularity
+			// symbols. -O0 stays the user's choice (best for what stepping exists).
+			*debug = 1;
 		}
 		// -U<name> has no libslimcc API equivalent; ignore.
 	}
@@ -522,6 +653,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	Tcl_Size	oc;
 	Tcl_Size	i;
 	int			opt_level = -1;	// MIR codegen -O<n>; -1 = MIR's default (set via options -O<n>)
+	int			debug = 0;		// GDB JIT-interface debug symbols (a `debug` part or -g in options)
 
 	// Accumulated compiler inputs (gathered with no compile lock held, since
 	// resolving sibling-cdef symbols may recursively compile them).
@@ -743,7 +875,6 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 
 		switch (part) {
 			case PART_MODE:
-			case PART_DEBUG:		// no DWARF from MIR: debug paths are unsupported, ignored
 			case PART_TCCPATH:		// libslimcc has no external lib-path concept
 			case PART_UNDEFINE:		// no libslimcc API to undefine a macro
 			case PART_PACKAGE:
@@ -751,8 +882,15 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			case PART_EXPORT:
 				break;
 
+			case PART_DEBUG:
+				// MIR emits no DWARF, so the source-file path the old libtcc
+				// backend wrote (the part's value) is unused; presence alone
+				// enables function-granularity GDB JIT-interface symbols.
+				debug = 1;
+				break;
+
 			case PART_OPTIONS:
-				TEST_OK(parse_options_string(interp, Tcl_GetString(v), inc_list, def_list, &opt_level));
+				TEST_OK(parse_options_string(interp, Tcl_GetString(v), inc_list, def_list, &opt_level, &debug));
 				break;
 
 			case PART_INCLUDE_PATH:
@@ -861,7 +999,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	defer { g_link_errors = NULL; Tcl_MutexUnlock(&g_compile_mutex); };
 
 	r = ckalloc(sizeof *r);
-	*r = (struct jitc_intrep){ .interp = interp, .ctx = MIR_init(), .opt_level = opt_level };
+	*r = (struct jitc_intrep){ .interp = interp, .ctx = MIR_init(), .opt_level = opt_level, .debug = debug };
 	slimcc_register_helpers(r->ctx);
 	MIR_set_error_func(r->ctx, link_error_func);
 
@@ -1448,6 +1586,10 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 		// detaching from the process, so nothing more will compile here.
 		slimcc_shutdown();
 		Tcl_MutexFinalize(&g_compile_mutex);
+		// Drop the GDB JIT mutex from Tcl's finalization list before this
+		// library unmaps — otherwise Tcl_Finalize() later dereferences the
+		// (now-unmapped) static through mutexRecord and segfaults.
+		Tcl_MutexFinalize(&g_gdb_jit_mutex);
 
 		{
 			Tcl_MutexLock(&g_pkgdir_mutex);		defer { Tcl_MutexUnlock(&g_pkgdir_mutex); };
