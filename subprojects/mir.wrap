@@ -1,12 +1,14 @@
 # MIR: the JIT substrate (codegen + interpreter) that libslimcc emits modules
 # for. Pinned here at the top level so it takes precedence over slimcc's own
-# bundled mir.wrap (nested wrap resolution), keeping both on the local fork.
+# bundled mir.wrap (nested wrap resolution), keeping both on the same fork.
 #
-# For distribution this should point at https://github.com/cyanogilvie/mir
-# (branch meson).
+# debug-support is the fork's aggregate branch (meson subproject support + the
+# source-level debug extensions). Local iteration against an in-tree mir checkout
+# now needs the changes pushed to the fork first, or this url temporarily
+# repointed at the local path.
 [wrap-git]
-url = /home/cyan/git/mir
-revision = meson
+url = https://github.com/cyanogilvie/mir.git
+revision = debug-support
 depth = 1
 
 [provide]
