@@ -86,6 +86,8 @@ struct jitc_intrep {
 	int						opt_level;			// MIR codegen optimization level (-O<n>); -1 = use jitc's default (O1)
 	int						debug;				// cdef requested debug symbols (a `debug` part or -g in options)
 	struct jit_code_entry	jit_symbols;		// this cdef's GDB JIT-interface entry (debug only)
+	Tcl_Obj*				debugdir;			// temp dir holding per-block source files for gdb (debug only)
+	Tcl_Obj*				debugfiles;			// list of those source file paths (unlinked on teardown)
 	void**					dlhandles;			// Libraries dlopen()'d so this cdef's code can resolve their symbols
 	int						n_dlhandles;
 };

@@ -359,6 +359,8 @@ static void register_debug_symbols(struct jitc_intrep* r) //{{{
 			const void*	addr    = NULL;
 			size_t		size    = 0;
 			int			is_func = 0;
+			const MIR_line_map_t*	line_map     = NULL;
+			size_t					line_map_len = 0;
 
 			// Functions only: the debug object anchors all symbols to one
 			// .text span (see slimcc_debug_obj), and MIR keeps a context's
@@ -368,10 +370,12 @@ static void register_debug_symbols(struct jitc_intrep* r) //{{{
 			switch (it->item_type) {
 				case MIR_func_item:
 					if (!it->u.func->machine_code) MIR_gen(r->ctx, it);
-					name    = it->u.func->name;
-					addr    = it->u.func->machine_code;	// the executing code, not the thunk
-					size    = it->u.func->code_len;
-					is_func = 1;
+					name         = it->u.func->name;
+					addr         = it->u.func->machine_code;	// the executing code, not the thunk
+					size         = it->u.func->code_len;
+					is_func      = 1;
+					line_map     = it->u.func->line_map;		// source lines -> code offsets (DWARF)
+					line_map_len = it->u.func->line_map_len;
 					break;
 				default: continue;
 			}
@@ -381,9 +385,14 @@ static void register_debug_symbols(struct jitc_intrep* r) //{{{
 				cap = cap ? cap*2 : 32;
 				syms = ckrealloc(syms, sizeof(*syms) * cap);
 			}
-			syms[n++] = (slimcc_jitsym){ .name = name, .addr = addr, .size = size, .is_func = is_func };
+			syms[n++] = (slimcc_jitsym){ .name = name, .addr = addr, .size = size, .is_func = is_func,
+				.line_map = line_map, .line_map_len = line_map_len };
 		}
 	}
+
+	// slimcc_debug_obj reads slimcc's accumulated debug source-file table (the
+	// line maps' file ids index it), so clear it afterwards for the next cdef.
+	defer { slimcc_debug_reset(); };
 
 	if (n == 0) return;
 
@@ -394,6 +403,35 @@ static void register_debug_symbols(struct jitc_intrep* r) //{{{
 		jit_register_obj(r, buf, bufsz);	// hands ownership of buf to the descriptor entry
 	else if (err)
 		free(err);
+}
+
+//}}}
+// For a -g cdef, write a code block's exact compiled source to a per-cdef temp
+// file and return its path, which is then passed to slimcc_compile as the TU
+// name. slimcc stamps that path into the DWARF it emits, and gdb opens the file
+// from disk to show source while stepping. The dir + files are removed on
+// teardown. Best-effort: on any failure debug just falls back to anonymous
+// (the path is left NULL and the caller uses the in-memory name).
+static void debug_write_block(struct jitc_intrep* r, const char* src, int idx, Tcl_Obj** pathOut) //{{{
+{
+	*pathOut = NULL;
+	if (!r->debugdir) {
+		char tmpl[] = P_tmpdir "/jitc_dbg_XXXXXX";
+		if (!mkdtemp(tmpl)) return;
+		replace_tclobj(&r->debugdir, Tcl_NewStringObj(tmpl, -1));
+		replace_tclobj(&r->debugfiles, Tcl_NewListObj(0, NULL));
+	}
+
+	Tcl_Obj*	path = NULL;	defer { replace_tclobj(&path, NULL); };
+	replace_tclobj(&path, Tcl_ObjPrintf("%s/cdef%d.c", Tcl_GetString(r->debugdir), idx));
+
+	FILE*	fp = fopen(Tcl_GetString(path), "w");
+	if (!fp) return;
+	fputs(src, fp);
+	fclose(fp);
+
+	Tcl_ListObjAppendElement(NULL, r->debugfiles, path);
+	*pathOut = path;	// borrowed: held alive by r->debugfiles
 }
 
 //}}}
@@ -420,7 +458,11 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 	// doubles codegen time) buys no runtime. Default to 1 — keeps register
 	// allocation + the combiner (so compute-bound cdefs aren't pessimized) at
 	// near-O0 compile cost. An explicit options -O<n> overrides this.
-	MIR_gen_set_optimize_level(r->ctx, r->opt_level >= 0 ? (unsigned)r->opt_level : 1u);
+	// Debug builds default to -O0: the optimizer (GVN/combine/RA reuse) makes
+	// stepping jumpy and values stale between statements. An explicit -O<n>
+	// still wins for someone who wants it.
+	MIR_gen_set_optimize_level(r->ctx,
+		r->opt_level >= 0 ? (unsigned)r->opt_level : (r->debug ? 0u : 1u));
 	MIR_link(r->ctx, MIR_set_gen_interface, import_resolver);
 
 	build_symbols_dict(r);
@@ -445,6 +487,17 @@ static void jitc_free_backend(struct jitc_intrep* r) //{{{
 		MIR_finish(r->ctx);
 		r->ctx = NULL;
 		r->gen_inited = 0;
+	}
+	// Remove the debug source temp files + their dir (gdb no longer needs them).
+	if (r->debugfiles) {
+		Tcl_Obj**	fvv; Tcl_Size fcc;
+		if (Tcl_ListObjGetElements(NULL, r->debugfiles, &fcc, &fvv) == TCL_OK)
+			for (Tcl_Size i=0; i<fcc; i++) Tcl_FSDeleteFile(fvv[i]);
+		replace_tclobj(&r->debugfiles, NULL);
+	}
+	if (r->debugdir) {
+		Tcl_FSRemoveDirectory(r->debugdir, 0, NULL);
+		replace_tclobj(&r->debugdir, NULL);
 	}
 	// dlclose after the code that referenced these libraries is gone.
 	for (int i=0; i<r->n_dlhandles; i++)
@@ -1037,6 +1090,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	slimcc_options	opts = {
 		.include_paths   = incp, .n_include_paths = (int)incc,
 		.defines         = defp, .n_defines       = (int)defc,
+		.debug           = debug,	// emit source locations (DWARF) when -g/debug requested
 	};
 
 	// Build (or reuse) a precompiled header for the cdef's preamble, so the
@@ -1075,7 +1129,18 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			src = Tcl_DStringValue(&full);
 		}
 
-		MIR_module_t	mod = slimcc_compile(r->ctx, "cdef", src, &code_opts, &err);
+		// In debug mode, name the TU after an on-disk copy of its source so the
+		// DWARF slimcc emits points gdb at a real file. With a pch the body
+		// compiles alone, so the file == what gdb shows; without one it's the
+		// preamble+body that slimcc actually sees (line numbers stay aligned).
+		const char*	tu_name = "cdef";
+		if (debug) {
+			Tcl_Obj*	dbgpath = NULL;
+			debug_write_block(r, src, (int)c, &dbgpath);
+			if (dbgpath) tu_name = Tcl_GetString(dbgpath);
+		}
+
+		MIR_module_t	mod = slimcc_compile(r->ctx, tu_name, src, &code_opts, &err);
 		if (!mod) {
 			if (err) { replace_tclobj(&compile_errors, Tcl_NewStringObj(err, -1)); free(err); }
 			else replace_tclobj(&compile_errors, Tcl_NewStringObj("compilation failed", -1));
