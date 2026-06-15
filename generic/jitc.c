@@ -386,7 +386,8 @@ static void register_debug_symbols(struct jitc_intrep* r) //{{{
 				syms = ckrealloc(syms, sizeof(*syms) * cap);
 			}
 			syms[n++] = (slimcc_jitsym){ .name = name, .addr = addr, .size = size, .is_func = is_func,
-				.line_map = line_map, .line_map_len = line_map_len };
+				.line_map = line_map, .line_map_len = line_map_len,
+				.mir_func = (it->item_type == MIR_func_item) ? it->u.func : NULL };
 		}
 	}
 
@@ -449,11 +450,13 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 	for (int i=0; i<nmods; i++)
 		MIR_load_module(r->ctx, mods[i]);
 
-	// Debug builds: don't inline calls, so each function keeps its own frames
-	// and source lines (inlined callee code would otherwise show the callee's
-	// lines inside the caller with no separate frame, scrambling stepping).
-	if (r->debug)
+	// Debug builds: don't inline calls (so each function keeps its own frames
+	// and source lines), and home every local in the stack (so each has a stable
+	// frame slot whose offset DWARF can name — see register_debug_symbols).
+	if (r->debug) {
 		MIR_set_inline_permission(r->ctx, 0);
+		MIR_set_spill_all(r->ctx, 1);
+	}
 
 	MIR_gen_init(r->ctx);
 	r->gen_inited = 1;
