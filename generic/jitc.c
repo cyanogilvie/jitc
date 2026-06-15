@@ -449,6 +449,12 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 	for (int i=0; i<nmods; i++)
 		MIR_load_module(r->ctx, mods[i]);
 
+	// Debug builds: don't inline calls, so each function keeps its own frames
+	// and source lines (inlined callee code would otherwise show the callee's
+	// lines inside the caller with no separate frame, scrambling stepping).
+	if (r->debug)
+		MIR_set_inline_permission(r->ctx, 0);
+
 	MIR_gen_init(r->ctx);
 	r->gen_inited = 1;
 	// MIR's levels: 0 fast RA, 1 +combiner, 2 +GVN/CCP (MIR's own default), 3+
