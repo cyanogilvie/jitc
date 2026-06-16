@@ -20,6 +20,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #include "libslimcc.h"
 #include "mir-gen.h"
+#include "mir-dwarf.h"
 #pragma GCC diagnostic pop
 #include <jitc.h>
 #include "valgrind/memcheck.h"
@@ -38,31 +39,11 @@
 #   define PTR2UINT(p) ((size_t)(p))
 #endif
 
-// The GDB JIT interface (see gdb's "Registering Code" docs). A debugger sets
-// a breakpoint on __jit_debug_register_code; we publish a linked list of
-// in-memory object files through __jit_debug_descriptor and trip the
-// breakpoint to notify it. MIR emits no DWARF, so the objects libslimcc builds
-// for us carry only a .symtab (function-granularity symbolization: named
-// frames, `break funcname`, labeled disas) — not line tables.
-enum {
-	JIT_NOACTION = 0,
-	JIT_REGISTER_FN,
-	JIT_UNREGISTER_FN
-};
-
-struct jit_code_entry {
-	struct jit_code_entry*	next_entry;
-	struct jit_code_entry*	prev_entry;
-	const char*				symfile_addr;
-	uint64_t				symfile_size;
-};
-
-struct jit_descriptor {
-	uint32_t				version;
-	uint32_t				action_flag;	// a JIT_* action for the debugger
-	struct jit_code_entry*	relevant_entry;
-	struct jit_code_entry*	first_entry;
-};
+// GDB JIT integration is handled by MIR's mir-dwarf-gdb (MIR_dwarf_gdb_register
+// in mir-dwarf.h): libslimcc builds a full DWARF object (symbols + line tables +
+// variable info) for a `-g` cdef, and we register it against MIR's process-global
+// __jit_debug_descriptor bound to the cdef's context, so MIR_finish() drops it
+// when the code is freed. We no longer carry our own descriptor.
 
 // Each cdef owns its own MIR_context_t: it holds the loaded modules and the
 // machine code MIR_gen produced for them. MIR has no per-module unload, so the
@@ -71,9 +52,8 @@ struct jit_descriptor {
 // pointers handed out via the symbols dict stay valid for the context's life.
 //
 // When the cdef requests debug (a `debug` part or -g in options) the JIT'd
-// functions are registered with any attached debugger via the GDB JIT
-// interface above; jit_symbols holds this cdef's descriptor-list entry (and
-// owns the malloc'd ELF symbol object until teardown unregisters it).
+// functions' DWARF object is registered against MIR's GDB-JIT descriptor bound
+// to ctx (see above), so MIR_finish() unregisters and frees it at teardown.
 struct jitc_intrep {
 	Tcl_Obj*				symbols;			// dict: symbol name -> code/data address (Tcl_WideInt)
 	Tcl_Obj*				cdef;
@@ -85,7 +65,6 @@ struct jitc_intrep {
 	int						gen_inited;			// MIR_gen_init() has run on ctx (so teardown must MIR_gen_finish())
 	int						opt_level;			// MIR codegen optimization level (-O<n>); -1 = use jitc's default (O1)
 	int						debug;				// cdef requested debug symbols (a `debug` part or -g in options)
-	struct jit_code_entry	jit_symbols;		// this cdef's GDB JIT-interface entry (debug only)
 	Tcl_Obj*				debugdir;			// temp dir holding per-block source files for gdb (debug only)
 	Tcl_Obj*				debugfiles;			// list of those source file paths (unlinked on teardown)
 	void**					dlhandles;			// Libraries dlopen()'d so this cdef's code can resolve their symbols

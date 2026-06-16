@@ -21,63 +21,9 @@ static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
 static void update_jitc_string_rep(Tcl_Obj* obj);
 static void jitc_free_backend(struct jitc_intrep* r);
 
-// --- GDB JIT interface ---------------------------------------------------
-// Serializes mutation of the descriptor list against the debugger's read at
-// the __jit_debug_register_code breakpoint.
-TCL_DECLARE_MUTEX(g_gdb_jit_mutex)
-
-// GDB sets a breakpoint on this function; it must not be inlined or elided.
-void __attribute__((noinline)) __jit_debug_register_code(void) { __asm__ __volatile__(""); }
-
-// version must be set statically: the debugger may read it before we run.
-struct jit_descriptor __jit_debug_descriptor = { 1, 0, NULL, NULL };
-
-// Register an in-memory ELF object (from slimcc_debug_obj) with any attached
-// debugger. Takes ownership of buf — the descriptor entry holds it until
-// jit_unregister_obj() frees it with free() (matching slimcc_debug_obj's
-// allocator). The list/action_flag/relevant_entry must be mutated atomically
-// w.r.t. the breakpoint, so the whole sequence is held under the mutex.
-static void jit_register_obj(struct jitc_intrep* r, void* buf, size_t size) //{{{
-{
-	r->jit_symbols.symfile_addr = buf;
-	r->jit_symbols.symfile_size = (uint64_t)size;
-
-	Tcl_MutexLock(&g_gdb_jit_mutex);
-	r->jit_symbols.prev_entry = NULL;
-	r->jit_symbols.next_entry = __jit_debug_descriptor.first_entry;
-	if (__jit_debug_descriptor.first_entry)
-		__jit_debug_descriptor.first_entry->prev_entry = &r->jit_symbols;
-	__jit_debug_descriptor.first_entry    = &r->jit_symbols;
-	__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
-	__jit_debug_descriptor.action_flag    = JIT_REGISTER_FN;
-	__jit_debug_register_code();
-	Tcl_MutexUnlock(&g_gdb_jit_mutex);
-}
-
-//}}}
-static void jit_unregister_obj(struct jitc_intrep* r) //{{{
-{
-	if (!r->jit_symbols.symfile_addr) return;	// never registered
-
-	Tcl_MutexLock(&g_gdb_jit_mutex);
-	if (r->jit_symbols.prev_entry)
-		r->jit_symbols.prev_entry->next_entry = r->jit_symbols.next_entry;
-	else
-		__jit_debug_descriptor.first_entry    = r->jit_symbols.next_entry;
-	if (r->jit_symbols.next_entry)
-		r->jit_symbols.next_entry->prev_entry = r->jit_symbols.prev_entry;
-
-	__jit_debug_descriptor.relevant_entry = &r->jit_symbols;
-	__jit_debug_descriptor.action_flag    = JIT_UNREGISTER_FN;
-	__jit_debug_register_code();
-	Tcl_MutexUnlock(&g_gdb_jit_mutex);
-
-	free((void*)r->jit_symbols.symfile_addr);
-	r->jit_symbols.symfile_addr = NULL;
-	r->jit_symbols.symfile_size = 0;
-}
-
-//}}}
+// GDB JIT integration lives in MIR now (mir-dwarf-gdb): a `-g` cdef's DWARF
+// object is built by libslimcc and registered via MIR_dwarf_gdb_register(ctx,...)
+// below, bound to the cdef's MIR context so MIR_finish() unregisters it.
 
 Tcl_ObjType jitc_objtype = {
 	"Jitc",
@@ -401,7 +347,9 @@ static void register_debug_symbols(struct jitc_intrep* r) //{{{
 	size_t	bufsz = 0;
 	char*	err   = NULL;
 	if (slimcc_debug_obj(syms, n, &buf, &bufsz, &err) == 0)
-		jit_register_obj(r, buf, bufsz);	// hands ownership of buf to the descriptor entry
+		// Ownership of buf transfers to MIR; bound to r->ctx, so MIR_finish()
+		// (in jitc_free_backend) unregisters and frees it when the code is gone.
+		MIR_dwarf_gdb_register(r->ctx, buf, bufsz);
 	else if (err)
 		free(err);
 }
@@ -489,11 +437,9 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 // handles its code resolved against. Safe to call on a partially-built intrep.
 static void jitc_free_backend(struct jitc_intrep* r) //{{{
 {
-	// Unhook from the debugger before the code it points at is freed.
-	jit_unregister_obj(r);
 	if (r->ctx) {
 		if (r->gen_inited) MIR_gen_finish(r->ctx);
-		MIR_finish(r->ctx);
+		MIR_finish(r->ctx);	// also unregisters this cdef's GDB-JIT debug object (bound to ctx)
 		r->ctx = NULL;
 		r->gen_inited = 0;
 	}
@@ -1566,15 +1512,12 @@ static struct cmd {
 	{NS "::bind",		bind_cmd,			NULL},
 	{NS "::symbols",	symbols_cmd,		NULL},
 	{NS "::mkdtemp",	mkdtemp_cmd,		NULL},
-	{NULL,				NULL,				NULL}
+	{}
 };
 // Script API }}}
 
 extern const JitcStubs* const jitcConstStubsPtr;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //{{{
 {
 #if USE_TCL_STUBS
@@ -1660,10 +1603,6 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 		// detaching from the process, so nothing more will compile here.
 		slimcc_shutdown();
 		Tcl_MutexFinalize(&g_compile_mutex);
-		// Drop the GDB JIT mutex from Tcl's finalization list before this
-		// library unmaps — otherwise Tcl_Finalize() later dereferences the
-		// (now-unmapped) static through mutexRecord and segfaults.
-		Tcl_MutexFinalize(&g_gdb_jit_mutex);
 
 		{
 			Tcl_MutexLock(&g_pkgdir_mutex);		defer { Tcl_MutexUnlock(&g_pkgdir_mutex); };
@@ -1681,6 +1620,3 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //{{{
 }
 
 //}}}
-#ifdef __cplusplus
-}
-#endif
