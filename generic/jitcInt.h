@@ -20,7 +20,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #include "libslimcc.h"
 #include "mir-gen.h"
-#include "mir-dwarf.h"
+#include "mir-debug.h"
 #pragma GCC diagnostic pop
 #include <jitc.h>
 #include "valgrind/memcheck.h"
@@ -39,8 +39,8 @@
 #   define PTR2UINT(p) ((size_t)(p))
 #endif
 
-// GDB JIT integration is handled by MIR's mir-dwarf-gdb (MIR_dwarf_gdb_register
-// in mir-dwarf.h): libslimcc builds a full DWARF object (symbols + line tables +
+// GDB JIT integration is handled by MIR's mir-debug-gdb (MIR_debug_gdb_register
+// in mir-debug.h): libslimcc builds a full DWARF object (symbols + line tables +
 // variable info) for a `-g` cdef, and we register it against MIR's process-global
 // __jit_debug_descriptor bound to the cdef's context, so MIR_finish() drops it
 // when the code is freed. We no longer carry our own descriptor.

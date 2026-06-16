@@ -21,8 +21,8 @@ static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
 static void update_jitc_string_rep(Tcl_Obj* obj);
 static void jitc_free_backend(struct jitc_intrep* r);
 
-// GDB JIT integration lives in MIR now (mir-dwarf-gdb): a `-g` cdef's DWARF
-// object is built by libslimcc and registered via MIR_dwarf_gdb_register(ctx,...)
+// GDB JIT integration lives in MIR now (mir-debug-gdb): a `-g` cdef's DWARF
+// object is built by libslimcc and registered via MIR_debug_gdb_register(ctx,...)
 // below, bound to the cdef's MIR context so MIR_finish() unregisters it.
 
 Tcl_ObjType jitc_objtype = {
@@ -349,7 +349,7 @@ static void register_debug_symbols(struct jitc_intrep* r) //{{{
 	if (slimcc_debug_obj(syms, n, &buf, &bufsz, &err) == 0)
 		// Ownership of buf transfers to MIR; bound to r->ctx, so MIR_finish()
 		// (in jitc_free_backend) unregisters and frees it when the code is gone.
-		MIR_dwarf_gdb_register(r->ctx, buf, bufsz);
+		MIR_debug_gdb_register(r->ctx, buf, bufsz);
 	else if (err)
 		free(err);
 }
