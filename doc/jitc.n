@@ -79,6 +79,13 @@ statement.
 Nothing is written to disk or loaded with \f[B]dlopen\f[R], except the
 source files written for the debugger when debug information is
 requested.
+.PP
+Compiling a \f[I]cdef\f[R] also links it: functions and variables it
+references but doesn\[cq]t define are resolved against the process (the
+Tcl core, libc, and libraries loaded through \f[B]library\f[R] or
+\f[B]package\f[R] parts).
+A reference that can\[cq]t be resolved fails the compile with a
+\f[B]JITC COMPILE\f[R] error naming the undefined symbols.
 .SS COMMANDS
 .TP
 \f[B]jitc::capply\f[R] \f[I]cdef\f[R] \f[I]symbol\f[R] ?\f[I]arg\f[R] \&...?

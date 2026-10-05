@@ -916,6 +916,53 @@ test tmp-1.1 {} -constraints SIGTRAP -body {
 	file delete -force /tmp/tmpdebug
 } -result xx
 
+test capply-10.1 {an undefined function is a compile error, not a runtime panic} -body { #<<<
+	jitc::capply {
+		code {
+			int no_such_function_for_jitc_test(int);
+			OBJCMD(f)
+			{
+				Tcl_SetObjResult(interp, Tcl_NewIntObj(no_such_function_for_jitc_test(objc)));
+				return TCL_OK;
+			}
+		}
+	} f
+} -returnCodes error -match glob -result {*undefined symbol 'no_such_function_for_jitc_test'*}
+#>>>
+test capply-10.2 {an undefined data symbol is a compile error} -body { #<<<
+	jitc::capply {
+		code {
+			extern int no_such_variable_for_jitc_test;
+			OBJCMD(f)
+			{
+				Tcl_SetObjResult(interp, Tcl_NewIntObj(no_such_variable_for_jitc_test));
+				return TCL_OK;
+			}
+		}
+	} f
+} -returnCodes error -match glob -result {*undefined symbol 'no_such_variable_for_jitc_test'*}
+#>>>
+test capply-10.3 {undefined symbols: errorCode, all names reported, and the interp carries on} -body { #<<<
+	set rc [catch {
+		jitc::capply {
+			code {
+				int missing_one_for_jitc_test(void);
+				int missing_two_for_jitc_test(void);
+				OBJCMD(f)
+				{
+					Tcl_SetObjResult(interp, Tcl_NewIntObj(missing_one_for_jitc_test() + missing_two_for_jitc_test()));
+					return TCL_OK;
+				}
+			}
+		} f
+	} msg opts]
+	list $rc [lrange [dict get $opts -errorcode] 0 1] \
+		[string match "*missing_one_for_jitc_test*" $msg] \
+		[string match "*missing_two_for_jitc_test*" $msg] \
+		[jitc::capply {code {OBJCMD(g) {Tcl_SetObjResult(interp, Tcl_NewIntObj(42)); return TCL_OK;}}} g]
+} -result {1 {JITC COMPILE} 1 1 42}
+#>>>
+
 # cleanup
 ::tcltest::cleanupTests
 return

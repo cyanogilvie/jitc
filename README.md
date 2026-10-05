@@ -34,6 +34,12 @@ statement. Nothing is written to disk or loaded with **dlopen**, except
 the source files written for the debugger when debug information is
 requested.
 
+Compiling a *cdef* also links it: functions and variables it references
+but doesn’t define are resolved against the process (the Tcl core, libc,
+and libraries loaded through **library** or **package** parts). A
+reference that can’t be resolved fails the compile with a **JITC
+COMPILE** error naming the undefined symbols.
+
 ## COMMANDS
 
 **jitc::capply** *cdef* *symbol* ?*arg* …?  

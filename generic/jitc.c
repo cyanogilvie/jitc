@@ -128,9 +128,13 @@ void update_jitc_string_rep(Tcl_Obj* obj) //<<<
 // MIR_load_external() before linking and never reaches here. What's left are
 // genuinely external symbols — libc, the Tcl core already loaded in this
 // process, and any package libraries we dlopen()'d with RTLD_GLOBAL — all
-// reachable through the global symbol scope. An unresolved import is not a
-// compile-time error (MIR can't tell whether it's ever reached), so it
-// resolves to a trap that fires only if the code actually calls it.
+// reachable through the global symbol scope. An unresolved import fails the
+// compile, as an undefined symbol did under libtcc: the resolver records its
+// name (g_missing_symbols) and jitc_finish_link turns the list into the
+// compile error. MIR still needs an address to finish linking, so it gets a
+// trap -- never reached, since the failed compile's code is discarded.
+static Tcl_Obj*	g_missing_symbols = nullptr;	// guarded by g_compile_mutex
+
 static void unresolved_symbol_trap(void) //<<<
 {
 	Tcl_Panic("jitc: call to a symbol that could not be resolved in JIT'd code");
@@ -140,6 +144,10 @@ static void unresolved_symbol_trap(void) //<<<
 static void* import_resolver(const char* name) //<<<
 {
 	void*	addr = dlsym(RTLD_DEFAULT, name);
+	if (!addr) {
+		if (!g_missing_symbols) replace_tclobj(&g_missing_symbols, Tcl_NewListObj(0, nullptr));
+		Tcl_ListObjAppendElement(nullptr, g_missing_symbols, Tcl_NewStringObj(name, -1));
+	}
 	// dlsym already hands back a function as void* (POSIX guarantees the round
 	// trip); the trap fallback needs the same conversion, which -Wpedantic
 	// flags as an ISO C function->object pointer cast. Deliberate and portable.
@@ -392,7 +400,7 @@ static void debug_write_block(struct jitc_intrep* r, const char* src, int idx, T
 static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods, Tcl_Obj** errors) //<<<
 {
 	g_link_errors = errors;
-	if (setjmp(g_link_jmp)) { g_link_errors = nullptr; return TCL_ERROR; }
+	if (setjmp(g_link_jmp)) { g_link_errors = nullptr; replace_tclobj(&g_missing_symbols, nullptr); return TCL_ERROR; }
 
 	for (int i=0; i<nmods; i++)
 		MIR_load_module(r->ctx, mods[i]);
@@ -426,7 +434,19 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 	MIR_gen_init(r->ctx);
 	r->gen_inited = 1;
 	MIR_gen_set_optimize_level(r->ctx, opt_level);
+	replace_tclobj(&g_missing_symbols, nullptr);
 	MIR_link(r->ctx, MIR_set_gen_interface, import_resolver);
+	if (g_missing_symbols) {
+		Tcl_Obj**	sv;
+		Tcl_Size	sc;
+		Tcl_ListObjGetElements(nullptr, g_missing_symbols, &sc, &sv);
+		replace_tclobj(errors, Tcl_NewObj());
+		for (Tcl_Size i=0; i<sc; i++)
+			Tcl_AppendPrintfToObj(*errors, "%serror: undefined symbol '%s'", i ? "\n" : "", Tcl_GetString(sv[i]));
+		replace_tclobj(&g_missing_symbols, nullptr);
+		g_link_errors = nullptr;
+		return TCL_ERROR;
+	}
 
 	build_symbols_dict(r);
 
