@@ -16,11 +16,17 @@
 // declarations followed by a ';' at file scope — legal C, but -Wpedantic
 // (jitc builds with -Werror -Wpedantic) flags the trailing semicolons. It's a
 // third-party header; silence pedantic diagnostics just across these includes.
+// Tcl 8.6's tcl.h defines INLINE (empty), and mir.h builds its insn enum by
+// token pasting through REP macros that expand their arguments first, so
+// MIR_INLINE would come out as MIR_.  Hide the macro across MIR's headers.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
+#pragma push_macro("INLINE")
+#undef INLINE
 #include "libslimcc.h"
 #include "mir-gen.h"
 #include "mir-debug.h"
+#pragma pop_macro("INLINE")
 #pragma GCC diagnostic pop
 #include <jitc.h>
 #include "valgrind/memcheck.h"
