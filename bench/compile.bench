@@ -7,7 +7,7 @@ bench olevel_compile-1.1 {Compile time comparison} -setup { #<<<
 	O3	{ jitc::capply [list {*}$::jitclib::json_check options -O3] check {"foo"} }
 } -result 1
 #>>>
-bench olevel_runtime-1.1 {Compile time comparison} -setup { #<<<
+bench olevel_runtime-1.1 {Run time comparison} -setup { #<<<
 	package require jitclib::json
 	set o0	[list {*}$::jitclib::json_check options -O0]
 	set o1	[list {*}$::jitclib::json_check options -O1]

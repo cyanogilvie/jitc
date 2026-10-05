@@ -8,16 +8,18 @@ bench jitc_json-1.1 {test a json doc for validity} -setup { #<<<
 	package require rl_json
 	set a	{ {"foo": "bar", "baz": [1, 2, 3]}}
 	set b	{ {"foo": "bar", "baz": [1, 2, 3,]}}
+	set v	[list {*}$::jitclib::json options -O2]
+	set c	[list {*}$::jitclib::json_check options -O2]
 } -compare {
 	jitclib_json_valid	{
 		list \
-			[jitc::capply $::jitclib::json valid $a] \
-			[jitc::capply $::jitclib::json valid $b]
+			[jitc::capply $v valid $a] \
+			[jitc::capply $v valid $b]
 	}
 	jitclib_json_check	{
 		list \
-			[jitc::capply $::jitclib::json_check check $a] \
-			[jitc::capply $::jitclib::json_check check $b]
+			[jitc::capply $c check $a] \
+			[jitc::capply $c check $b]
 	}
 	rl_json_valid	{
 		list \
@@ -34,7 +36,7 @@ bench jitc_json-1.1 {test a json doc for validity} -setup { #<<<
 			}]}]
 	}
 } -cleanup {
-	unset -nocomplain a b
+	unset -nocomplain a b v c
 } -result {1 0}
 #>>>
 if {[file exists /tmp/items9.json]} {
@@ -42,12 +44,14 @@ bench jitc_json-2.1 {validate a large JSON doc} -setup { #<<<
 	package require jitclib::json
 	package require rl_json
 	set doc	[readfile /tmp/items9.json]
+	set v	[list {*}$::jitclib::json options -O2]
+	set c	[list {*}$::jitclib::json_check options -O2]
 } -compare {
 	jitclib_json_check	{
-		jitc::capply $::jitclib::json_check check $doc
+		jitc::capply $c check $doc
 	}
 	jitclib_json_valid	{
-		jitc::capply $::jitclib::json valid $doc
+		jitc::capply $v valid $doc
 	}
 	rl_json_valid	{
 		rl_json::json valid $doc
@@ -58,7 +62,7 @@ bench jitc_json-2.1 {validate a large JSON doc} -setup { #<<<
 		}]}
 	}
 } -cleanup {
-	unset -nocomplain doc
+	unset -nocomplain doc c v
 } -result 1
 #>>>
 }
