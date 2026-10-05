@@ -4,7 +4,7 @@ Just In Time C for Tcl
 
 ## SYNOPSIS
 
-**package require jitc** ?0.8.1?
+**package require jitc** ?0.8.2?
 
 **jitc::capply** *cdef* *symbol* ?*arg* …?  
 **jitc::bind** *name* *cdef* *symbol* ?*curryarg* …?  
@@ -627,7 +627,7 @@ There are no external dependencies other than Tcl. The libslimcc and MIR
 backends are built as meson subprojects, fetched from their pinned git
 commits during `meson setup` (so the first setup needs network access).
 Build from the release tarball:
-https://github.com/cyanogilvie/jitc/releases/download/v0.8.1/jitc-v0.8.1.tar.gz
+https://github.com/cyanogilvie/jitc/releases/download/v0.8.2/jitc-v0.8.2.tar.gz
 or recursively clone the git repo:
 
     git clone --recurse-submodules https://github.com/cyanogilvie/jitc

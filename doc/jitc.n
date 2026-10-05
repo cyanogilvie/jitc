@@ -23,7 +23,7 @@
 Just In Time C for Tcl
 .SS SYNOPSIS
 .PP
-\f[B]package require jitc\f[R] ?0.8.1?
+\f[B]package require jitc\f[R] ?0.8.2?
 .PP
 \f[B]jitc::capply\f[R] \f[I]cdef\f[R] \f[I]symbol\f[R] ?\f[I]arg\f[R]
 \&...?
@@ -995,7 +995,7 @@ The libslimcc and MIR backends are built as meson subprojects, fetched
 from their pinned git commits during \f[V]meson setup\f[R] (so the first
 setup needs network access).
 Build from the release tarball:
-https://github.com/cyanogilvie/jitc/releases/download/v0.8.1/jitc-v0.8.1.tar.gz
+https://github.com/cyanogilvie/jitc/releases/download/v0.8.2/jitc-v0.8.2.tar.gz
 or recursively clone the git repo:
 .IP
 .nf

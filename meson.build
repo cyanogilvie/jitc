@@ -1,5 +1,5 @@
 project('jitc', 'c',
-  version:          '0.8.1',
+  version:          '0.8.2',
   default_options:  ['c_std=gnu2y,gnu23,gnu2x', 'warning_level=3', 'werror=true'],
   meson_version:    '>=1.3.0',
 )
