@@ -155,6 +155,9 @@ test diagnostics-2.9 {conversions that aren't warned about} -body { #<<<
 			const char*			cs = s;			// adding a qualifier
 			const unsigned char*	us = (const unsigned char*)s;
 			const char*			back = (const char*)us;
+			const char*			from_u = us;		// char signedness only (gcc: -Wpointer-sign)
+			const unsigned char*	to_u = s;
+			const signed char*	to_s = s;
 			unsigned char		buf[4] = {0};
 			char*				p = (char*)buf;
 			void*				v = buf;		// to and from void*
@@ -163,7 +166,7 @@ test diagnostics-2.9 {conversions that aren't warned about} -body { #<<<
 			Tcl_Obj*			o = NULL;		// null pointer constants
 			Tcl_Obj*			o2 = 0;
 			memcpy(p, cs, 1);					// arrays and string literals as pointers
-			(void)back; (void)ip; (void)b; (void)o; (void)o2;
+			(void)back; (void)from_u; (void)to_u; (void)to_s; (void)ip; (void)b; (void)o; (void)o2;
 			return TCL_OK;
 		}
 	}
