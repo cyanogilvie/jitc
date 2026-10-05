@@ -1,0 +1,64 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+package require jitc
+
+# Calls to functions declared 'inline' are emitted as MIR_INLINE (as c2mir
+# does), which MIR_link inlines for callees of up to 200 insns, against 50 for
+# plain calls.  mix_inline and mix_plain have identical ~85 insn bodies: too big
+# for a plain call to be inlined, small enough for an inline one.
+
+set inline_code { //@begin=c@
+	#define BODY(n) { unsigned h = n; for (int i = 0; i < 4; i++) { h ^= h << 13; h ^= h >> 7; h ^= h << 17; h += i * 31; if (h & 1) h *= 3; else h /= 5; h = (h >> 3) | (h << 29); h ^= 0x9e3779b9u; h += n * 7; } return h; }
+	static inline unsigned mix_inline(unsigned n) BODY(n)
+	static unsigned mix_plain(unsigned n) BODY(n)
+	OBJCMD(f)
+	{
+		enum {A_cmd, A_N, A_objc};
+		CHECK_ARGS("n");
+		Tcl_WideInt n;
+		TEST_OK(Tcl_GetWideIntFromObj(interp, objv[A_N], &n));
+		Tcl_SetObjResult(interp, Tcl_NewWideIntObj((Tcl_WideInt)mix_inline((unsigned)n) - (Tcl_WideInt)mix_plain((unsigned)n)));
+		return TCL_OK;
+	}
+//@end=c@ }
+
+# The lines of f's MIR (as linked) mentioning mix_inline or mix_plain, other than forward declarations
+proc mix_refs opts {
+	set mir		[split [jitc::dump mir [list options $opts code $::inline_code]] \n]
+	set refs	{}
+	foreach line [lrange $mir [lsearch -regexp $mir {^f:}] end] {
+		if {[regexp {^\s+(\S+)\s.*\m(mix_\w+)\M} $line - op fn] && $op ne "forward"} {
+			lappend refs [list $op $fn]
+		}
+	}
+	set refs
+}
+
+test inline-1.1 {a call to an inline function is inlined beyond the plain-call size limit} -body { #<<<
+	mix_refs {}
+} -result {{mov mix_plain}}
+#>>>
+test inline-1.2 {-g without -O: nothing is inlined} -body { #<<<
+	mix_refs -g
+} -result {{inline mix_inline} {call mix_plain}}
+#>>>
+test inline-1.3 {inline and plain calls compute the same} -body { #<<<
+	list \
+		[jitc::capply [list code $inline_code] f 12345] \
+		[jitc::capply [list options -g code $inline_code] f 12345] \
+		[jitc::capply [list options -O0 code $inline_code] f 54321]
+} -result {0 0 0}
+#>>>
+
+rename mix_refs {}
+unset -nocomplain inline_code
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

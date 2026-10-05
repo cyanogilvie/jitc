@@ -527,6 +527,10 @@ from an AWS t4g (Graviton2) instance running Alpine Linux.
   stops inlining once it has grown by about 2000 instructions (and by 50% of its
   original size), so a function making hundreds of helper calls has only the first
   few dozen inlined.
+* Functions declared **inline** (such as **static inline** helpers) may be larger:
+  calls to them are inlined for bodies of up to about 200 MIR instructions, as long as
+  the caller hasn't grown by 50% through inlining.  **inline** is only a hint, as in
+  any C compiler, but it's the way to ask for a mid-sized helper to be inlined.
 * Calls through function pointers, to Tcl's C API, to other *cdef*s (**use**,
   **symbols**) or to **library** code are never inlined.  When **-g** is given without
   **-O**, nothing is inlined.

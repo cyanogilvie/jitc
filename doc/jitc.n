@@ -835,6 +835,13 @@ As a circuit breaker, each function stops inlining once it has grown by
 about 2000 instructions (and by 50% of its original size), so a function
 making hundreds of helper calls has only the first few dozen inlined.
 .IP \[bu] 2
+Functions declared \f[B]inline\f[R] (such as \f[B]static inline\f[R]
+helpers) may be larger: calls to them are inlined for bodies of up to
+about 200 MIR instructions, as long as the caller hasn\[cq]t grown by
+50% through inlining.
+\f[B]inline\f[R] is only a hint, as in any C compiler, but it\[cq]s the
+way to ask for a mid-sized helper to be inlined.
+.IP \[bu] 2
 Calls through function pointers, to Tcl\[cq]s C API, to other
 \f[I]cdef\f[R]s (\f[B]use\f[R], \f[B]symbols\f[R]) or to
 \f[B]library\f[R] code are never inlined.
