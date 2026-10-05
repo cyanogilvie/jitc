@@ -605,7 +605,52 @@ static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* i
 }
 
 //>>>
-int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_intrep** rPtr) //<<<
+enum jitc_mode { MODE_TCL, MODE_RAW };
+
+// Everything parsed out of a cdef before the (serialized) compile/link: the
+// assembled #include preamble, the filtered code-block bodies, and the flat
+// compiler-input lists. Gathered with no compile lock held, since resolving
+// sibling-cdef symbols (`use`/`symbols`) may recursively compile them. Owned by
+// the caller; release with free_gathered_sources(). compile() consumes these to
+// build a cdef; jitc::dump reads them to show the assembled source.
+struct gathered_sources {
+	int			mode;				// enum jitc_mode
+	int			opt_level;			// MIR codegen -O<n>; -1 = MIR's default
+	int			debug;				// GDB JIT-interface debug symbols requested
+	Tcl_Obj*	preamble;			// assembled #include preamble (string obj)
+	Tcl_Obj*	inc_list;			// -I include search paths
+	Tcl_Obj*	def_list;			// -D defines ("NAME" or "NAME=VALUE")
+	Tcl_Obj*	libpath_list;		// library search paths
+	Tcl_Obj*	lib_list;			// libraries to dlopen
+	Tcl_Obj*	host_syms;			// name, addr, name, addr, ... (sibling-cdef/host symbols)
+	Tcl_Obj*	code_list;			// filtered code-block bodies (preamble-free; see PART_CODE)
+	Tcl_Obj*	file_list;			// PART_FILE paths (standalone TUs)
+	Tcl_Obj*	exported_headers;	// `export header` text (recorded on the intrep)
+	Tcl_Obj*	exported_symbols;	// `export symbols` list (recorded on the intrep)
+	Tcl_Obj*	used;				// sibling cdefs held alive for symbol resolution
+};
+
+static void free_gathered_sources(struct gathered_sources* gs) //<<<
+{
+	replace_tclobj(&gs->preamble,         nullptr);
+	replace_tclobj(&gs->inc_list,         nullptr);
+	replace_tclobj(&gs->def_list,         nullptr);
+	replace_tclobj(&gs->libpath_list,     nullptr);
+	replace_tclobj(&gs->lib_list,         nullptr);
+	replace_tclobj(&gs->host_syms,        nullptr);
+	replace_tclobj(&gs->code_list,        nullptr);
+	replace_tclobj(&gs->file_list,        nullptr);
+	replace_tclobj(&gs->exported_headers, nullptr);
+	replace_tclobj(&gs->exported_symbols, nullptr);
+	replace_tclobj(&gs->used,             nullptr);
+}
+
+//>>>
+// Parse a cdef into *gs (zero-initialized by the caller). On error the caller
+// must still free_gathered_sources(gs) to release any partially-built lists.
+// This does no compiling itself, but may recursively compile sibling cdefs to
+// resolve their symbols, so it must run with the compile lock NOT held.
+static int gather_sources(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct gathered_sources* gs) //<<<
 {
 	static const char* parts[] = {
 		"mode",
@@ -651,10 +696,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		"raw",
 		nullptr
 	};
-	enum {
-		MODE_TCL,
-		MODE_RAW
-	} mode = MODE_TCL;
+	enum jitc_mode	mode = MODE_TCL;
 
 	Tcl_Obj**	ov;
 	Tcl_Size	oc;
@@ -662,47 +704,28 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	int			opt_level = -1;	// MIR codegen -O<n>; -1 = MIR's default (set via options -O<n>)
 	int			debug = 0;		// GDB JIT-interface debug symbols (a `debug` part or -g in options)
 
-	// Accumulated compiler inputs (gathered with no compile lock held, since
-	// resolving sibling-cdef symbols may recursively compile them).
-	Tcl_Obj*	inc_list     = nullptr;	defer { replace_tclobj(&inc_list,     nullptr); };
-	Tcl_Obj*	def_list     = nullptr;	defer { replace_tclobj(&def_list,     nullptr); };
-	Tcl_Obj*	libpath_list = nullptr;	defer { replace_tclobj(&libpath_list, nullptr); };
-	Tcl_Obj*	lib_list     = nullptr;	defer { replace_tclobj(&lib_list,     nullptr); };
-	Tcl_Obj*	host_syms    = nullptr;	defer { replace_tclobj(&host_syms,    nullptr); };	// name, addr, name, addr, ...
-	Tcl_Obj*	code_list    = nullptr;	defer { replace_tclobj(&code_list,    nullptr); };	// assembled source strings
-	Tcl_Obj*	file_list    = nullptr;	defer { replace_tclobj(&file_list,    nullptr); };	// PART_FILE paths
-
-	Tcl_Obj*	filter = nullptr;				defer { replace_tclobj(&filter,            nullptr); };
-	Tcl_Obj*	exported_headers = nullptr;	defer { replace_tclobj(&exported_headers,  nullptr); };
-	Tcl_Obj*	exported_symbols = nullptr;	defer { replace_tclobj(&exported_symbols,  nullptr); };
-	Tcl_Obj*	compileerror_code = nullptr;	defer { replace_tclobj(&compileerror_code, nullptr); };
-	Tcl_Obj*	compile_errors = nullptr;		defer { replace_tclobj(&compile_errors,    nullptr); };
-	Tcl_Obj*	extra_errormsg = nullptr;		defer { replace_tclobj(&extra_errormsg,    nullptr); };
-	Tcl_Obj*	used = nullptr;				defer { replace_tclobj(&used,              nullptr); };
+	// Accumulated compiler inputs. These belong to the caller via *gs, so use
+	// the gs fields directly — no defer here; free_gathered_sources() cleans up.
+	Tcl_Obj*	filter = nullptr;	defer { replace_tclobj(&filter, nullptr); };
 
 	Tcl_DString	preamble; Tcl_DStringInit(&preamble);	defer { Tcl_DStringFree(&preamble); };
 
-	replace_tclobj(&inc_list,     Tcl_NewListObj(0, nullptr));
-	replace_tclobj(&def_list,     Tcl_NewListObj(0, nullptr));
-	replace_tclobj(&libpath_list, Tcl_NewListObj(0, nullptr));
-	replace_tclobj(&lib_list,     Tcl_NewListObj(0, nullptr));
-	replace_tclobj(&host_syms,    Tcl_NewListObj(0, nullptr));
-	replace_tclobj(&code_list,    Tcl_NewListObj(0, nullptr));
-	replace_tclobj(&file_list,    Tcl_NewListObj(0, nullptr));
+	replace_tclobj(&gs->inc_list,     Tcl_NewListObj(0, nullptr));
+	replace_tclobj(&gs->def_list,     Tcl_NewListObj(0, nullptr));
+	replace_tclobj(&gs->libpath_list, Tcl_NewListObj(0, nullptr));
+	replace_tclobj(&gs->lib_list,     Tcl_NewListObj(0, nullptr));
+	replace_tclobj(&gs->host_syms,    Tcl_NewListObj(0, nullptr));
+	replace_tclobj(&gs->code_list,    Tcl_NewListObj(0, nullptr));
+	replace_tclobj(&gs->file_list,    Tcl_NewListObj(0, nullptr));
 
-	struct jitc_intrep*	r = nullptr;
-	defer {
-		if (r) {
-			jitc_free_backend(r);
-			replace_tclobj(&r->symbols,          nullptr);
-			replace_tclobj(&r->cdef,             nullptr);
-			replace_tclobj(&r->used,             nullptr);
-			replace_tclobj(&r->exported_symbols, nullptr);
-			replace_tclobj(&r->exported_headers, nullptr);
-			r->interp = nullptr;
-			ckfree(r);
-		}
-	}
+	// Convenience aliases (so the pass bodies below read like the originals).
+	Tcl_Obj*	inc_list         = gs->inc_list;
+	Tcl_Obj*	def_list         = gs->def_list;
+	Tcl_Obj*	libpath_list     = gs->libpath_list;
+	Tcl_Obj*	lib_list         = gs->lib_list;
+	Tcl_Obj*	host_syms        = gs->host_syms;
+	Tcl_Obj*	code_list        = gs->code_list;
+	Tcl_Obj*	file_list        = gs->file_list;
 
 	TEST_OK(Tcl_ListObjGetElements(interp, cdef, &oc, &ov));
 	if (oc % 2 == 1)
@@ -828,8 +851,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			}
 			if (use_symbols) {
 				Tcl_Obj**	sv; Tcl_Size sc;
-				if (!used) replace_tclobj(&used, Tcl_NewListObj(0, nullptr));
-				TEST_OK(Tcl_ListObjAppendElement(interp, used, useobj));
+				if (!gs->used) replace_tclobj(&gs->used, Tcl_NewListObj(0, nullptr));
+				TEST_OK(Tcl_ListObjAppendElement(interp, gs->used, useobj));
 				TEST_OK(Tcl_ListObjGetElements(interp, use_symbols, &sc, &sv));
 				for (Tcl_Size s=0; s<sc; s++) {
 					void*	val = nullptr;
@@ -858,12 +881,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			exportkey = exportkeyidx;
 			switch (exportkey) {
 				case EXPORT_SYMBOLS:
-					replace_tclobj(&exported_symbols, ev[ei+1]);
+					replace_tclobj(&gs->exported_symbols, ev[ei+1]);
 					break;
 				case EXPORT_HEADER: {
 					Tcl_Size	hl;
 					const char*	hs = Tcl_GetStringFromObj(ev[ei+1], &hl);
-					replace_tclobj(&exported_headers, ev[ei+1]);
+					replace_tclobj(&gs->exported_headers, ev[ei+1]);
 					Tcl_DStringAppend(&preamble, hs, hl);
 					break;
 				}
@@ -931,8 +954,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 				if (sc < 1)
 					THROW_ERROR("Symbol definition must be a list: cdef symbol: \"", Tcl_GetString(v), "\"");
 				if (sc >= 2) {
-					if (!used) replace_tclobj(&used, Tcl_NewListObj(0, nullptr));
-					TEST_OK(Tcl_ListObjAppendElement(interp, used, sv[0]));
+					if (!gs->used) replace_tclobj(&gs->used, Tcl_NewListObj(0, nullptr));
+					TEST_OK(Tcl_ListObjAppendElement(interp, gs->used, sv[0]));
 				}
 				for (Tcl_Size s=1; s<sc; s++) {
 					void*	val = nullptr;
@@ -992,11 +1015,58 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		}
 	}
 
+	// Hand the gathered results to the caller. The lists are already owned by
+	// *gs; finalize the scalars and the assembled preamble string.
+	gs->mode      = mode;
+	gs->opt_level = opt_level;
+	gs->debug     = debug;
+	replace_tclobj(&gs->preamble, Tcl_NewStringObj(Tcl_DStringValue(&preamble), Tcl_DStringLength(&preamble)));
+
+	return TCL_OK;
+}
+
+//>>>
+int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_intrep** rPtr) //<<<
+{
+	struct gathered_sources	gs = {};	defer { free_gathered_sources(&gs); };
+
+	Tcl_Obj*	compileerror_code = nullptr;	defer { replace_tclobj(&compileerror_code, nullptr); };
+	Tcl_Obj*	compile_errors = nullptr;		defer { replace_tclobj(&compile_errors,    nullptr); };
+	Tcl_Obj*	extra_errormsg = nullptr;		defer { replace_tclobj(&extra_errormsg,    nullptr); };
+
+	struct jitc_intrep*	r = nullptr;
+	defer {
+		if (r) {
+			jitc_free_backend(r);
+			replace_tclobj(&r->symbols,          nullptr);
+			replace_tclobj(&r->cdef,             nullptr);
+			replace_tclobj(&r->used,             nullptr);
+			replace_tclobj(&r->exported_symbols, nullptr);
+			replace_tclobj(&r->exported_headers, nullptr);
+			r->interp = nullptr;
+			ckfree(r);
+		}
+	}
+
+	TEST_OK(gather_sources(interp, cdef, l, &gs));
+
+	// Convenience aliases (so the compile/link body below reads like before).
+	const int	debug            = gs.debug;
+	Tcl_Obj*	inc_list         = gs.inc_list;
+	Tcl_Obj*	def_list         = gs.def_list;
+	Tcl_Obj*	libpath_list     = gs.libpath_list;
+	Tcl_Obj*	lib_list         = gs.lib_list;
+	Tcl_Obj*	host_syms        = gs.host_syms;
+	Tcl_Obj*	code_list        = gs.code_list;
+	Tcl_Obj*	file_list        = gs.file_list;
+	Tcl_Size	preamble_len;
+	const char*	preamble_str     = Tcl_GetStringFromObj(gs.preamble, &preamble_len);
+
 #if STUBSMODE
 	// In stubs mode the JIT'd code reaches Tcl through the stubs table; compile
 	// a tiny bootstrap that calls Tcl_InitStubs (resolved + the table pointers
 	// shared from this process below).
-	if (mode == MODE_TCL)
+	if (gs.mode == MODE_TCL)
 		TEST_OK(Tcl_ListObjAppendElement(interp, code_list, Tcl_NewStringObj(
 			"#include <tcl.h>\nconst char* _initstubs(Tcl_Interp* interp, const char* ver) {return Tcl_InitStubs(interp, ver, 0);}", -1)));
 #endif
@@ -1006,7 +1076,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	defer { g_link_errors = nullptr; Tcl_MutexUnlock(&g_compile_mutex); };
 
 	r = ckalloc(sizeof *r);
-	*r = (struct jitc_intrep){ .interp = interp, .ctx = MIR_init(), .opt_level = opt_level, .debug = debug };
+	*r = (struct jitc_intrep){ .interp = interp, .ctx = MIR_init(), .opt_level = gs.opt_level, .debug = debug };
 	slimcc_register_helpers(r->ctx);
 	MIR_set_error_func(r->ctx, link_error_func);
 
@@ -1052,8 +1122,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	// no preamble (e.g. raw mode with no package headers) or the pch build
 	// failed — both handled by the per-block fallback (prepend the preamble and
 	// compile without a pch). Files are standalone TUs and never get the pch.
-	slimcc_pch*		pch = Tcl_DStringLength(&preamble)
-		? get_or_build_pch(Tcl_DStringValue(&preamble), &opts) : nullptr;
+	slimcc_pch*		pch = preamble_len
+		? get_or_build_pch(preamble_str, &opts) : nullptr;
 	slimcc_options	code_opts = opts;
 	code_opts.pch = pch;
 
@@ -1077,8 +1147,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		// single-source compile.
 		Tcl_DString		full; Tcl_DStringInit(&full);	defer { Tcl_DStringFree(&full); };
 		const char*		src = body;
-		if (!pch && Tcl_DStringLength(&preamble)) {
-			Tcl_DStringAppend(&full, Tcl_DStringValue(&preamble), Tcl_DStringLength(&preamble));
+		if (!pch && preamble_len) {
+			Tcl_DStringAppend(&full, preamble_str, preamble_len);
 			Tcl_DStringAppend(&full, body, -1);
 			src = Tcl_DStringValue(&full);
 		}
@@ -1153,9 +1223,9 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	}
 
 	// Hand the gathered ownership to the intrep.
-	r->used             = used;				used = nullptr;
-	r->exported_symbols = exported_symbols;	exported_symbols = nullptr;
-	r->exported_headers = exported_headers;	exported_headers = nullptr;
+	r->used             = gs.used;				gs.used             = nullptr;
+	r->exported_symbols = gs.exported_symbols;	gs.exported_symbols = nullptr;
+	r->exported_headers = gs.exported_headers;	gs.exported_headers = nullptr;
 
 	*rPtr = r;
 	r = nullptr;
@@ -1357,8 +1427,8 @@ static int capply_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*co
 	CHECK_MIN_ARGS("cdef symbol ?arg ...?");
 
 	Tcl_ObjCmdProc*	proc = nullptr;
-	TEST_OK(Jitc_GetSymbolFromObj(interp, objv[1], objv[2], (void**)&proc));
-	return (proc)(nullptr, interp, objc-2, objv+2);
+	TEST_OK(Jitc_GetSymbolFromObj(interp, objv[A_CDEF], objv[A_SYMBOL], (void**)&proc));
+	return (proc)(nullptr, interp, objc-A_SYMBOL, objv+A_SYMBOL);
 }
 
 //>>>
@@ -1368,8 +1438,8 @@ static int nrapply_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*c
 	CHECK_MIN_ARGS("cdef symbol ?arg ...?");
 
 	Tcl_ObjCmdProc*	proc = nullptr;
-	TEST_OK(Jitc_GetSymbolFromObj(interp, objv[1], objv[2], (void**)&proc));
-	return (proc)(nullptr, interp, objc-2, objv+2);
+	TEST_OK(Jitc_GetSymbolFromObj(interp, objv[A_CDEF], objv[A_SYMBOL], (void**)&proc));
+	return (proc)(nullptr, interp, objc-A_SYMBOL, objv+A_SYMBOL);
 }
 
 //>>>
@@ -1475,6 +1545,74 @@ static int symbols_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*c
 }
 
 //>>>
+static int dump_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //<<<
+{
+	struct interp_cx*	l = cdata;
+	enum {A_cmd, A_WHAT, A_CDEF, A_objc};
+	CHECK_ARGS("mir|c cdef");
+
+	static const char*	whats[] = { "mir", "c", nullptr };
+	enum { DUMP_MIR, DUMP_C }	what;
+	int	whatidx;
+	TEST_OK(Tcl_GetIndexFromObj(interp, objv[A_WHAT], whats, "format", TCL_EXACT, &whatidx));
+	what = whatidx;
+
+	switch (what) {
+		case DUMP_MIR: { //<<<
+			// Textual MIR of the modules loaded in the cdef's context. This is the
+			// source-level IR slimcc emitted (MIR_gen inlines/optimizes on copies at
+			// codegen, leaving the loaded items intact), captured via MIR_output.
+			struct jitc_intrep*	r = nullptr;
+			TEST_OK(get_r_from_obj(interp, objv[A_CDEF], &r));
+
+			char*	buf = nullptr;
+			size_t	buflen = 0;
+			FILE*	f = open_memstream(&buf, &buflen);
+			if (!f) THROW_ERROR("Could not open memory stream for MIR output");
+			defer { if (f) fclose(f); free(buf); };
+
+			// MIR context state isn't concurrency-safe; serialize with compiles.
+			Tcl_MutexLock(&g_compile_mutex);
+			MIR_output(r->ctx, f);
+			Tcl_MutexUnlock(&g_compile_mutex);
+
+			fclose(f); f = nullptr;	// finalizes buf/buflen
+			Tcl_SetObjResult(interp, Tcl_NewStringObj(buf, (Tcl_Size)buflen));
+			break;
+		}
+		//>>>
+		case DUMP_C: { //<<<
+			// The assembled C as slimcc would see it: the preamble (tclstuff.h +
+			// package/use/export headers) prepended to each filtered `code` block.
+			// One list element per code block (each is a separate translation unit).
+			// `file` parts are standalone TUs on disk and aren't included here.
+			struct gathered_sources	gs = {};	defer { free_gathered_sources(&gs); };
+			TEST_OK(gather_sources(interp, objv[A_CDEF], l, &gs));
+
+			Tcl_Size	preamble_len;
+			const char*	preamble_str = Tcl_GetStringFromObj(gs.preamble, &preamble_len);
+
+			Tcl_Obj**	cv; Tcl_Size cc;
+			TEST_OK(Tcl_ListObjGetElements(interp, gs.code_list, &cc, &cv));
+
+			Tcl_Obj*	out = nullptr;	defer { replace_tclobj(&out, nullptr); };
+			replace_tclobj(&out, Tcl_NewListObj(cc, nullptr));
+			for (Tcl_Size c=0; c<cc; c++) {
+				Tcl_Obj*	tu = nullptr;	defer { replace_tclobj(&tu, nullptr); };
+				replace_tclobj(&tu, Tcl_NewStringObj(preamble_str, preamble_len));
+				Tcl_AppendObjToObj(tu, cv[c]);
+				TEST_OK(Tcl_ListObjAppendElement(interp, out, tu));
+			}
+			Tcl_SetObjResult(interp, out);
+			break;
+		}
+		//>>>
+	}
+
+	return TCL_OK;
+}
+
+//>>>
 static int mkdtemp_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //<<<
 {
 	char*     template = nullptr;
@@ -1510,6 +1648,7 @@ static struct cmd {
 	{NS "::capply",		nrapply_cmd_setup,	capply_cmd},
 	{NS "::bind",		bind_cmd,			nullptr},
 	{NS "::symbols",	symbols_cmd,		nullptr},
+	{NS "::dump",		dump_cmd,			nullptr},
 	{NS "::mkdtemp",	mkdtemp_cmd,		nullptr},
 	{}
 };

@@ -1,0 +1,90 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+package require jitc
+
+set stdcdef {
+	code { //@begin=c@
+		int square(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj *const objv[])
+		{
+			int x;
+			if (TCL_OK != Tcl_GetIntFromObj(interp, objv[1], &x)) return TCL_ERROR;
+			Tcl_SetObjResult(interp, Tcl_NewIntObj(x*x));
+			return TCL_OK;
+		}
+		//@end=c@
+	}
+}
+
+test dump-1.1 {dump c includes the preamble and the code body} -body { #<<<
+	set tus [jitc::dump c $stdcdef]
+	# One code block -> one assembled translation unit
+	list \
+		[llength $tus] \
+		[string match "*#include <tclstuff.h>*" [lindex $tus 0]] \
+		[string match "*int square(*" [lindex $tus 0]]
+} -result {1 1 1}
+#>>>
+test dump-1.2 {dump c reflects a filter applied to the body} -body { #<<<
+	# A filter that uppercases a marker token in the body; the preamble
+	# (added after the filter) must be untouched.
+	set cdef {
+		filter {apply {{in} {string map {MARKER int} $in}}}
+		code { MARKER answer(void) { return 42; } }
+	}
+	set tu [lindex [jitc::dump c $cdef] 0]
+	list \
+		[string match "*int answer(void)*" $tu] \
+		[expr {![string match "*MARKER*" $tu]}]
+} -result {1 1}
+#>>>
+test dump-1.3 {dump c produces one TU per code block} -body { #<<<
+	llength [jitc::dump c {
+		code { int a(void) { return 1; } }
+		code { int b(void) { return 2; } }
+	}]
+} -result 2
+#>>>
+test dump-1.4 {dump c on a raw-mode cdef has no tcl preamble} -body { #<<<
+	set tu [lindex [jitc::dump c {mode raw code {int f(void){return 1;}}}] 0]
+	string match "*tclstuff.h*" $tu
+} -result 0
+#>>>
+
+test dump-2.1 {dump mir returns textual MIR for the cdef} -body { #<<<
+	set mir [jitc::dump mir $stdcdef]
+	list \
+		[string match "*module*" $mir] \
+		[string match "*square:*func*" $mir]
+} -result {1 1}
+#>>>
+test dump-2.2 {dump mir compiles the cdef on demand} -body { #<<<
+	# A freshly-constructed cdef (no prior compile) still dumps.
+	set mir [jitc::dump mir {code { int twice(void) { return 2; } }}]
+	string match "*twice:*func*" $mir
+} -result 1
+#>>>
+
+test dump-3.1 {dump rejects an unknown format} -body { #<<<
+	jitc::dump bogus $stdcdef
+} -returnCodes error -result {bad format "bogus": must be mir or c}
+#>>>
+test dump-3.2 {dump requires a cdef argument} -body { #<<<
+	jitc::dump mir
+} -returnCodes error -match glob -result {wrong # args:*}
+#>>>
+test dump-3.3 {dump c surfaces a malformed cdef} -body { #<<<
+	jitc::dump c {code}
+} -returnCodes error -match glob -result {*even number of elements*}
+#>>>
+
+unset -nocomplain stdcdef
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4
