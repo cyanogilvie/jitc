@@ -247,6 +247,14 @@ installed in the package installation directory. This is in the default
 include search path for **mode** **tcl**, but can be retrieved by the
 command **jitc::packageinclude**
 
+Against Tcl 8.6 the preamble also supplies the parts of the Tcl 8.7+ C
+API that cdefs commonly use: **Tcl_Size** (and **TCL_SIZE_MAX**,
+**TCL_SIZE_MODIFIER**), and the TIP 445 internal representation API
+(**Tcl_ObjInternalRep**, **Tcl_FetchInternalRep**,
+**Tcl_StoreInternalRep**, **Tcl_FreeInternalRep**, &c) from
+**tip445.h**, installed alongside **tclstuff.h**. So the same cdef
+source compiles against Tcl 8.6 and 9.
+
 ## EXAMPLES
 
 Hello, world:

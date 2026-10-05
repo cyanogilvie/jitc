@@ -781,7 +781,8 @@ static int gather_sources(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l
 #if STUBSMODE
 		TEST_OK(Tcl_ListObjAppendElement(interp, def_list, Tcl_NewStringObj("USE_TCL_STUBS=1", -1)));
 #endif
-		Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n", -1);
+		// tip445.h: the TIP 445 intrep API (Tcl_FetchInternalRep &c) on Tcl 8.6, a no-op on 8.7+
+		Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n#include <tip445.h>\n", -1);
 	}
 
 	// Pass 2: packages and `use` — these contribute headers (to the preamble),

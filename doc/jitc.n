@@ -439,6 +439,15 @@ directory.
 This is in the default include search path for \f[B]mode\f[R]
 \f[B]tcl\f[R], but can be retrieved by the command
 \f[B]jitc::packageinclude\f[R]
+.PP
+Against Tcl 8.6 the preamble also supplies the parts of the Tcl 8.7+ C
+API that cdefs commonly use: \f[B]Tcl_Size\f[R] (and
+\f[B]TCL_SIZE_MAX\f[R], \f[B]TCL_SIZE_MODIFIER\f[R]), and the TIP 445
+internal representation API (\f[B]Tcl_ObjInternalRep\f[R],
+\f[B]Tcl_FetchInternalRep\f[R], \f[B]Tcl_StoreInternalRep\f[R],
+\f[B]Tcl_FreeInternalRep\f[R], &c) from \f[B]tip445.h\f[R], installed
+alongside \f[B]tclstuff.h\f[R].
+So the same cdef source compiles against Tcl 8.6 and 9.
 .SS EXAMPLES
 .PP
 Hello, world:

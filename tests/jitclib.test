@@ -8,6 +8,10 @@ package require jitc
 
 package require jitclib::json
 
+if {[info commands readFile] eq ""} {	;# Tcl 8.6
+	proc readFile fn {set h [open $fn r]; try {read $h} finally {close $h}}
+}
+
 test jitclib_json-1.1 {check a small doc} -body { #<<<
 	jitc::capply $::jitclib::json_check check { {"foo": "bar", "baz": [1, 2, 3]}}
 } -result 1
