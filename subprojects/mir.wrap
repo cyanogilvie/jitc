@@ -2,13 +2,14 @@
 # for. Pinned here at the top level so it takes precedence over slimcc's own
 # bundled mir.wrap (nested wrap resolution), keeping both on the same fork.
 #
-# debug-support is the fork's aggregate branch (meson subproject support + the
-# source-level debug extensions). Local iteration against an in-tree mir checkout
-# now needs the changes pushed to the fork first, or this url temporarily
-# repointed at the local path.
+# Pinned to a commit on the fork's debug-support branch (its aggregate branch:
+# meson subproject support + the source-level debug extensions), so a release
+# builds reproducibly. To move it: push to the fork, update the SHA here, then
+# `meson subprojects update --reset mir` (or temporarily repoint the url at a
+# local checkout for iteration).
 [wrap-git]
 url = https://github.com/cyanogilvie/mir.git
-revision = debug-support
+revision = bf72acee4fa95f5327568b2dff74cde8c31e7f22
 depth = 1
 
 [provide]

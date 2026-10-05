@@ -3,12 +3,13 @@
 # the static library and pulls in 'mir' via slimcc's own subprojects/mir.wrap
 # (overridden below by jitc's mir.wrap so both resolve to the same mir fork).
 #
-# Tracks the fork's mir-backend branch. Local iteration against an in-tree
-# slimcc checkout now needs the changes pushed to the fork first, or this url
-# temporarily repointed at the local path.
+# Pinned to a commit on the fork's mir-backend branch, so a release builds
+# reproducibly. To move it: push to the fork, update the SHA here, then
+# `meson subprojects update --reset slimcc` (or temporarily repoint the url at a
+# local checkout for iteration).
 [wrap-git]
 url = https://github.com/cyanogilvie/slimcc.git
-revision = mir-backend
+revision = 7a786040f5bb4047933640c14ebfaa12042adeac
 depth = 1
 
 [provide]
