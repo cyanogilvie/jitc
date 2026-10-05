@@ -132,7 +132,10 @@ namespace eval ::jitc {
 		}
 		set source	[lindex $args end]
 		set options	[lrange $args 0 end-1]
-		exec echo $source | $re2cpath - --input-encoding utf8 {*}$options
+		# Feed the source on stdin directly rather than through a piped `echo`
+		# subprocess: re2c is spawned once per compile, so each saved fork+exec
+		# counts. The trailing newline matches echo's behaviour.
+		exec $re2cpath - --input-encoding utf8 {*}$options << $source\n
 	}
 
 	#>>>
