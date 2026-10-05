@@ -18,14 +18,14 @@ Tcl_ThreadId	g_memfs_tid = NULL;
 struct fuse*	fuse = NULL;
 
 
-static void* memfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) //{{{
+static void* memfs_init(struct fuse_conn_info* conn, struct fuse_config* cfg) //<<<
 {
 	//fprintf(stderr, "memfs_init\n");
 	return NULL;
 }
 
-//}}}
-static int memfs_getattr(const char* path, struct stat* stbuf, struct fuse_file_info* fi) //{{{
+//>>>
+static int memfs_getattr(const char* path, struct stat* stbuf, struct fuse_file_info* fi) //<<<
 {
 	int			res = 0;
 
@@ -48,8 +48,8 @@ static int memfs_getattr(const char* path, struct stat* stbuf, struct fuse_file_
 	return res;
 }
 
-//}}}
-static int memfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi, enum fuse_readdir_flags flags) //{{{
+//>>>
+static int memfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi, enum fuse_readdir_flags flags) //<<<
 {
 	//fprintf(stderr, "memfs_readdir: (%s)\n", path);
 	if (strcmp(path, "/") != 0)
@@ -62,8 +62,8 @@ static int memfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, of
 	return 0;
 }
 
-//}}}
-static int memfs_open(const char* path, struct fuse_file_info* fi) //{{{
+//>>>
+static int memfs_open(const char* path, struct fuse_file_info* fi) //<<<
 {
 	//fprintf(stderr, "memfs_open: (%s)\n", path);
 	if (strcmp(path, "/foo") != 0)
@@ -75,8 +75,8 @@ static int memfs_open(const char* path, struct fuse_file_info* fi) //{{{
 	return 0;
 }
 
-//}}}
-static int memfs_read(const char* path, char* buf, size_t size, off_t offset, struct fuse_file_info* fi) //{{{
+//>>>
+static int memfs_read(const char* path, char* buf, size_t size, off_t offset, struct fuse_file_info* fi) //<<<
 {
 	const char	contents[] = "hello, world";
 
@@ -98,7 +98,7 @@ static int memfs_read(const char* path, char* buf, size_t size, off_t offset, st
 	return size;
 }
 
-//}}}
+//>>>
 
 static const struct fuse_operations memfs_ops = {
 	.init		= memfs_init,
@@ -109,7 +109,7 @@ static const struct fuse_operations memfs_ops = {
 };
 
 
-static Tcl_ThreadCreateType memfs_thread(ClientData cdata) //{{{
+static Tcl_ThreadCreateType memfs_thread(ClientData cdata) //<<<
 {
 	int						startup_code = TCL_ERROR;
 	int						sighandlers = 0;
@@ -201,9 +201,9 @@ err:
 	TCL_THREAD_CREATE_RETURN;
 }
 
-//}}}
+//>>>
 
-static int memfs_root(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //{{{
+static int memfs_root(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //<<<
 {
 	enum {A_cmd, A_objc};
 	CHECK_ARGS("");
@@ -216,9 +216,9 @@ static int memfs_root(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*co
 	return TCL_OK;
 }
 
-//}}}
+//>>>
 
-int Memfs_Init(Tcl_Interp* interp) //{{{
+int Memfs_Init(Tcl_Interp* interp) //<<<
 {
 	Tcl_MutexLock(&g_memfs_init_mutex);		defer { Tcl_MutexUnlock(&g_memfs_init_mutex); };
 
@@ -240,8 +240,8 @@ int Memfs_Init(Tcl_Interp* interp) //{{{
 	return TCL_OK;
 }
 
-//}}}
-int Memfs_Unload(Tcl_Interp* interp) //{{{
+//>>>
+int Memfs_Unload(Tcl_Interp* interp) //<<<
 {
 	if (fuse) {
 #if 0
@@ -278,4 +278,5 @@ int Memfs_Unload(Tcl_Interp* interp) //{{{
 	return TCL_OK;
 }
 
-//}}}
+//>>>
+// vim: foldmethod=marker foldmarker=<<<,>>> ts=4 sw=4 noexpandtab
