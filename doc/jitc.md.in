@@ -517,11 +517,16 @@ from an AWS t4g (Graviton2) instance running Alpine Linux.
 * Calls between functions in a *cdef* are cheap.  Moving the lexer's rule actions above
   into small helper functions costs under 1%, and calling them through function
   pointers about 2%.
-* MIR inlines calls to small functions (up to about 50 MIR instructions) defined in the
-  same *cdef*, but limits how much any one caller may grow through inlining.  A caller
-  of up to about 200 instructions inlines every such call; a larger caller inlines calls
-  only until it has grown by 50%.  So a large function making many calls to a small
-  helper (such as **replace_tclobj**) gets only the first few inlined.
+* MIR inlines calls to small functions (up to about 50 MIR instructions; a helper like
+  **replace_tclobj** is 37) defined in the same *cdef*, wherever they are called.
+  Inlining a helper removes the call and, often more importantly, lets its body be
+  optimized together with the caller's code.  A function making 48 **replace_tclobj**
+  calls in a loop runs about 3.6&times; faster with them inlined than as calls.
+  Inlining grows the caller, and so its compile time, by roughly 4 ms per 1000
+  instructions added at **-O2** on x86_64.  As a circuit breaker, each function
+  stops inlining once it has grown by about 2000 instructions (and by 50% of its
+  original size), so a function making hundreds of helper calls has only the first
+  few dozen inlined.
 * Calls through function pointers, to Tcl's C API, to other *cdef*s (**use**,
   **symbols**) or to **library** code are never inlined.  When **-g** is given without
   **-O**, nothing is inlined.
