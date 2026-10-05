@@ -69,51 +69,57 @@ namespace eval ::jitc {
 		tcl::tm::path add [file join $packagedir tm]
 	} [namespace current]]
 
-	proc _build_compile_error {code errorstr args} { #<<<
-		package require jitclib::parse_tcc_errors
+	proc _build_compile_error {code errorstr diags args} { #<<<
+		# Build a compile failure's errorCode and message.  diags is the structured
+		# list the compiler reported: {lvl file line msg extras} per diagnostic
+		# (see collect_diag in jitc.c for extras).  errorstr is the plain-text form,
+		# used only for failures that come with no diagnostics.
 		switch -exact -- [llength $args] {
 			0	{}
 			2	{lassign $args previous_errmsg previous_options}
 			default	{error "Wrong args"}
 		}
-		set lines	[split $code \n]
-		#puts stderr "errorstr: ($errorstr)"
-		#puts stderr "lines\n[join [lmap l $lines {format {%4d: %s} [incr _lno] $l}] \n]"
-		if {0 && ![info exists ::jitc::_parsing_errors]} {
-			set ::jitc::_parsing_errors	1	;# prevent endless recursion if parse_tcc_errors fails to build
-			try {
-				set errors	[jitc::capply $::jitclib::parse_tcc_errors parse $errorstr]
-			} finally {
-				set ::jitc::_parsing_errors 0
-			}
-		} else {
+		set errors	$diags
+		if {[llength $errors] == 0} {
+			# No structured diagnostics: pick tcc-style "file:line: error: msg" lines out of the text
 			set errors	[lmap {- fn line lvl msg} [regexp -all -inline -line {^(.*?):([0-9]+): (error|warning): +(.*?)$} $errorstr] {
-				list $lvl $fn $line $msg
+				list $lvl $fn $line $msg {}
 			}]
 			lappend errors	{*}[lmap {- fn lvl msg} [regexp -all -inline -line {^([^:]*): (error|warning): +(.*?)$} $errorstr] {
-				list $lvl $fn {} $msg
+				list $lvl $fn {} $msg {}
 			}]
 		}
-		#puts stderr "errorstr ($errorstr) -> errors ($errors)"
-		set error_report	{}
-		set sep				{}
+		set report	{}
+		if {[info exists previous_errmsg]} {lappend report $previous_errmsg}
 		foreach error $errors {
-			lassign $error lvl fn line msg
-			if {$line ne {}} {
-				if {$line == 0} {set line 1}
-				append error_report	$sep [format "%s: In \"%s\", line %d: %s:\n%s" [string toupper $lvl] $fn $line $msg [lindex $lines $line-1]]
-			} else {
-				append error_report	$sep [format "%s: In \"%s\": %s" [string toupper $lvl] $fn $msg]
+			lassign $error lvl fn line msg extras
+			if {[dict exists $extras option]} {append msg " \[[dict get $extras option]\]"}
+			if {$line eq {}} {
+				lappend report [format "%s: %s" [string toupper $lvl] $msg]
+				continue
 			}
-			set sep	\n
+			set where	[format {In "%s", line %d} $fn $line]
+			if {[dict exists $extras source]} {
+				dict with extras {}
+				if {$src_name ne $fn || $src_line != $line} {
+					append where [format { (generated "%s", line %d)} $src_name $src_line]
+				}
+				# The diagnosed line of the resolved source, and a caret under the token
+				set bol			[expr {$offset - ($column - 1)}]
+				set eol			[string first \n $source $offset]
+				if {$eol == -1} {set eol [string length $source]}
+				set srcline		[string range $source $bol $eol-1]
+				set caret		[regsub -all {[^\t]} [string range $srcline 0 $column-2] { }]^
+				lappend report [format "%s: %s: %s:\n%s\n%s" [string toupper $lvl] $where $msg $srcline $caret]
+			} else {
+				lappend report [format "%s: %s: %s:\n%s" [string toupper $lvl] $where $msg [lindex [split $code \n] $line-1]]
+			}
 		}
-		# The structured parse above understands tcc's "file:line: error: msg"
-		# format. Other backends (libslimcc) format diagnostics differently and
-		# won't parse — surface their raw output rather than swallow it.
-		if {$error_report eq {} && [string trim $errorstr] ne {}} {
-			set error_report	[string trimright $errorstr]
+		# Nothing parsed out of a non-empty error text: surface it rather than swallow it
+		if {[llength $errors] == 0 && [string trim $errorstr] ne {}} {
+			lappend report	[string trimright $errorstr]
 		}
-		list [list JITC COMPILE $errors $code] $error_report
+		list [list JITC COMPILE $errors $code] [join $report \n]
 	}
 
 	#>>>

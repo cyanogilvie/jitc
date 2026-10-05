@@ -1,0 +1,176 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+package require jitc
+
+# Compile errors and warnings: the structured list in the errorCode
+# ({JITC COMPILE diags code}, each diag {lvl file line msg extras}), the
+# warnings jitc enables (always fatal, as under the libtcc backend), and the
+# context the extras give: the resolved source text the diagnostic refers to.
+
+# Compile cdef (a code part, or a full cdef if it starts with a part name) and
+# return the errorCode's diag list, or "ok"
+proc diags {code args} {
+	if {[catch {jitc::capply [list {*}$args code $code] f} r o]} {
+		lassign [dict get $o -errorcode] a b diags
+		if {"$a $b" ne "JITC COMPILE"} {return -options $o $r}
+		return $diags
+	}
+	return ok
+}
+
+# Just {lvl file line msg ?option?} of each diag
+proc brief {code args} {
+	set res [diags $code {*}$args]
+	if {$res eq "ok"} {return ok}
+	lmap d $res {
+		lassign $d lvl file line msg extras
+		list $lvl $file $line $msg {*}[if {[dict exists $extras option]} {dict get $extras option}]
+	}
+}
+
+# The text a diag's extras point at
+proc diag_token d {
+	set e [lindex $d 4]
+	string range [dict get $e source] [dict get $e offset] [expr {[dict get $e offset] + [dict get $e length] - 1}]
+}
+
+test diagnostics-1.1 {an error: structured, with the identifier named} -body { #<<<
+	brief "OBJCMD(f)\n{\n\treturn y + TCL_OK;\n}"
+} -result {{error cdef 3 {undefined variable 'y'}}}
+#>>>
+test diagnostics-1.2 {an error's context: the resolved source, the token's offset, length and column} -body { #<<<
+	set d [lindex [diags "OBJCMD(f)\n{\n\treturn some_name + TCL_OK;\n}"] 0]
+	set e [lindex $d 4]
+	list [diag_token $d] [dict get $e column] [dict get $e src_name] [dict get $e src_line] \
+		[string match "OBJCMD(f)*" [dict get $e source]]
+} -cleanup {
+	unset -nocomplain d e
+} -result {some_name 9 cdef 3 1}
+#>>>
+test diagnostics-1.3 {the message shows the source line with a caret under the token} -body { #<<<
+	catch {jitc::capply [list code "OBJCMD(f)\n{\n\treturn y + TCL_OK;\n}"] f} r
+	set r
+} -cleanup {
+	unset -nocomplain r
+} -result "ERROR: In \"cdef\", line 3: undefined variable 'y':\n\treturn y + TCL_OK;\n\t       ^"
+#>>>
+test diagnostics-1.4 {an error in a later code part is attributed to its own line} -body { #<<<
+	brief "\n\nOBJCMD(f)\n{\n\treturn bad_in_second;\n}" code {static int ok(void) { return 1; }}
+} -result {{error cdef 5 {undefined variable 'bad_in_second'}}}
+#>>>
+test diagnostics-1.5 {#line mapped (re2c output): the source location, and the generated text it was found in} -body { #<<<
+	set code "OBJCMD(f)\n{\n\tconst char* s = Tcl_GetString(objv\[0\]);\n\t/*!re2c\n\t\tre2c:yyfill:enable = 0;\n\t\tre2c:define:YYCTYPE = char;\n\t\tre2c:define:YYCURSOR = s;\n\t\t\[a-z\]+ { return bad_in_action; }\n\t\t* { return TCL_OK; }\n\t*/\n}"
+	set d [lindex [diags $code filter jitc::re2c] 0]
+	lassign $d lvl file line msg e
+	list $lvl $file $line $msg [diag_token $d] [dict get $e src_name] [expr {[dict get $e src_line] > $line}]
+} -cleanup {
+	unset -nocomplain code d lvl file line msg e
+} -result {error <stdin> 8 {undefined variable 'bad_in_action'} bad_in_action cdef 1}
+#>>>
+test diagnostics-1.6 {an undefined symbol at link time} -body { #<<<
+	brief "extern int no_such_function_anywhere(int);\nOBJCMD(f) { return no_such_function_anywhere(1); }"
+} -result {{error {} {} {undefined symbol 'no_such_function_anywhere'}}}
+#>>>
+test diagnostics-1.7 {#error gives its text as the message} -body { #<<<
+	brief "#error this is a deliberate error\nOBJCMD(f) { return TCL_OK; }"
+} -result {{error cdef 1 {#error this is a deliberate error}}}
+#>>>
+test diagnostics-1.8 {a missing header is named} -body { #<<<
+	brief "#include <no_such_header_xyz.h>\nOBJCMD(f) { return TCL_OK; }"
+} -result {{error cdef 1 {include file 'no_such_header_xyz.h' not found}}}
+#>>>
+
+test diagnostics-2.1 {-Wincompatible-pointer-types is fatal} -body { #<<<
+	brief "OBJCMD(f)\n{\n\tconst char* s = \"x\";\n\tint* ip = s;\n\t(void)ip;\n\treturn TCL_OK;\n}"
+} -result {{warning cdef 4 {assignment from incompatible pointer type} -Wincompatible-pointer-types}}
+#>>>
+test diagnostics-2.2 {-Wdiscarded-qualifiers is fatal} -body { #<<<
+	brief "OBJCMD(f)\n{\n\tconst char* s = \"x\";\n\tchar* p = s;\n\t(void)p;\n\treturn TCL_OK;\n}"
+} -result {{warning cdef 4 {assignment discards qualifiers from pointer target type} -Wdiscarded-qualifiers}}
+#>>>
+test diagnostics-2.3 {-Wint-conversion is fatal} -body { #<<<
+	brief "OBJCMD(f)\n{\n\treturn \"nope\";\n}"
+} -result {{warning cdef 3 {assignment makes integer from pointer without a cast} -Wint-conversion}}
+#>>>
+test diagnostics-2.4 {-Wreturn-type is fatal} -body { #<<<
+	brief "static int g(int a)\n{\n\tif (a) return 1;\n}\nOBJCMD(f) { return g(0); }"
+} -result {{warning cdef 3 {control reaches end of non-void function 'g'} -Wreturn-type}}
+#>>>
+test diagnostics-2.5 {#warning is fatal, with its text as the message} -body { #<<<
+	brief "#warning this is a deliberate warning\nOBJCMD(f) { return TCL_OK; }"
+} -result {{warning cdef 1 {#warning this is a deliberate warning}}}
+#>>>
+test diagnostics-2.6 {all the warnings are reported, not just the first} -body { #<<<
+	brief "OBJCMD(f)\n{\n\tconst char* s = \"x\";\n\tchar* p = s;\n\tint n = s;\n\t(void)p; (void)n;\n\treturn TCL_OK;\n}"
+} -result {{warning cdef 4 {assignment discards qualifiers from pointer target type} -Wdiscarded-qualifiers} {warning cdef 5 {assignment makes integer from pointer without a cast} -Wint-conversion}}
+#>>>
+test diagnostics-2.7 {-Wno-<name> turns a warning off} -body { #<<<
+	brief "OBJCMD(f)\n{\n\tconst char* s = \"x\";\n\tchar* p = s;\n\t(void)p;\n\treturn TCL_OK;\n}" options {-Wno-discarded-qualifiers}
+} -result ok
+#>>>
+test diagnostics-2.8 {-Wno-error doesn't make warnings non-fatal} -body { #<<<
+	brief "OBJCMD(f)\n{\n\tconst char* s = \"x\";\n\tchar* p = s;\n\t(void)p;\n\treturn TCL_OK;\n}" options {-Wno-error}
+} -result {{warning cdef 4 {assignment discards qualifiers from pointer target type} -Wdiscarded-qualifiers}}
+#>>>
+test diagnostics-2.9 {conversions that aren't warned about} -body { #<<<
+	brief {
+		#include <string.h>
+		OBJCMD(f)
+		{
+			const char*			s = "x";
+			const char*			cs = s;			// adding a qualifier
+			const unsigned char*	us = (const unsigned char*)s;
+			const char*			back = (const char*)us;
+			unsigned char		buf[4] = {0};
+			char*				p = (char*)buf;
+			void*				v = buf;		// to and from void*
+			int*				ip = v;
+			_Bool				b = s;			// pointer to bool
+			Tcl_Obj*			o = NULL;		// null pointer constants
+			Tcl_Obj*			o2 = 0;
+			memcpy(p, cs, 1);					// arrays and string literals as pointers
+			(void)back; (void)ip; (void)b; (void)o; (void)o2;
+			return TCL_OK;
+		}
+	}
+} -result ok
+#>>>
+test diagnostics-2.10 {functions that don't reach their end aren't warned about} -body { #<<<
+	brief {
+		#include <stdlib.h>
+		static int if_else(int a)	{ if (a) return 1; else return 2; }
+		static int forever(int a)	{ for (;;) { if (a) return 1; } }
+		static int whiles(int a)	{ while (1) { if (a > 3) return a; a++; } }
+		static int do_one(int a)	{ do { if (a) return 1; a++; } while (1); }
+		static int sw(int a)		{ switch (a) { case 1: return 1; default: return 2; } }
+		static int dies(void)		{ abort(); }
+		static int unreach(int a)	{ if (a) return 1; __builtin_unreachable(); }
+		static int jumps(int a)		{ again: if (a < 3) { a++; goto again; } return a; }
+		static int block(int a)		{ { return a; } }
+		OBJCMD(f)
+		{
+			Tcl_SetObjResult(interp, Tcl_NewIntObj(if_else(0) + forever(1) + whiles(0) + do_one(1) + sw(1)
+				+ jumps(0) + block(0) + unreach(1) + (objc > 99 ? dies() : 0)));
+			return TCL_OK;
+		}
+	}
+} -result ok
+#>>>
+test diagnostics-2.11 {falling off the end after a loop with a break is warned about} -body { #<<<
+	brief "static int g(int a)\n{\n\tfor (;;) { if (a) break; }\n}\nOBJCMD(f) { return g(1); }"
+} -result {{warning cdef 3 {control reaches end of non-void function 'g'} -Wreturn-type}}
+#>>>
+
+rename diags {}
+rename brief {}
+rename diag_token {}
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

@@ -40,7 +40,48 @@ and libraries loaded through **library** or **package** parts). A
 reference that can’t be resolved fails the compile with a **JITC
 COMPILE** error naming the undefined symbols.
 
-## COMMANDS
+## COMPILE ERRORS
+
+A *cdef* that fails to compile or link raises an error whose message
+lists each diagnostic with its location, the source line and a caret
+under the offending token:
+
+    ERROR: In "cdef", line 3: undefined variable 'y':
+        return y + TCL_OK;
+               ^
+
+Warnings are always fatal, as they were with jitc’s TinyCC backend:
+these are on, and all of them are reported before the compile fails:
+
+| Warning                          | Diagnoses                                                                                                                              |
+|----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| **-Wincompatible-pointer-types** | assigning (or passing, initializing, returning) a pointer to a different type, other than through **void\*** or a change of signedness |
+| **-Wdiscarded-qualifiers**       | a pointer conversion that drops **const** or **volatile** from the target                                                              |
+| **-Wint-conversion**             | a pointer converted to an integer without a cast                                                                                       |
+| **-Wreturn-type**                | control reaching the end of a function that returns a value                                                                            |
+
+**\#warning** is fatal too. A warning can be turned off for a *cdef*
+with **-Wno-** *name* in its **options**; **-Wno-error** has no effect.
+
+The error code is **JITC COMPILE** *diagnostics* *code*, where *code* is
+the code part that failed and *diagnostics* is a list with an element
+per diagnostic of the form {*level* *file* *line* *message* *extras*}:
+*level* is **error**, **warning** or **note** (more about the diagnostic
+before it, such as the macro it was expanded from), *file* and *line*
+are empty for a diagnostic with no location (an undefined symbol at link
+time), and *extras* is a dictionary giving the diagnostic’s context:
+
+| Key                        | Value                                                                                                                                                                                              |
+|----------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **option**                 | the warning’s flag, such as **-Wreturn-type**                                                                                                                                                      |
+| **source**                 | the full text the diagnostic is in, as the compiler saw it: the code part after any **filter**, or a header                                                                                        |
+| **offset**, **length**     | the character offset of the offending token in **source**, and its length                                                                                                                          |
+| **column**                 | the token’s character column on its line                                                                                                                                                           |
+| **src_name**, **src_line** | the name and line of **source**, which differ from *file* and *line* when the code maps its lines with **\#line** (as **re2c** output does, so that *file* and *line* point at the **re2c** input) |
+
+Only **option** is present for a diagnostic with no location. **source**
+makes the context available to tools even for generated code that was
+never written to disk.
 
 **jitc::capply** *cdef* *symbol* ?*arg* …?  
 Execute *symbol* in the compiled *cdef* as a Tcl_ObjCmdProc. If *symbol*
@@ -117,8 +158,10 @@ into a Tcl list, and the following options are honoured:
 
 - **-I** *dir* — add *dir* to the include search path (as
   **include_path**).
+
 - **-D** *name* \[**=** *val*\] — predefine a preprocessor macro (as
   **define**).
+
 - **-O** *n* — set the MIR code generator’s optimization level for this
   *cdef*. *n* is 0–3 (a bare **-O** means **-O1**); higher values are
   clamped to MIR’s maximum. **-O0** disables register allocation and
@@ -126,6 +169,7 @@ into a Tcl list, and the following options are honoured:
   register allocation and the cheap passes, **-O2** (the default)
   enables the standard passes, and **-O3** adds the more expensive ones.
   The last **-O** wins. See **PERFORMANCE** for the trade-offs.
+
 - **-g** (any **-g**\* form) — generate debug information, registered
   with gdb through its JIT interface: function symbols, source line
   tables, variables and call frame information, so backtraces (live or
@@ -138,9 +182,11 @@ into a Tcl list, and the following options are honoured:
   wanting debug information should combine it with an explicit **-O2**
   (see **PERFORMANCE**).
 
-All other options (warning flags such as **-Wall**, **-std**, linker
-options, **-U**, &c.) have no libslimcc equivalent and are silently
-ignored.
+- **-Wno-** *name* — turn off a warning (see **COMPILE ERRORS**);
+  **-W** *name* turns it back on.
+
+All other options (**-std**, linker options, **-U**, &c.) have no
+libslimcc equivalent and are silently ignored.
 
 **include_path**  
 Add the path in *value* to the paths searched for include files.

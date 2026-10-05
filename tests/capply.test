@@ -627,7 +627,7 @@ test capply-7.2 {filter re2c, sentinel without bounds check} -setup { #<<<
 #>>>
 test capply-8.1 {clean error when a header is not found, mode raw: no leak} -body { #<<<
 	jitc::capply {mode raw code "#include <nonesuch.h>"} foo
-} -returnCodes error -match glob -result {*nonesuch.h*file not found*}
+} -returnCodes error -match glob -result {*nonesuch.h*not found*}
 #>>>
 test capply-8.2 {tcc memory leak when a header is not found, mode tcl: inline functions leak} -constraints tccMemleak -body { #<<<
 	jitc::capply {mode tcl code "#include <nonesuch.h>"} foo

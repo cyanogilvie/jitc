@@ -380,13 +380,64 @@ static void debug_write_block(struct jitc_intrep* r, const char* src, int idx, T
 }
 
 //>>>
+// Collects one compile's diagnostics as jitc's structured compile errors: a
+// list of {lvl file line msg extras} (lvl error|warning|note; the first four as
+// tcc's diagnostics were parsed under jitc 0.7), where extras is a dict of the
+// context: option (the -W flag behind a warning), and when the diagnostic has
+// a location, column, src_name and src_line (the physical location, which
+// differs from file/line when #line mapped them, as for re2c output), and the
+// full resolved text it refers to: source (shared between the entries for the
+// same text), with the diagnosed token at character offset offset, length
+// characters long. Columns and offsets count characters, for Tcl's string
+// commands.
+struct diag_collector {
+	Tcl_Obj*	list;
+	const char*	last_src;		// slimcc's text that last_src_obj holds
+	Tcl_Obj*	last_src_obj;
+};
+
+static void collect_diag(void* cdata, const slimcc_diag* d) //<<<
+{
+	static const char*		lvls[] = {"error", "warning", "note"};
+	struct diag_collector*	dc = cdata;
+	Tcl_Obj*				extras = nullptr;	defer { replace_tclobj(&extras, nullptr); };
+	Tcl_Obj*				entry = nullptr;	defer { replace_tclobj(&entry, nullptr); };
+
+	replace_tclobj(&extras, Tcl_NewDictObj());
+	if (d->option)
+		Tcl_DictObjPut(nullptr, extras, Tcl_NewStringObj("option", -1), Tcl_NewStringObj(d->option, -1));
+	if (d->src) {
+		if (d->src != dc->last_src) {
+			dc->last_src = d->src;
+			replace_tclobj(&dc->last_src_obj, Tcl_NewStringObj(d->src, (Tcl_Size)d->src_len));
+		}
+		const char*	tok = d->src + d->offset;
+		const char*	bol = tok - (d->column - 1);
+		Tcl_DictObjPut(nullptr, extras, Tcl_NewStringObj("column", -1),   Tcl_NewWideIntObj(Tcl_NumUtfChars(bol, tok - bol) + 1));
+		Tcl_DictObjPut(nullptr, extras, Tcl_NewStringObj("src_name", -1), Tcl_NewStringObj(d->src_name, -1));
+		Tcl_DictObjPut(nullptr, extras, Tcl_NewStringObj("src_line", -1), Tcl_NewWideIntObj(d->src_line));
+		Tcl_DictObjPut(nullptr, extras, Tcl_NewStringObj("offset", -1),   Tcl_NewWideIntObj(Tcl_NumUtfChars(d->src, (Tcl_Size)d->offset)));
+		Tcl_DictObjPut(nullptr, extras, Tcl_NewStringObj("length", -1),   Tcl_NewWideIntObj(Tcl_NumUtfChars(tok, (Tcl_Size)d->length)));
+		Tcl_DictObjPut(nullptr, extras, Tcl_NewStringObj("source", -1),   dc->last_src_obj);
+	}
+
+	replace_tclobj(&entry, Tcl_NewListObj(0, nullptr));
+	Tcl_ListObjAppendElement(nullptr, entry, Tcl_NewStringObj(lvls[d->severity], -1));
+	Tcl_ListObjAppendElement(nullptr, entry, Tcl_NewStringObj(d->file ? d->file : "", -1));
+	Tcl_ListObjAppendElement(nullptr, entry, d->file ? Tcl_NewWideIntObj(d->line) : Tcl_NewObj());
+	Tcl_ListObjAppendElement(nullptr, entry, Tcl_NewStringObj(d->message, -1));
+	Tcl_ListObjAppendElement(nullptr, entry, extras);
+	Tcl_ListObjAppendElement(nullptr, dc->list, entry);
+}
+
+//>>>
 // Load the compiled modules into the cdef's context and generate machine code.
 // MIR's error function is noreturn (it aborts the process by default); a setjmp
 // here converts a link/codegen failure (duplicate definition, malformed module)
 // into a TCL_ERROR carrying the message in *errors. Kept in its own small frame
 // so setjmp's clobber hazard (and -Wclobbered) stays out of compile()'s large
 // frame; only the unmodified parameters are live across the setjmp.
-static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods, Tcl_Obj** errors) //<<<
+static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods, Tcl_Obj** errors, Tcl_Obj* diags) //<<<
 {
 	g_link_errors = errors;
 	if (setjmp(g_link_jmp)) { g_link_errors = nullptr; replace_tclobj(&g_missing_symbols, nullptr); return TCL_ERROR; }
@@ -429,8 +480,14 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 		Tcl_Size	sc;
 		Tcl_ListObjGetElements(nullptr, g_missing_symbols, &sc, &sv);
 		replace_tclobj(errors, Tcl_NewObj());
-		for (Tcl_Size i=0; i<sc; i++)
+		for (Tcl_Size i=0; i<sc; i++) {
 			Tcl_AppendPrintfToObj(*errors, "%serror: undefined symbol '%s'", i ? "\n" : "", Tcl_GetString(sv[i]));
+			Tcl_Obj*	ov[] = {
+				Tcl_NewStringObj("error", -1), Tcl_NewObj(), Tcl_NewObj(),
+				Tcl_ObjPrintf("undefined symbol '%s'", Tcl_GetString(sv[i])), Tcl_NewDictObj()
+			};
+			Tcl_ListObjAppendElement(nullptr, diags, Tcl_NewListObj(5, ov));
+		}
 		replace_tclobj(&g_missing_symbols, nullptr);
 		g_link_errors = nullptr;
 		return TCL_ERROR;
@@ -577,12 +634,13 @@ static int slurp_file(Tcl_Interp* interp, Tcl_Obj* path, Tcl_Obj** out) //<<<
 }
 
 //>>>
-// Pull -I<dir>, -D<name>[=val], -O<n> and -g out of a tcc-style options string:
-// the first two feed slimcc's preprocessor, -O<n> sets the MIR codegen
-// optimization level (*opt_level, last one wins), and -g (any -g* form)
-// enables GDB JIT-interface debug symbols (*debug). Everything else (other
-// warning/linker flags) has no equivalent and is silently ignored.
-static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* inc_list, Tcl_Obj* def_list, int* opt_level, int* debug) //<<<
+// Pull -I<dir>, -D<name>[=val], -W<warning>, -O<n> and -g out of a tcc-style
+// options string: the first two feed slimcc's preprocessor, -W flags go to
+// warn_list (slimcc's -W<name> / -Wno-<name>; see compile()), -O<n> sets the
+// MIR codegen optimization level (*opt_level, last one wins), and -g (any -g*
+// form) enables GDB JIT-interface debug symbols (*debug). Everything else
+// (linker flags, -std ...) has no equivalent and is silently ignored.
+static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* inc_list, Tcl_Obj* def_list, Tcl_Obj* warn_list, int* opt_level, int* debug) //<<<
 {
 	Tcl_Obj*	toks = nullptr;	defer { replace_tclobj(&toks, nullptr); };
 	Tcl_Obj**	tv; Tcl_Size tc;
@@ -599,6 +657,8 @@ static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* i
 			Tcl_Obj*	d = nullptr;	defer { replace_tclobj(&d, nullptr); };
 			replace_tclobj(&d, Tcl_NewStringObj(t+2, -1));
 			TEST_OK(Tcl_ListObjAppendElement(interp, def_list, d));
+		} else if (strncmp(t, "-W", 2) == 0 && t[2] && t[3] != ',') {	// not -Wl, -Wa, -Wp,
+			TEST_OK(Tcl_ListObjAppendElement(interp, warn_list, tv[i]));
 		} else if (strncmp(t, "-O", 2) == 0) {
 			// -O<n> selects the MIR codegen optimization level. Bare -O means
 			// -O1 (gcc convention); -Os/-Oz/-Ofast aren't MIR levels, ignore.
@@ -635,6 +695,7 @@ struct gathered_sources {
 	Tcl_Obj*	preamble;			// assembled #include preamble (string obj)
 	Tcl_Obj*	inc_list;			// -I include search paths
 	Tcl_Obj*	def_list;			// -D defines ("NAME" or "NAME=VALUE")
+	Tcl_Obj*	warn_list;			// -W warning flags from options
 	Tcl_Obj*	libpath_list;		// library search paths
 	Tcl_Obj*	lib_list;			// libraries to dlopen
 	Tcl_Obj*	host_syms;			// name, addr, name, addr, ... (sibling-cdef/host symbols)
@@ -650,6 +711,7 @@ static void free_gathered_sources(struct gathered_sources* gs) //<<<
 	replace_tclobj(&gs->preamble,         nullptr);
 	replace_tclobj(&gs->inc_list,         nullptr);
 	replace_tclobj(&gs->def_list,         nullptr);
+	replace_tclobj(&gs->warn_list,        nullptr);
 	replace_tclobj(&gs->libpath_list,     nullptr);
 	replace_tclobj(&gs->lib_list,         nullptr);
 	replace_tclobj(&gs->host_syms,        nullptr);
@@ -727,6 +789,7 @@ static int gather_sources(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l
 
 	replace_tclobj(&gs->inc_list,     Tcl_NewListObj(0, nullptr));
 	replace_tclobj(&gs->def_list,     Tcl_NewListObj(0, nullptr));
+	replace_tclobj(&gs->warn_list,    Tcl_NewListObj(0, nullptr));
 	replace_tclobj(&gs->libpath_list, Tcl_NewListObj(0, nullptr));
 	replace_tclobj(&gs->lib_list,     Tcl_NewListObj(0, nullptr));
 	replace_tclobj(&gs->host_syms,    Tcl_NewListObj(0, nullptr));
@@ -936,7 +999,7 @@ static int gather_sources(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l
 				break;
 
 			case PART_OPTIONS:
-				TEST_OK(parse_options_string(interp, Tcl_GetString(v), inc_list, def_list, &opt_level, &debug));
+				TEST_OK(parse_options_string(interp, Tcl_GetString(v), inc_list, def_list, gs->warn_list, &opt_level, &debug));
 				break;
 
 			case PART_INCLUDE_PATH:
@@ -1048,6 +1111,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 
 	Tcl_Obj*	compileerror_code = nullptr;	defer { replace_tclobj(&compileerror_code, nullptr); };
 	Tcl_Obj*	compile_errors = nullptr;		defer { replace_tclobj(&compile_errors,    nullptr); };
+	struct diag_collector	dc = {};				defer { replace_tclobj(&dc.list, nullptr); replace_tclobj(&dc.last_src_obj, nullptr); };
+	replace_tclobj(&dc.list, Tcl_NewListObj(0, nullptr));
 	Tcl_Obj*	extra_errormsg = nullptr;		defer { replace_tclobj(&extra_errormsg,    nullptr); };
 
 	struct jitc_intrep*	r = nullptr;
@@ -1127,6 +1192,21 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	for (Tcl_Size j=0; j<incc; j++) incp[j] = Tcl_GetString(incv[j]);
 	for (Tcl_Size j=0; j<defc; j++) defp[j] = Tcl_GetString(defv[j]);
 
+	// Warnings are always fatal, as any diagnostic was under libtcc (jitc 0.7):
+	// -Wall -Werror, then the cdef's own -W<name> / -Wno-<name> to adjust the
+	// set. Its -Werror / -Wno-error are ignored.
+	Tcl_Obj**	warnv; Tcl_Size warnc;
+	TEST_OK(Tcl_ListObjGetElements(interp, gs.warn_list, &warnc, &warnv));
+	const char**	warnp = ckalloc(sizeof(char*) * (warnc + 2));	defer { ckfree(warnp); };
+	int				nwarn = 0;
+	warnp[nwarn++] = "-Wall";
+	warnp[nwarn++] = "-Werror";
+	for (Tcl_Size j=0; j<warnc; j++) {
+		const char*	w = Tcl_GetString(warnv[j]);
+		if (strcmp(w, "-Werror") != 0 && strcmp(w, "-Wno-error") != 0)
+			warnp[nwarn++] = w;
+	}
+
 	slimcc_options	opts = {
 		.include_paths   = incp, .n_include_paths = (int)incc,
 		.defines         = defp, .n_defines       = (int)defc,
@@ -1137,6 +1217,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		// (-g alone defaults to -O0 with spill-all for full variable inspection;
 		// see jitc_finish_link.)
 		.debug_optimized = debug && gs.opt_level >= 1,
+		.diag            = collect_diag,
+		.diag_cdata      = &dc,
+		.warn_flags      = warnp,
+		.n_warn_flags    = nwarn,
 	};
 
 	// Build (or reuse) a precompiled header for the cdef's preamble, so the
@@ -1221,7 +1305,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			dlopen_library(r, Tcl_GetString(lv[j]), libpath_list);
 	}
 
-	if (TCL_OK != jitc_finish_link(r, mods, nmods, &compile_errors))
+	if (TCL_OK != jitc_finish_link(r, mods, nmods, &compile_errors, dc.list))
 		goto compile_error;
 
 	// Avoid a circular reference between cdef and our new jitc intrep obj.
@@ -1257,8 +1341,8 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 compile_error:
 	{
 		Tcl_InterpState	state = Tcl_SaveInterpState(interp, TCL_OK);	defer { if (state) Tcl_DiscardInterpState(state); };
-		const int	cmdc = extra_errormsg ? 5 : 3;
-		Tcl_Obj*	cmd[5] = {};		defer { for (int k=0; k<5; k++) replace_tclobj(&cmd[k], nullptr); };
+		const int	cmdc = extra_errormsg ? 6 : 4;
+		Tcl_Obj*	cmd[6] = {};		defer { for (int k=0; k<6; k++) replace_tclobj(&cmd[k], nullptr); };
 		Tcl_Obj*	res = nullptr;			defer { replace_tclobj(&res,		nullptr); };
 		Tcl_Obj*	errorcode = nullptr;	defer { replace_tclobj(&errorcode,	nullptr); };
 		Tcl_Obj*	errormsg = nullptr;	defer { replace_tclobj(&errormsg,	nullptr); };
@@ -1269,9 +1353,10 @@ compile_error:
 		replace_tclobj(&cmd[0], l->lit[LIT_COMPILEERROR]);
 		replace_tclobj(&cmd[1], compileerror_code);
 		replace_tclobj(&cmd[2], compile_errors);
+		replace_tclobj(&cmd[3], dc.list);
 		if (extra_errormsg) {
-			replace_tclobj(&cmd[3], extra_errormsg);
-			replace_tclobj(&cmd[4], Tcl_GetReturnOptions(interp, TCL_OK));
+			replace_tclobj(&cmd[4], extra_errormsg);
+			replace_tclobj(&cmd[5], Tcl_GetReturnOptions(interp, TCL_OK));
 		}
 		TEST_OK(Tcl_EvalObjv(interp, cmdc, cmd, TCL_EVAL_DIRECT | TCL_EVAL_GLOBAL));
 		replace_tclobj(&res, Tcl_GetObjResult(interp));
