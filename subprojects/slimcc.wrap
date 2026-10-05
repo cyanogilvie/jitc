@@ -9,7 +9,7 @@
 # local checkout for iteration).
 [wrap-git]
 url = https://github.com/cyanogilvie/slimcc.git
-revision = 7a786040f5bb4047933640c14ebfaa12042adeac
+revision = 4e7b71f3bcc6397c914648916df64db213a1484a
 depth = 1
 
 [provide]
