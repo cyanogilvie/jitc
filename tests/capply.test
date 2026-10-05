@@ -963,6 +963,17 @@ test capply-10.3 {undefined symbols: errorCode, all names reported, and the inte
 } -result {1 {JITC COMPILE} 1 1 42}
 #>>>
 
+test capply-15.1 {modifying a shared compiled cdef in place duplicates it (segfaulted)} -body { #<<<
+	set a	{code {OBJCMD(f) {Tcl_SetObjResult(interp, Tcl_NewIntObj(1)); return TCL_OK;}}}
+	set r1	[jitc::capply $a f]
+	set b	$a
+	lset b 1 {OBJCMD(f) {Tcl_SetObjResult(interp, Tcl_NewIntObj(2)); return TCL_OK;}}
+	list $r1 [jitc::capply $a f] [jitc::capply $b f]
+} -cleanup {
+	unset -nocomplain a b r1
+} -result {1 1 2}
+#>>>
+
 # cleanup
 ::tcltest::cleanupTests
 return

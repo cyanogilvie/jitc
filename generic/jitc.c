@@ -82,28 +82,17 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //<<<
 //>>>
 static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup) //<<<
 {
-	Tcl_ObjInternalRep*		ir = Tcl_FetchInternalRep(src, &jitc_objtype);
-	struct jitc_intrep*		r = ir->twoPtrValue.ptr1;
-	struct interp_cx*		l = Tcl_GetAssocData(r->interp, "jitc", nullptr);
-	Tcl_ObjInternalRep		newir = {.twoPtrValue = {}}; // defend against gcc 15.2's broken treatment of unions
-	struct jitc_instance*	instance = nullptr;
+	// The compiled code can't be shared with the dup (it is owned by, and freed
+	// with, src's intrep).  Duplication only happens when a shared cdef is
+	// modified in place (lset, dict set, &c), which then shimmers the dup to a
+	// list anyway, so leave the dup as a pure string: it recompiles from source
+	// if it's ever used as a cdef.
+	if (!dup->bytes) {
+		Tcl_Size		len;
+		const char*		str = Tcl_GetStringFromObj(src, &len);
 
-	// Shouldn't ever need to happen, but if it does we have to recompile from source.
-	// Set the dup's intrep to a dup of the cdef list instead
-	replace_tclobj((Tcl_Obj**)&newir.twoPtrValue.ptr2, r->cdef);
-
-	instance = ckalloc(sizeof *instance);
-	*instance = (struct jitc_instance){
-		.next	= l->instance_head.next,
-		.prev	= &l->instance_head,
-		.obj	= dup
-	};
-	l->instance_head.next = instance;
-	instance->next->prev = instance;
-
-	newir.twoPtrValue.ptr2 = instance;
-
-	Tcl_StoreInternalRep(dup, &jitc_objtype, &newir);
+		Tcl_InitStringRep(dup, str, len);
+	}
 }
 
 //>>>
