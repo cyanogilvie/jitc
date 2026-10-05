@@ -397,16 +397,6 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 	for (int i=0; i<nmods; i++)
 		MIR_load_module(r->ctx, mods[i]);
 
-	// Debug builds: don't inline calls (so each function keeps its own frames
-	// and source lines), and home every local in the stack (so each has a stable
-	// frame slot whose offset DWARF can name — see register_debug_symbols).
-	if (r->debug) {
-		MIR_set_inline_permission(r->ctx, 0);
-		MIR_set_spill_all(r->ctx, 1);
-	}
-
-	MIR_gen_init(r->ctx);
-	r->gen_inited = 1;
 	// MIR's levels: 0 fast RA, 1 +combiner, 2 +GVN/CCP (MIR's own default), 3+
 	// everything. jitc's workload is dominated by re2c-generated lexers, which
 	// are branch/frontend-bound: -O2/-O3 produce ~14% fewer instructions but the
@@ -417,8 +407,25 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 	// Debug builds default to -O0: the optimizer (GVN/combine/RA reuse) makes
 	// stepping jumpy and values stale between statements. An explicit -O<n>
 	// still wins for someone who wants it.
-	MIR_gen_set_optimize_level(r->ctx,
-		r->opt_level >= 0 ? (unsigned)r->opt_level : (r->debug ? 0u : 1u));
+	unsigned opt_level = r->opt_level >= 0 ? (unsigned)r->opt_level : (r->debug ? 0u : 1u);
+
+	// Debug builds at -O0 (the single-stepping mode): don't inline calls, so
+	// each function keeps its own frames and source lines, and home every local
+	// in the stack so each has a stable frame slot whose offset DWARF can name
+	// for variable inspection (see register_debug_symbols). At -O1+ the caller
+	// has explicitly opted into optimized code with debug info (gcc -g -O
+	// semantics, e.g. for post-mortem core dumps): keep inlining and register
+	// promotion, so -g costs no runtime performance. Line tables and symbols
+	// remain; inlined code reports the callee's source lines inside the
+	// caller's frame, and promoted locals aren't printable.
+	if (r->debug && opt_level == 0) {
+		MIR_set_inline_permission(r->ctx, 0);
+		MIR_set_spill_all(r->ctx, 1);
+	}
+
+	MIR_gen_init(r->ctx);
+	r->gen_inited = 1;
+	MIR_gen_set_optimize_level(r->ctx, opt_level);
 	MIR_link(r->ctx, MIR_set_gen_interface, import_resolver);
 
 	build_symbols_dict(r);
@@ -913,9 +920,9 @@ static int gather_sources(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l
 				break;
 
 			case PART_DEBUG:
-				// MIR emits no DWARF, so the source-file path the old libtcc
-				// backend wrote (the part's value) is unused; presence alone
-				// enables function-granularity GDB JIT-interface symbols.
+				// Equivalent to -g: the source files the debugger reads are
+				// written to a temp dir, so the part's value (the directory the
+				// old libtcc backend wrote them to) is unused.
 				debug = 1;
 				break;
 
@@ -1115,6 +1122,12 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 		.include_paths   = incp, .n_include_paths = (int)incc,
 		.defines         = defp, .n_defines       = (int)defc,
 		.debug           = debug,	// emit source locations (DWARF) when -g/debug requested
+		// -g with an explicit -O1+ is optimized code with debug info (gcc -g -O
+		// semantics): keep register promotion of scalar locals, so -g costs no
+		// runtime performance there; those locals just aren't printable in gdb.
+		// (-g alone defaults to -O0 with spill-all for full variable inspection;
+		// see jitc_finish_link.)
+		.debug_optimized = debug && gs.opt_level >= 1,
 	};
 
 	// Build (or reuse) a precompiled header for the cdef's preamble, so the

@@ -1,0 +1,115 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+    package require tcltest
+    namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+package require jitc
+
+# The MIR backend keeps scalar locals whose address is never taken in MIR
+# registers instead of stack slots (see codegen-mir.c promote_local). These
+# tests pin both the IR shape (no alloca/stack traffic for promoted scalars)
+# and the runtime correctness of the read/write/compound-assign/inc-dec paths,
+# including the canonicalization that keeps narrow integers and floats in their
+# correct in-register representation.
+
+# A dispatcher exercising the promotion paths: each inner helper has scalar
+# locals, some address-taken (forcing memory), and returns through the interp.
+set ops {mode raw code { //@begin=c@
+	#include <tcl.h>
+	#include <string.h>
+	static long     h_arith(long a){ long x=a; x+=5; x*=2; x-=1; return x; }
+	static int      h_loop(int n){ int s=0; for(int i=0;i<n;i++) s+=i; return s; }
+	static int      h_post(int a){ int x=a; int y=x++; return x*100+y; }
+	static int      h_pre(int a){ int x=a; int y=++x; return x*100+y; }
+	static int      h_addr(int a){ int x=a; int *p=&x; *p+=10; return x; }
+	static unsigned h_uns(unsigned a, unsigned b){ unsigned c=a+b; return c>>1; }
+	static int      h_char(int a){ signed char c=(signed char)a; c+=1; return c; }
+	static int      h_ushort(int a){ unsigned short s=(unsigned short)a; s+=1; return s; }
+	static long     h_mix(long a){ long p=a, q=a*2; long *r=&q; *r+=p; return p+q; }
+	static double   h_dbl(double a, double b){ double c=a*b; c+=1.5; return c; }
+	int run(ClientData cd, Tcl_Interp* interp, int objc, Tcl_Obj* const objv[]) {
+		const char* w = Tcl_GetString(objv[1]);
+		long a=0,b=0; double da=0,db=0;
+		if (!strcmp(w,"dbl")) {
+			if (Tcl_GetDoubleFromObj(interp,objv[2],&da)!=TCL_OK) return TCL_ERROR;
+			if (Tcl_GetDoubleFromObj(interp,objv[3],&db)!=TCL_OK) return TCL_ERROR;
+		} else {
+			Tcl_WideInt w2;
+			if (objc>=3) { if (Tcl_GetWideIntFromObj(interp,objv[2],&w2)!=TCL_OK) return TCL_ERROR; a=w2; }
+			if (objc>=4) { if (Tcl_GetWideIntFromObj(interp,objv[3],&w2)!=TCL_OK) return TCL_ERROR; b=w2; }
+		}
+		Tcl_Obj* res=NULL;
+		if      (!strcmp(w,"arith"))  res=Tcl_NewWideIntObj(h_arith(a));
+		else if (!strcmp(w,"loop"))   res=Tcl_NewWideIntObj(h_loop(a));
+		else if (!strcmp(w,"post"))   res=Tcl_NewWideIntObj(h_post(a));
+		else if (!strcmp(w,"pre"))    res=Tcl_NewWideIntObj(h_pre(a));
+		else if (!strcmp(w,"addr"))   res=Tcl_NewWideIntObj(h_addr(a));
+		else if (!strcmp(w,"uns"))    res=Tcl_NewWideIntObj(h_uns((unsigned)a,(unsigned)b));
+		else if (!strcmp(w,"char"))   res=Tcl_NewWideIntObj(h_char(a));
+		else if (!strcmp(w,"ushort")) res=Tcl_NewWideIntObj(h_ushort(a));
+		else if (!strcmp(w,"mix"))    res=Tcl_NewWideIntObj(h_mix(a));
+		else if (!strcmp(w,"dbl"))    res=Tcl_NewDoubleObj(h_dbl(da,db));
+		else { Tcl_SetObjResult(interp, Tcl_NewStringObj("bad op",-1)); return TCL_ERROR; }
+		Tcl_SetObjResult(interp,res); return TCL_OK;
+	}
+//@end=c@ }}
+
+test promotion-1.1 {address-not-taken scalar local stays out of memory} -body { #<<<
+	set mir [jitc::dump mir {
+		mode raw
+		code { int foo(int a, int b) { int c=a+b; return c*2; } }
+	}]
+	# No stack slot, no spill, no reload: the body is register-only.
+	list \
+		[string match "*alloca*" $mir] \
+		[regexp {i32:\(} $mir]
+} -result {0 0}
+#>>>
+test promotion-1.2 {a local whose address is taken keeps its stack slot} -body { #<<<
+	set mir [jitc::dump mir {
+		mode raw
+		code { int foo(int a) { int x=a; int *p=&x; *p+=1; return x; } }
+	}]
+	string match "*alloca*" $mir
+} -result 1
+#>>>
+test promotion-1.3 {-g with explicit -O1+ keeps register promotion (gcc -g -O semantics)} -body { #<<<
+	set mir [jitc::dump mir {
+		mode raw
+		options {-g -O2}
+		code { int foo(int a, int b) { int c=a+b; return c*2; } }
+	}]
+	list \
+		[string match "*alloca*" $mir] \
+		[regexp {i32:\(} $mir]
+} -result {0 0}
+#>>>
+test promotion-1.4 {-g alone (-O0) keeps locals in stack slots for gdb inspection} -body { #<<<
+	set mir [jitc::dump mir {
+		mode raw
+		options {-g}
+		code { int foo(int a, int b) { int c=a+b; return c*2; } }
+	}]
+	string match "*alloca*" $mir
+} -result 1
+#>>>
+
+test promotion-2.1 {compound assignment on a promoted local}   -body { jitc::capply $ops run arith 10 }     -result 29
+test promotion-2.2 {loop counter and accumulator promoted}      -body { jitc::capply $ops run loop 5 }       -result 10
+test promotion-2.3 {post-increment value semantics}             -body { jitc::capply $ops run post 7 }       -result 807
+test promotion-2.4 {pre-increment value semantics}              -body { jitc::capply $ops run pre 7 }        -result 808
+test promotion-2.5 {address-of forces memory, result correct}   -body { jitc::capply $ops run addr 7 }       -result 17
+test promotion-2.6 {unsigned canonicalization (shift)}          -body { jitc::capply $ops run uns 7 9 }      -result 8
+test promotion-2.7 {signed char wraps at its width}             -body { jitc::capply $ops run char 127 }     -result -128
+test promotion-2.8 {unsigned short wraps at its width}          -body { jitc::capply $ops run ushort 65535 } -result 0
+test promotion-2.9 {mixed promoted and address-taken locals}    -body { jitc::capply $ops run mix 4 }        -result 16
+test promotion-2.10 {floating-point promoted local}             -body { jitc::capply $ops run dbl 2.0 3.0 }  -result 7.5
+
+unset -nocomplain ops
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

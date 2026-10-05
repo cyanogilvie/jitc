@@ -641,15 +641,36 @@ test capply-9.1 {debug info (-g)} -body { #<<<
 	jitc::capply {
 		options {-g}
 		code {
+			#include <stdio.h>
+
+			static int do_foo(Tcl_Interp* interp, Tcl_DString* ds, double val) {
+				double twice = val*2;
+				char buf[256] = {};
+				const size_t len = sprintf(buf, "%.1f", twice);
+				Tcl_DStringAppend(ds, buf, len);
+				return TCL_OK;
+			}
+
 			OBJCMD(foo) {
-				enum {A_cmd, A_objc};
-				CHECK_ARGS("");
-				Tcl_SetObjResult(interp, Tcl_NewStringObj("capply-9.1", -1));
+				enum {A_cmd, A_VAL, A_objc};
+				CHECK_ARGS("val");
+
+				double val;
+				TEST_OK(Tcl_GetDoubleFromObj(interp, objv[A_VAL], &val));
+
+				Tcl_DString		ds;
+				Tcl_DStringInit(&ds);
+				defer {
+					Tcl_DStringFree(&ds);
+				}
+				TEST_OK(do_foo(interp, &ds, val));
+
+				Tcl_SetObjResult(interp, Tcl_ObjPrintf("capply-9.1: %s", Tcl_DStringValue(&ds)));
 				return TCL_OK;
 			}
 		}
-	} foo
-} -result capply-9.1
+	} foo 1.25e6
+} -result {capply-9.1: 2500000.0}
 #>>>
 test capply-10.1 {use, jitclib, jitclib::json} -setup { #<<<
 	package require jitclib::json
