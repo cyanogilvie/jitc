@@ -122,10 +122,10 @@ into a Tcl list, and the following options are honoured:
 - **-O** *n* — set the MIR code generator’s optimization level for this
   *cdef*. *n* is 0–3 (a bare **-O** means **-O1**); higher values are
   clamped to MIR’s maximum. **-O0** disables register allocation and
-  most optimization passes for the fastest compile, **-O1** (the
-  default) adds register allocation and the cheap passes, **-O2**
+  most optimization passes for the fastest compile, **-O1** adds
+  register allocation and the cheap passes, **-O2** (the default)
   enables the standard passes, and **-O3** adds the more expensive ones.
-  The last **-O** wins.
+  The last **-O** wins. See **PERFORMANCE** for the trade-offs.
 - **-g** (any **-g**\* form) — generate debug information, registered
   with gdb through its JIT interface: function symbols, source line
   tables, variables and call frame information, so backtraces (live or
@@ -135,7 +135,8 @@ into a Tcl list, and the following options are honoured:
   optimized as without **-g** (as gcc’s **-g -O**): backtraces and line
   information remain, but some locals can’t be printed. **-g** without
   **-O** is therefore much slower than the default, so production code
-  wanting debug information should combine it with **-O1** or **-O2**.
+  wanting debug information should combine it with an explicit **-O2**
+  (see **PERFORMANCE**).
 
 All other options (warning flags such as **-Wall**, **-std**, linker
 options, **-U**, &c.) have no libslimcc equivalent and are silently
@@ -472,6 +473,66 @@ int **Jitc_GetExportSymbolsFromObj**(Tcl_Interp\* *interp*, Tcl_Obj\* *cdef*, Tc
 Retrieve a list of the symbols declared for export from *cdef*,
 compiling it if needed. *symbols* may be NULL if *cdef* doesn’t declare
 any exported symbols. Will still return **TCL_OK** for this case.
+
+## PERFORMANCE
+
+A *cdef* is compiled once, the first time a symbol is needed from it,
+and the result is cached in the *cdef* value’s internal representation.
+Compile time is therefore paid once per distinct *cdef* value, not per
+call. Keep *cdef* values in variables or namespace globals rather than
+rebuilding them per call, so that the cached compile survives. The
+**tcl** mode preamble (tcl.h and the headers it pulls in) is
+preprocessed once and cached, so even a small *cdef* compiles in a
+couple of milliseconds.
+
+The optimization level trades compile time for run time. The table below
+gives timings for an re2c-generated lexer: **jitclib::json_check**’s
+JSON validator, checking a 3.4 MB document. Each row shows compiling the
+*cdef* and running it once, by **-O** level, against the TinyCC backend
+of jitc 0.7:
+
+| Backend           | x86_64 compile | x86_64 run | aarch64 compile | aarch64 run |
+|-------------------|----------------|------------|-----------------|-------------|
+| TinyCC (jitc 0.7) | 4.6 ms         | 7.7 ms     | 11.5 ms         | 28.6 ms     |
+| **-O0**           | 7.9 ms         | 7.2 ms     | 22.2 ms         | 18.4 ms     |
+| **-O1**           | 8.8 ms         | 6.2 ms     | 23.9 ms         | 16.7 ms     |
+| **-O2** (default) | 11.5 ms        | 5.6 ms     | 30.5 ms         | 14.1 ms     |
+| **-O3**           | 12.2 ms        | 5.6 ms     | 30.6 ms         | 14.0 ms     |
+| **-g**            | 8.3 ms         | 25.5 ms    |                 |             |
+| **-g -O2**        | 10.6 ms        | 5.6 ms     |                 |             |
+
+The x86_64 timings are from an Intel i7-12800H performance core; the
+aarch64 timings are from an AWS t4g (Graviton2) instance running Alpine
+Linux.
+
+- **-O2**, the default, compiles about 30% slower than **-O1** and runs
+  10–16% faster, which a *cdef* called more than a handful of times pays
+  back. **-O3** costs more compile time for no measurable gain in
+  typical code.
+- **-O0** or **-O1** suit code that runs only once or a few times, such
+  as one-off generated code where compile time dominates.
+- **-g** without an explicit **-O** gives full variable inspection in
+  gdb, by keeping every local variable in memory and disabling inlining.
+  That makes the code several times slower (4.5× in the table above), so
+  it is for interactive debugging, not production.
+- **-g -O2**, or **-g** with any explicit level from **-O1** up, runs at
+  full speed. The debug information costs compile time but nothing at
+  run time. It keeps backtraces, line numbers and call frames, live in
+  gdb or from a core file, but some locals can’t be printed, as with
+  gcc’s **-g -O2**. This is the form to use for production code that
+  wants debug information.
+- Calls between functions in a *cdef* are cheap. Moving the lexer’s rule
+  actions above into small helper functions costs under 1%, and calling
+  them through function pointers about 2%.
+- MIR inlines calls to small functions (up to about 50 MIR instructions)
+  defined in the same *cdef*, but limits how much any one caller may
+  grow through inlining. A caller of up to about 200 instructions
+  inlines every such call; a larger caller inlines calls only until it
+  has grown by 50%. So a large function making many calls to a small
+  helper (such as **replace_tclobj**) gets only the first few inlined.
+- Calls through function pointers, to Tcl’s C API, to other *cdef*s
+  (**use**, **symbols**) or to **library** code are never inlined. When
+  **-g** is given without **-O**, nothing is inlined.
 
 ## BUGS
 

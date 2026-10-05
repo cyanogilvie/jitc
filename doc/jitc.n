@@ -190,10 +190,11 @@ optimization level for this \f[I]cdef\f[R].
 \f[I]n\f[R] is 0\[en]3 (a bare \f[B]-O\f[R] means \f[B]-O1\f[R]); higher
 values are clamped to MIR\[cq]s maximum.
 \f[B]-O0\f[R] disables register allocation and most optimization passes
-for the fastest compile, \f[B]-O1\f[R] (the default) adds register
-allocation and the cheap passes, \f[B]-O2\f[R] enables the standard
-passes, and \f[B]-O3\f[R] adds the more expensive ones.
+for the fastest compile, \f[B]-O1\f[R] adds register allocation and the
+cheap passes, \f[B]-O2\f[R] (the default) enables the standard passes,
+and \f[B]-O3\f[R] adds the more expensive ones.
 The last \f[B]-O\f[R] wins.
+See \f[B]PERFORMANCE\f[R] for the trade-offs.
 .IP \[bu] 2
 \f[B]-g\f[R] (any \f[B]-g\f[R]* form) \[em] generate debug information,
 registered with gdb through its JIT interface: function symbols, source
@@ -206,7 +207,7 @@ without \f[B]-g\f[R] (as gcc\[cq]s \f[B]-g -O\f[R]): backtraces and line
 information remain, but some locals can\[cq]t be printed.
 \f[B]-g\f[R] without \f[B]-O\f[R] is therefore much slower than the
 default, so production code wanting debug information should combine it
-with \f[B]-O1\f[R] or \f[B]-O2\f[R].
+with an explicit \f[B]-O2\f[R] (see \f[B]PERFORMANCE\f[R]).
 .PP
 All other options (warning flags such as \f[B]-Wall\f[R],
 \f[B]-std\f[R], linker options, \f[B]-U\f[R], &c.)
@@ -679,6 +680,160 @@ compiling it if needed.
 \f[I]symbols\f[R] may be NULL if \f[I]cdef\f[R] doesn\[cq]t declare any
 exported symbols.
 Will still return \f[B]TCL_OK\f[R] for this case.
+.SS PERFORMANCE
+.PP
+A \f[I]cdef\f[R] is compiled once, the first time a symbol is needed
+from it, and the result is cached in the \f[I]cdef\f[R] value\[cq]s
+internal representation.
+Compile time is therefore paid once per distinct \f[I]cdef\f[R] value,
+not per call.
+Keep \f[I]cdef\f[R] values in variables or namespace globals rather than
+rebuilding them per call, so that the cached compile survives.
+The \f[B]tcl\f[R] mode preamble (tcl.h and the headers it pulls in) is
+preprocessed once and cached, so even a small \f[I]cdef\f[R] compiles in
+a couple of milliseconds.
+.PP
+The optimization level trades compile time for run time.
+The table below gives timings for an re2c-generated lexer:
+\f[B]jitclib::json_check\f[R]\[cq]s JSON validator, checking a 3.4 MB
+document.
+Each row shows compiling the \f[I]cdef\f[R] and running it once, by
+\f[B]-O\f[R] level, against the TinyCC backend of jitc 0.7:
+.PP
+.TS
+tab(@);
+lw(14.0n) lw(14.0n) lw(14.0n) lw(14.0n) lw(14.0n).
+T{
+Backend
+T}@T{
+x86_64 compile
+T}@T{
+x86_64 run
+T}@T{
+aarch64 compile
+T}@T{
+aarch64 run
+T}
+_
+T{
+TinyCC (jitc 0.7)
+T}@T{
+4.6 ms
+T}@T{
+7.7 ms
+T}@T{
+11.5 ms
+T}@T{
+28.6 ms
+T}
+T{
+\f[B]-O0\f[R]
+T}@T{
+7.9 ms
+T}@T{
+7.2 ms
+T}@T{
+22.2 ms
+T}@T{
+18.4 ms
+T}
+T{
+\f[B]-O1\f[R]
+T}@T{
+8.8 ms
+T}@T{
+6.2 ms
+T}@T{
+23.9 ms
+T}@T{
+16.7 ms
+T}
+T{
+\f[B]-O2\f[R] (default)
+T}@T{
+11.5 ms
+T}@T{
+5.6 ms
+T}@T{
+30.5 ms
+T}@T{
+14.1 ms
+T}
+T{
+\f[B]-O3\f[R]
+T}@T{
+12.2 ms
+T}@T{
+5.6 ms
+T}@T{
+30.6 ms
+T}@T{
+14.0 ms
+T}
+T{
+\f[B]-g\f[R]
+T}@T{
+8.3 ms
+T}@T{
+25.5 ms
+T}@T{
+T}@T{
+T}
+T{
+\f[B]-g -O2\f[R]
+T}@T{
+10.6 ms
+T}@T{
+5.6 ms
+T}@T{
+T}@T{
+T}
+.TE
+.PP
+The x86_64 timings are from an Intel i7-12800H performance core; the
+aarch64 timings are from an AWS t4g (Graviton2) instance running Alpine
+Linux.
+.IP \[bu] 2
+\f[B]-O2\f[R], the default, compiles about 30% slower than \f[B]-O1\f[R]
+and runs 10\[en]16% faster, which a \f[I]cdef\f[R] called more than a
+handful of times pays back.
+\f[B]-O3\f[R] costs more compile time for no measurable gain in typical
+code.
+.IP \[bu] 2
+\f[B]-O0\f[R] or \f[B]-O1\f[R] suit code that runs only once or a few
+times, such as one-off generated code where compile time dominates.
+.IP \[bu] 2
+\f[B]-g\f[R] without an explicit \f[B]-O\f[R] gives full variable
+inspection in gdb, by keeping every local variable in memory and
+disabling inlining.
+That makes the code several times slower (4.5× in the table above), so
+it is for interactive debugging, not production.
+.IP \[bu] 2
+\f[B]-g -O2\f[R], or \f[B]-g\f[R] with any explicit level from
+\f[B]-O1\f[R] up, runs at full speed.
+The debug information costs compile time but nothing at run time.
+It keeps backtraces, line numbers and call frames, live in gdb or from a
+core file, but some locals can\[cq]t be printed, as with gcc\[cq]s
+\f[B]-g -O2\f[R].
+This is the form to use for production code that wants debug
+information.
+.IP \[bu] 2
+Calls between functions in a \f[I]cdef\f[R] are cheap.
+Moving the lexer\[cq]s rule actions above into small helper functions
+costs under 1%, and calling them through function pointers about 2%.
+.IP \[bu] 2
+MIR inlines calls to small functions (up to about 50 MIR instructions)
+defined in the same \f[I]cdef\f[R], but limits how much any one caller
+may grow through inlining.
+A caller of up to about 200 instructions inlines every such call; a
+larger caller inlines calls only until it has grown by 50%.
+So a large function making many calls to a small helper (such as
+\f[B]replace_tclobj\f[R]) gets only the first few inlined.
+.IP \[bu] 2
+Calls through function pointers, to Tcl\[cq]s C API, to other
+\f[I]cdef\f[R]s (\f[B]use\f[R], \f[B]symbols\f[R]) or to
+\f[B]library\f[R] code are never inlined.
+When \f[B]-g\f[R] is given without \f[B]-O\f[R], nothing is inlined.
 .SS BUGS
 .PP
 Please report any bugs to the github issue tracker:

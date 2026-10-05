@@ -406,16 +406,15 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 		MIR_load_module(r->ctx, mods[i]);
 
 	// MIR's levels: 0 fast RA, 1 +combiner, 2 +GVN/CCP (MIR's own default), 3+
-	// everything. jitc's workload is dominated by re2c-generated lexers, which
-	// are branch/frontend-bound: -O2/-O3 produce ~14% fewer instructions but the
-	// same cycle count, so the extra compile latency (the GVN/CCP pass roughly
-	// doubles codegen time) buys no runtime. Default to 1 — keeps register
-	// allocation + the combiner (so compute-bound cdefs aren't pessimized) at
-	// near-O0 compile cost. An explicit options -O<n> overrides this.
+	// everything. Default to 2: with libslimcc's register promotion of scalar
+	// locals, -O2 runs re2c-generated lexers (jitc's most common workload) ~10%
+	// faster than -O1 on x86_64 and ~16% on aarch64, for ~30% more compile time,
+	// which a cdef compiled once and run repeatedly pays back within a few calls.
+	// -O3 measures the same as -O2. An explicit options -O<n> overrides this.
 	// Debug builds default to -O0: the optimizer (GVN/combine/RA reuse) makes
 	// stepping jumpy and values stale between statements. An explicit -O<n>
 	// still wins for someone who wants it.
-	unsigned opt_level = r->opt_level >= 0 ? (unsigned)r->opt_level : (r->debug ? 0u : 1u);
+	unsigned opt_level = r->opt_level >= 0 ? (unsigned)r->opt_level : (r->debug ? 0u : 2u);
 
 	// Debug builds at -O0 (the single-stepping mode): don't inline calls, so
 	// each function keeps its own frames and source lines, and home every local
