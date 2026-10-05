@@ -1,3 +1,7 @@
+// RTLD_DEFAULT: older glibcs (2.17, 2.23) only expose it under _GNU_SOURCE
+#ifndef _GNU_SOURCE
+#	define _GNU_SOURCE
+#endif
 #include <config.h>
 
 #include <stddef.h>

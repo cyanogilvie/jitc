@@ -4,7 +4,7 @@ Just In Time C for Tcl
 
 ## SYNOPSIS
 
-**package require jitc** ?0.8.2?
+**package require jitc** ?0.8.3?
 
 **jitc::capply** *cdef* *symbol* ?*arg* …?  
 **jitc::bind** *name* *cdef* *symbol* ?*curryarg* …?  
@@ -299,7 +299,9 @@ API that cdefs commonly use: **Tcl_Size** (and **TCL_SIZE_MAX**,
 (**Tcl_ObjInternalRep**, **Tcl_FetchInternalRep**,
 **Tcl_StoreInternalRep**, **Tcl_FreeInternalRep**, &c) from
 **tip445.h**, installed alongside **tclstuff.h**. So the same cdef
-source compiles against Tcl 8.6 and 9.
+source compiles against Tcl 8.6 and 9. Against the Tcl 8.7 alphas, which
+have that API under its pre-release names (**Tcl_FetchIntRep**, …),
+**tip445.h** maps the final names onto those.
 
 ## EXAMPLES
 
@@ -627,7 +629,7 @@ There are no external dependencies other than Tcl. The libslimcc and MIR
 backends are built as meson subprojects, fetched from their pinned git
 commits during `meson setup` (so the first setup needs network access).
 Build from the release tarball:
-https://github.com/cyanogilvie/jitc/releases/download/v0.8.2/jitc-v0.8.2.tar.gz
+https://github.com/cyanogilvie/jitc/releases/download/v0.8.3/jitc-v0.8.3.tar.gz
 or recursively clone the git repo:
 
     git clone --recurse-submodules https://github.com/cyanogilvie/jitc
@@ -643,6 +645,20 @@ Both Tcl 8.6 and 9.0 are supported. To build against a specific Tcl
 installation, set `PKG_CONFIG_PATH`:
 
     PKG_CONFIG_PATH=/path/to/tcl/lib/pkgconfig meson setup build
+
+JIT compiles find the C library’s headers (**stdio.h** and so on)
+through the system include directories of the host they run on. By
+default these are taken from the C compiler’s include search list when
+jitc is configured. When the build compiler isn’t the target host’s
+system compiler, set them explicitly with **-Dsys_includes**, for
+example:
+
+    meson setup build -Dsys_includes=/usr/local/include,/usr/include/x86_64-linux-gnu,/usr/include
+
+**ci/xenial.Containerfile** is a build environment for hosts with an old
+glibc (Ubuntu 16.04, glibc 2.23). It uses conda-forge’s gcc 14, which
+links against a glibc 2.17 sysroot, so the built package runs on any
+glibc from 2.17 on.
 
 ## TODO
 

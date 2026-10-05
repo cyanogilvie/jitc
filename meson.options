@@ -6,3 +6,6 @@ option('stubsmode', type: 'boolean', value: false,
 
 option('benchmark', type: 'feature', value: 'disabled',
   description: 'Enable benchmarks (auto: enable if all deps are found)')
+
+option('sys_includes', type: 'array', value: [],
+  description: 'System <...> include dirs for JIT compiles on the target host (default: the build compiler\'s search list)')

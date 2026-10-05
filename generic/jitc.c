@@ -844,8 +844,13 @@ static int gather_sources(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l
 #if STUBSMODE
 		TEST_OK(Tcl_ListObjAppendElement(interp, def_list, Tcl_NewStringObj("USE_TCL_STUBS=1", -1)));
 #endif
-		// tip445.h: the TIP 445 intrep API (Tcl_FetchInternalRep &c) on Tcl 8.6, a no-op on 8.7+
-		Tcl_DStringAppend(&preamble, "#include <tclstuff.h>\n#include <tip445.h>\n", -1);
+		// tip445.h: the TIP 445 intrep API (Tcl_FetchInternalRep &c) where Tcl
+		// lacks it.  Pass on what jitc's own build detected from these same Tcl
+		// headers: tip445.h's fallback guess by version is wrong for the 8.7
+		// alphas that predate the TIP 445 renames (Tcl_FetchIntRep, ...)
+		Tcl_DStringAppend(&preamble, TIP445_SHIM
+			? "#define TIP445_SHIM 1\n#include <tclstuff.h>\n#include <tip445.h>\n"
+			: "#define TIP445_SHIM 0\n#include <tclstuff.h>\n#include <tip445.h>\n", -1);
 	}
 
 	// Pass 2: packages and `use` — these contribute headers (to the preamble),

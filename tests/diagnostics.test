@@ -83,6 +83,36 @@ test diagnostics-1.8 {a missing header is named} -body { #<<<
 	brief "#include <no_such_header_xyz.h>\nOBJCMD(f) { return TCL_OK; }"
 } -result {{error cdef 1 {include file 'no_such_header_xyz.h' not found}}}
 #>>>
+test diagnostics-1.9 {an error in the cached preamble (a package's header) names its file on every compile} -setup { #<<<
+	set dir		[::tcltest::makeDirectory diag_fakepkg]
+	::tcltest::makeFile "/* diag_fakepkg.h */\nstatic int fake_x;\nint fake_x;\n" diag_fakepkg.h $dir
+	namespace eval ::diag_fakepkg {
+		proc pkgconfig {op key} {
+			variable dir
+			switch -- $key {
+				header								{return diag_fakepkg.h}
+				includedir,runtime - includedir,install	{return $dir}
+				default								{return ""}
+			}
+		}
+	}
+	set ::diag_fakepkg::dir	$dir
+	package provide diag_fakepkg 1.0
+} -body {
+	# The second and later compiles take the preamble from the pch cache
+	lmap i {1 2 3} {
+		lmap d [diags "OBJCMD(f) { return TCL_OK; }" package diag_fakepkg] {
+			lassign $d lvl file line msg
+			list $lvl [file tail $file] $line $msg
+		}
+	}
+} -cleanup {
+	namespace delete ::diag_fakepkg
+	package forget diag_fakepkg
+	::tcltest::removeDirectory diag_fakepkg
+	unset -nocomplain dir i d lvl file line msg
+} -result [lrepeat 3 {{error diag_fakepkg.h 3 {redeclaration has inconsistent 'static'}}}]
+#>>>
 
 test diagnostics-2.1 {-Wincompatible-pointer-types is fatal} -body { #<<<
 	brief "OBJCMD(f)\n{\n\tconst char* s = \"x\";\n\tint* ip = s;\n\t(void)ip;\n\treturn TCL_OK;\n}"

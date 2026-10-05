@@ -1,5 +1,5 @@
 project('jitc', 'c',
-  version:          '0.8.2',
+  version:          '0.8.3',
   default_options:  ['c_std=gnu2y,gnu23,gnu2x', 'warning_level=3', 'werror=true'],
   meson_version:    '>=1.3.0',
 )
@@ -54,21 +54,26 @@ deps += dependency('slimcc')
 # (where <stdio.h>, <tcl.h>'s dependencies, ... live) must be supplied by the
 # consumer. Detect the build host C compiler's <...> search list at configure
 # time and bake it into the build so jitc can hand it to slimcc_compile.
-_sysinc = []
-_probe = run_command(cc.cmd_array() + ['-E', '-Wp,-v', '-xc', '/dev/null'],
-  check: false)
-_in_list = false
-foreach _line : _probe.stderr().split('\n')
-  _t = _line.strip()
-  if _t == '#include <...> search starts here:'
-    _in_list = true
-  elif _t == 'End of search list.'
-    _in_list = false
-  elif _in_list and _t != ''
-    # gcc annotates framework dirs with " (framework directory)"; drop that.
-    _sysinc += _t.split(' ')[0]
-  endif
-endforeach
+# -Dsys_includes overrides the probe: a build with a non-system toolchain
+# (a conda gcc for an old-glibc host, say) would otherwise bake in that
+# toolchain's private dirs rather than the target host's.
+_sysinc = get_option('sys_includes')
+if _sysinc.length() == 0
+  _probe = run_command(cc.cmd_array() + ['-E', '-Wp,-v', '-xc', '/dev/null'],
+    check: false)
+  _in_list = false
+  foreach _line : _probe.stderr().split('\n')
+    _t = _line.strip()
+    if _t == '#include <...> search starts here:'
+      _in_list = true
+    elif _t == 'End of search list.'
+      _in_list = false
+    elif _in_list and _t != ''
+      # gcc annotates framework dirs with " (framework directory)"; drop that.
+      _sysinc += _t.split(' ')[0]
+    endif
+  endforeach
+endif
 if _sysinc.length() == 0
   warning('Could not detect system include paths from the C compiler; ' +
     'JIT compiles that #include <stdio.h> etc. may fail to find libc headers')
