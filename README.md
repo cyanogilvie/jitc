@@ -9,6 +9,7 @@ Just In Time C for Tcl
 **jitc::capply** *cdef* *symbol* ?*arg* …?  
 **jitc::bind** *name* *cdef* *symbol* ?*curryarg* …?  
 **jitc::symbols** *cdef*  
+**jitc::dump** **mir**\|**c** *cdef*  
 **jitc::packageinclude**  
 **jitc::re2c** ?*option* …? *source*  
 **jitc::packcc** ?*option* …? *source*  
@@ -26,9 +27,12 @@ related settings as a value stored in a Tcl_Obj and doing the
 compilation as needed, caching the result and freeing the memory when
 the last reference goes away.
 
-The generation of object code is done by an embedded TinyCC compiler.
-
-The compiler supports the most of the C99 and C11 C language standards.
+Code is compiled in-process by libslimcc (an embeddable fork of the
+slimcc C compiler) to MIR, which generates the machine code (x86_64 and
+aarch64). The language is C23 (GNU dialect) with the TS 25755 **defer**
+statement. Nothing is written to disk or loaded with **dlopen**, except
+the source files written for the debugger when debug information is
+requested.
 
 ## COMMANDS
 
@@ -41,10 +45,27 @@ interesting quickly.
 Register *name* as a command that invokes *symbol* in *def*. *symbol*
 must be a Tcl_ObjCmdProc or you’re in for a bad time. If any *curryarg*s
 are supplied they are prepended to any args passed to *symbol* when
-*name* is invoked.
+*name* is invoked. The *ClientData* passed to *symbol* is a
+**Tcl_Obj\*\*** slot private to this binding, initially NULL and kept
+across calls, in which *symbol* may cache a value: store a Tcl_Obj with
+a reference held (**Tcl_IncrRefCount**), replacing (and releasing) any
+previous one. The reference is released when *name* is deleted.
 
 **jitc::symbols** *cdef*  
 Return a list of the symbols in *cdef*.
+
+**jitc::dump** **mir**\|**c** *cdef*  
+Return an intermediate form of *cdef*, for inspection and debugging.
+With **mir**, return the textual MIR intermediate representation of the
+compiled *cdef* (compiling it first if necessary): the source-level IR
+the C front-end emits, before the MIR code generator’s optimization
+passes, including the runtime helper functions linked into every cdef.
+With **c**, return the assembled C source as the compiler sees it: a
+list with one element per **code** part, each being the **\#include**
+preamble (assembled from the implicit Tcl headers plus any **package**,
+**use** and **export** headers) prepended to that block’s body after its
+**filter** (if any) has run. **file** parts are standalone translation
+units and are not included.
 
 **jitc::packageinclude**  
 Return the path for the headers bundled with this package.
@@ -77,17 +98,16 @@ of convenience macros for implementing Tcl commands in C (see the
 **CONVENIENCE MACROS** section). Mode **raw** turns off this behaviour.
 
 **debug**  
-*value* names a filesystem path (which must exist, and be a directory)
-into which to write copies of the code sections specified by **code**
-parts. This is useful when debugging the code, so that the debugger can
-find the source code. The files are removed when the *cdef* is freed
-(except if the program crashes, in which case having the files left
-behind is beneficial for examining the resulting core file in a
-debugger).
+Generate debug information for the *cdef*, as for **-g** in **options**
+(see there). *value* is accepted for compatibility and ignored: copies
+of the code sections, for the debugger to show, are written to a
+temporary directory under **P_tmpdir**, removed when the *cdef* is freed
+(but left behind if the program crashes, so a core file can be examined
+with its source).
 
 **options**  
-*value* contains an option string in the style passed to **tcc(1)**. The
-string is split into a Tcl list, and the following options are honoured:
+*value* contains a C compiler style option string. The string is split
+into a Tcl list, and the following options are honoured:
 
 - **-I** *dir* — add *dir* to the include search path (as
   **include_path**).
@@ -96,13 +116,23 @@ string is split into a Tcl list, and the following options are honoured:
 - **-O** *n* — set the MIR code generator’s optimization level for this
   *cdef*. *n* is 0–3 (a bare **-O** means **-O1**); higher values are
   clamped to MIR’s maximum. **-O0** disables register allocation and
-  most optimization passes for the fastest compile, **-O2** (MIR’s
-  default if no **-O** is given) enables full register allocation and
-  the standard passes, and **-O3** adds the more expensive passes. The
-  last **-O** wins.
+  most optimization passes for the fastest compile, **-O1** (the
+  default) adds register allocation and the cheap passes, **-O2**
+  enables the standard passes, and **-O3** adds the more expensive ones.
+  The last **-O** wins.
+- **-g** (any **-g**\* form) — generate debug information, registered
+  with gdb through its JIT interface: function symbols, source line
+  tables, variables and call frame information, so backtraces (live or
+  from a core file) and stepping work through compiled code. On its own
+  **-g** implies **-O0** with every local kept in memory, for full
+  variable inspection. With an explicit **-O1** or higher, the code is
+  optimized as without **-g** (as gcc’s **-g -O**): backtraces and line
+  information remain, but some locals can’t be printed. **-g** without
+  **-O** is therefore much slower than the default, so production code
+  wanting debug information should combine it with **-O1** or **-O2**.
 
-All other options (warning flags such as **-Wall**, **-g**, linker
-options, **-U**, &c.) have no MIR/libslimcc equivalent and are silently
+All other options (warning flags such as **-Wall**, **-std**, linker
+options, **-U**, &c.) have no libslimcc equivalent and are silently
 ignored.
 
 **include_path**  
@@ -122,16 +152,17 @@ Add the path in *value* to the list of paths searched for libraries.
 **library**  
 Add the path in *value* to the libraries linked into the code.
 
-**tccdir**  
-Set the default path searched for the built-in tcc libraries and
-headers. Defaults to the bundled files with this package.
+**tccpath**  
+Accepted for compatibility with the TinyCC backend of jitc 0.7 and
+earlier, and ignored.
 
 **define**  
 Define a preprocessor symbol. *value* must be a 2 element list, the
 first of which is the name of the symbol and the second its value.
 
 **undefine**  
-Undefine the preprocessor symbol *value*.
+Undefine the preprocessor symbol *value*. Currently ignored (libslimcc
+has no interface for it).
 
 **package**  
 Load and link with the Tcl package *value*, which must be a list, the
@@ -444,22 +475,27 @@ https://github.com/cyanogilvie/jitc/issues
 ## SEE ALSO
 
 critcl: https://wiki.tcl-lang.org/page/Critcl, tcc4tcl:
-https://wiki.tcl-lang.org/page/tcc4tcl, tcc(1),
-https://repo.or.cz/tinycc.git, re2c: https://en.wikipedia.org/wiki/Re2c,
-packcc: https://en.wikipedia.org/wiki/PackCC, lemon:
+https://wiki.tcl-lang.org/page/tcc4tcl, slimcc:
+https://github.com/fuhsnn/slimcc (libslimcc fork:
+https://github.com/cyanogilvie/slimcc), MIR:
+https://github.com/vnmakarov/mir, re2c:
+https://en.wikipedia.org/wiki/Re2c, packcc:
+https://en.wikipedia.org/wiki/PackCC, lemon:
 https://sqlite.org/src/doc/trunk/doc/lemon.html.
 
 ## PROJECT STATUS
 
-This is already in heavy production use for us and working well, at
-least in the subset that we’re using. Recently the musl `dlcose` memory
-leak and **use** symbol problems have been resolved by using a new
-object code loader, so there are no remaining known problems on musl.
+Versions up to 0.7 were in heavy production use with an embedded TinyCC
+compiler. 0.8.0 replaces it with libslimcc and MIR: C23 with **defer**,
+an optimizing code generator, multiple architectures (x86_64, aarch64),
+and no temporary shared objects or **dlopen**.
 
 ## BUILDING
 
-There are no external dependencies other than Tcl. Build from the
-release tarball:
+There are no external dependencies other than Tcl. The libslimcc and MIR
+backends are built as meson subprojects, fetched from their pinned git
+commits during `meson setup` (so the first setup needs network access).
+Build from the release tarball:
 https://github.com/cyanogilvie/jitc/releases/download/v0.8.0/jitc-v0.8.0.tar.gz
 or recursively clone the git repo:
 
@@ -492,10 +528,7 @@ installation, set `PKG_CONFIG_PATH`:
 ## LICENSE
 
 This package is Copyright 2022-2026 Cyan Ogilvie, and is made available
-under the same license terms as the Tcl Core. The TCC compiler is LGPL.
-This package does not distribute object code or source code from TCC and
-so doesn’t trigger any GPL issues, but if you build this package and
-distribute the result you will need to ensure that you are in compliance
-with the terms of the TCC LGPL license. The git submodules for the
-linked tools each have their own license: TinyCC is LGPL; re2c is public
-domain; packcc is MIT; lemon and sqlite are public domain.
+under the same license terms as the Tcl Core. The compiler backends
+linked into it are MIT licensed: libslimcc (slimcc, derived from
+chibicc) and MIR. The bundled tools each have their own license: re2c is
+public domain; packcc is MIT; lemon and sqlite are public domain.

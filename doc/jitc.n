@@ -39,6 +39,10 @@ Just In Time C for Tcl
 .PD 0
 .P
 .PD
+\f[B]jitc::dump\f[R] \f[B]mir\f[R]|\f[B]c\f[R] \f[I]cdef\f[R]
+.PD 0
+.P
+.PD
 \f[B]jitc::packageinclude\f[R]
 .PD 0
 .P
@@ -67,9 +71,14 @@ related settings as a value stored in a Tcl_Obj and doing the
 compilation as needed, caching the result and freeing the memory when
 the last reference goes away.
 .PP
-The generation of object code is done by an embedded TinyCC compiler.
-.PP
-The compiler supports the most of the C99 and C11 C language standards.
+Code is compiled in-process by libslimcc (an embeddable fork of the
+slimcc C compiler) to MIR, which generates the machine code (x86_64 and
+aarch64).
+The language is C23 (GNU dialect) with the TS 25755 \f[B]defer\f[R]
+statement.
+Nothing is written to disk or loaded with \f[B]dlopen\f[R], except the
+source files written for the debugger when debug information is
+requested.
 .SS COMMANDS
 .TP
 \f[B]jitc::capply\f[R] \f[I]cdef\f[R] \f[I]symbol\f[R] ?\f[I]arg\f[R] \&...?
@@ -85,9 +94,32 @@ Register \f[I]name\f[R] as a command that invokes \f[I]symbol\f[R] in
 time.
 If any \f[I]curryarg\f[R]s are supplied they are prepended to any args
 passed to \f[I]symbol\f[R] when \f[I]name\f[R] is invoked.
+The \f[I]ClientData\f[R] passed to \f[I]symbol\f[R] is a
+\f[B]Tcl_Obj**\f[R] slot private to this binding, initially NULL and
+kept across calls, in which \f[I]symbol\f[R] may cache a value: store a
+Tcl_Obj with a reference held (\f[B]Tcl_IncrRefCount\f[R]), replacing
+(and releasing) any previous one.
+The reference is released when \f[I]name\f[R] is deleted.
 .TP
 \f[B]jitc::symbols\f[R] \f[I]cdef\f[R]
 Return a list of the symbols in \f[I]cdef\f[R].
+.TP
+\f[B]jitc::dump\f[R] \f[B]mir\f[R]|\f[B]c\f[R] \f[I]cdef\f[R]
+Return an intermediate form of \f[I]cdef\f[R], for inspection and
+debugging.
+With \f[B]mir\f[R], return the textual MIR intermediate representation
+of the compiled \f[I]cdef\f[R] (compiling it first if necessary): the
+source-level IR the C front-end emits, before the MIR code
+generator\[cq]s optimization passes, including the runtime helper
+functions linked into every cdef.
+With \f[B]c\f[R], return the assembled C source as the compiler sees it:
+a list with one element per \f[B]code\f[R] part, each being the
+\f[B]#include\f[R] preamble (assembled from the implicit Tcl headers
+plus any \f[B]package\f[R], \f[B]use\f[R] and \f[B]export\f[R] headers)
+prepended to that block\[cq]s body after its \f[B]filter\f[R] (if any)
+has run.
+\f[B]file\f[R] parts are standalone translation units and are not
+included.
 .TP
 \f[B]jitc::packageinclude\f[R]
 Return the path for the headers bundled with this package.
@@ -126,18 +158,16 @@ MACROS\f[R] section).
 Mode \f[B]raw\f[R] turns off this behaviour.
 .TP
 \f[B]debug\f[R]
-\f[I]value\f[R] names a filesystem path (which must exist, and be a
-directory) into which to write copies of the code sections specified by
-\f[B]code\f[R] parts.
-This is useful when debugging the code, so that the debugger can find
-the source code.
-The files are removed when the \f[I]cdef\f[R] is freed (except if the
-program crashes, in which case having the files left behind is
-beneficial for examining the resulting core file in a debugger).
+Generate debug information for the \f[I]cdef\f[R], as for \f[B]-g\f[R]
+in \f[B]options\f[R] (see there).
+\f[I]value\f[R] is accepted for compatibility and ignored: copies of the
+code sections, for the debugger to show, are written to a temporary
+directory under \f[B]P_tmpdir\f[R], removed when the \f[I]cdef\f[R] is
+freed (but left behind if the program crashes, so a core file can be
+examined with its source).
 .TP
 \f[B]options\f[R]
-\f[I]value\f[R] contains an option string in the style passed to
-\f[B]tcc(1)\f[R].
+\f[I]value\f[R] contains a C compiler style option string.
 The string is split into a Tcl list, and the following options are
 honoured:
 .RS
@@ -153,14 +183,27 @@ optimization level for this \f[I]cdef\f[R].
 \f[I]n\f[R] is 0\[en]3 (a bare \f[B]-O\f[R] means \f[B]-O1\f[R]); higher
 values are clamped to MIR\[cq]s maximum.
 \f[B]-O0\f[R] disables register allocation and most optimization passes
-for the fastest compile, \f[B]-O2\f[R] (MIR\[cq]s default if no
-\f[B]-O\f[R] is given) enables full register allocation and the standard
-passes, and \f[B]-O3\f[R] adds the more expensive passes.
+for the fastest compile, \f[B]-O1\f[R] (the default) adds register
+allocation and the cheap passes, \f[B]-O2\f[R] enables the standard
+passes, and \f[B]-O3\f[R] adds the more expensive ones.
 The last \f[B]-O\f[R] wins.
+.IP \[bu] 2
+\f[B]-g\f[R] (any \f[B]-g\f[R]* form) \[em] generate debug information,
+registered with gdb through its JIT interface: function symbols, source
+line tables, variables and call frame information, so backtraces (live
+or from a core file) and stepping work through compiled code.
+On its own \f[B]-g\f[R] implies \f[B]-O0\f[R] with every local kept in
+memory, for full variable inspection.
+With an explicit \f[B]-O1\f[R] or higher, the code is optimized as
+without \f[B]-g\f[R] (as gcc\[cq]s \f[B]-g -O\f[R]): backtraces and line
+information remain, but some locals can\[cq]t be printed.
+\f[B]-g\f[R] without \f[B]-O\f[R] is therefore much slower than the
+default, so production code wanting debug information should combine it
+with \f[B]-O1\f[R] or \f[B]-O2\f[R].
 .PP
-All other options (warning flags such as \f[B]-Wall\f[R], \f[B]-g\f[R],
-linker options, \f[B]-U\f[R], &c.)
-have no MIR/libslimcc equivalent and are silently ignored.
+All other options (warning flags such as \f[B]-Wall\f[R],
+\f[B]-std\f[R], linker options, \f[B]-U\f[R], &c.)
+have no libslimcc equivalent and are silently ignored.
 .RE
 .TP
 \f[B]include_path\f[R]
@@ -183,10 +226,9 @@ libraries.
 \f[B]library\f[R]
 Add the path in \f[I]value\f[R] to the libraries linked into the code.
 .TP
-\f[B]tccdir\f[R]
-Set the default path searched for the built-in tcc libraries and
-headers.
-Defaults to the bundled files with this package.
+\f[B]tccpath\f[R]
+Accepted for compatibility with the TinyCC backend of jitc 0.7 and
+earlier, and ignored.
 .TP
 \f[B]define\f[R]
 Define a preprocessor symbol.
@@ -195,6 +237,7 @@ of the symbol and the second its value.
 .TP
 \f[B]undefine\f[R]
 Undefine the preprocessor symbol \f[I]value\f[R].
+Currently ignored (libslimcc has no interface for it).
 .TP
 \f[B]package\f[R]
 Load and link with the Tcl package \f[I]value\f[R], which must be a
@@ -636,20 +679,26 @@ https://github.com/cyanogilvie/jitc/issues
 .SS SEE ALSO
 .PP
 critcl: https://wiki.tcl-lang.org/page/Critcl, tcc4tcl:
-https://wiki.tcl-lang.org/page/tcc4tcl, tcc(1),
-https://repo.or.cz/tinycc.git, re2c: https://en.wikipedia.org/wiki/Re2c,
-packcc: https://en.wikipedia.org/wiki/PackCC, lemon:
+https://wiki.tcl-lang.org/page/tcc4tcl, slimcc:
+https://github.com/fuhsnn/slimcc (libslimcc fork:
+https://github.com/cyanogilvie/slimcc), MIR:
+https://github.com/vnmakarov/mir, re2c:
+https://en.wikipedia.org/wiki/Re2c, packcc:
+https://en.wikipedia.org/wiki/PackCC, lemon:
 https://sqlite.org/src/doc/trunk/doc/lemon.html.
 .SS PROJECT STATUS
 .PP
-This is already in heavy production use for us and working well, at
-least in the subset that we\[cq]re using.
-Recently the musl \f[V]dlcose\f[R] memory leak and \f[B]use\f[R] symbol
-problems have been resolved by using a new object code loader, so there
-are no remaining known problems on musl.
+Versions up to 0.7 were in heavy production use with an embedded TinyCC
+compiler.
+0.8.0 replaces it with libslimcc and MIR: C23 with \f[B]defer\f[R], an
+optimizing code generator, multiple architectures (x86_64, aarch64), and
+no temporary shared objects or \f[B]dlopen\f[R].
 .SS BUILDING
 .PP
 There are no external dependencies other than Tcl.
+The libslimcc and MIR backends are built as meson subprojects, fetched
+from their pinned git commits during \f[V]meson setup\f[R] (so the first
+setup needs network access).
 Build from the release tarball:
 https://github.com/cyanogilvie/jitc/releases/download/v0.8.0/jitc-v0.8.0.tar.gz
 or recursively clone the git repo:
@@ -703,11 +752,7 @@ PKG_CONFIG_PATH=/path/to/tcl/lib/pkgconfig meson setup build
 .PP
 This package is Copyright 2022-2026 Cyan Ogilvie, and is made available
 under the same license terms as the Tcl Core.
-The TCC compiler is LGPL.
-This package does not distribute object code or source code from TCC and
-so doesn\[cq]t trigger any GPL issues, but if you build this package and
-distribute the result you will need to ensure that you are in compliance
-with the terms of the TCC LGPL license.
-The git submodules for the linked tools each have their own license:
-TinyCC is LGPL; re2c is public domain; packcc is MIT; lemon and sqlite
-are public domain.
+The compiler backends linked into it are MIT licensed: libslimcc
+(slimcc, derived from chibicc) and MIR.
+The bundled tools each have their own license: re2c is public domain;
+packcc is MIT; lemon and sqlite are public domain.
