@@ -1,0 +1,188 @@
+# Function-call overhead dimension of the -O level comparison.  Three versions
+# of the same re2c JSON validator (jitclib::json_check's logic, in portable C so
+# libtcc and libslimcc compile identical source):
+#   inline   - rule actions inline (as json_check)
+#   calls    - each rule action calls a small static helper (a backend may
+#              inline these: MIR does at link time for callees <= 50 insns)
+#   calls_fp - the same helpers called through volatile function pointers, so
+#              they can never be inlined (under MIR these also go through the
+#              callee's thunk, as a function pointer is the thunk address)
+
+namespace eval ::olevel_calls {
+	variable template {
+		/*!types:re2c*/
+
+		static int value_done(Tcl_DString* cs)
+		{
+			const int stacklen = Tcl_DStringLength(cs);
+			if (stacklen) return (Tcl_DStringValue(cs)[stacklen-1] == 'o') ? yycobjectnext : yycarraynext;
+			return yycterm;
+		}
+
+		static int open_object(Tcl_DString* cs)
+		{
+			Tcl_DStringAppend(cs, "o", 1);
+			return yyckey;
+		}
+
+		static void open_array(Tcl_DString* cs)
+		{
+			Tcl_DStringAppend(cs, "a", 1);
+		}
+
+		static int close_container(Tcl_DString* cs)
+		{
+			const int newlen = Tcl_DStringLength(cs)-1;
+			Tcl_DStringSetLength(cs, newlen);
+			if (newlen) return (Tcl_DStringValue(cs)[newlen-1] == 'o') ? yycobjectnext : yycarraynext;
+			return yycterm;
+		}
+
+		@FP_DECLS@
+
+		static int check_json(Tcl_Obj* jsonObj)
+		{
+			const unsigned char*		m = NULL;
+			int							cond = yycvalue;
+			Tcl_Size					len;
+			const unsigned char*const	str = (const unsigned char*)Tcl_GetStringFromObj(jsonObj, &len);
+			const unsigned char*		s = str;
+			Tcl_DString					cs;
+
+			(void)len; (void)m;
+			Tcl_DStringInit(&cs);
+
+			#define GETCOND()	cond
+			#define SETCOND(c)	(cond = c)
+
+		loop:
+			/*!re2c
+				re2c:yyfill:enable			= 0;
+				re2c:define:YYCTYPE			= "unsigned char";
+				re2c:define:YYCURSOR		= "s";
+				re2c:define:YYMARKER		= "m";
+				re2c:define:YYGETCONDITION	= "GETCOND";
+				re2c:define:YYSETCONDITION	= "SETCOND";
+
+				end			= [\x00];
+				character	= [\x20-\U0010ffff] \ [\\"];
+				digit		= [0-9];
+				digit1		= [1-9];
+				hexdigit	= [0-9a-fA-F];
+				ws			= [ \x0a\x0d\x09]*;
+				true		= ws "true"  ws;
+				false		= ws "false" ws;
+				null		= ws "null"  ws;
+				integer		= digit1 digit* | "0";
+				fraction	= "." digit+;
+				sign		= "-" | "+";
+				exponent	= 'e' sign? digit+;
+				number		= ws "-"? integer fraction? exponent? ws;
+				escape		= [\\] ( ["\\/bfnrt] | "u" hexdigit{4} );
+				string		= ws ["] character* ( escape character* )* ["] ws;
+
+				<value>		string				{ @VALUE_DONE@ goto loop; }
+				<value>		number				{ @VALUE_DONE@ goto loop; }
+				<value>		true				{ @VALUE_DONE@ goto loop; }
+				<value>		false				{ @VALUE_DONE@ goto loop; }
+				<value>		null				{ @VALUE_DONE@ goto loop; }
+				<value>	ws "{" ws "}" ws		{ @VALUE_DONE@ goto loop; }
+				<value>	ws "{" ws				{ @OPEN_OBJECT@ goto loop; }
+				<value> ws "[" ws "]" ws		{ @VALUE_DONE@ goto loop; }
+				<value> ws "[" ws	=> value	{ @OPEN_ARRAY@ goto loop; }
+
+				<key>	string ":" ws	:=> value
+
+				<objectnext> ","		:=> key
+				<objectnext> "}" ws		{ @CLOSE@ goto loop; }
+
+				<arraynext> ","			:=> value
+				<arraynext> "]" ws		{ @CLOSE@ goto loop; }
+
+				<term> ws end			{ Tcl_DStringFree(&cs); return 1; }
+
+				<*> *					{ Tcl_DStringFree(&cs); return 0; }
+			*/
+		}
+
+		OBJCMD(check)
+		{
+			enum {A_cmd, A_JSON, A_objc};
+			CHECK_ARGS("json");
+			Tcl_SetObjResult(interp, Tcl_NewBooleanObj(check_json(objv[A_JSON])));
+			return TCL_OK;
+		}
+	}
+
+	# The inline actions are exactly the helpers' bodies.
+	variable maps [dict create \
+		inline [list \
+			@FP_DECLS@		{} \
+			@VALUE_DONE@	{{ const int stacklen = Tcl_DStringLength(&cs); if (stacklen) { cond = (Tcl_DStringValue(&cs)[stacklen-1] == 'o') ? yycobjectnext : yycarraynext; } else { cond = yycterm; } }} \
+			@OPEN_OBJECT@	{Tcl_DStringAppend(&cs, "o", 1); cond = yyckey;} \
+			@OPEN_ARRAY@	{Tcl_DStringAppend(&cs, "a", 1);} \
+			@CLOSE@			{{ const int newlen = Tcl_DStringLength(&cs)-1; Tcl_DStringSetLength(&cs, newlen); if (newlen) { cond = (Tcl_DStringValue(&cs)[newlen-1] == 'o') ? yycobjectnext : yycarraynext; } else { cond = yycterm; } }} \
+		] \
+		calls [list \
+			@FP_DECLS@		{} \
+			@VALUE_DONE@	{cond = value_done(&cs);} \
+			@OPEN_OBJECT@	{cond = open_object(&cs);} \
+			@OPEN_ARRAY@	{open_array(&cs);} \
+			@CLOSE@			{cond = close_container(&cs);} \
+		] \
+		calls_fp [list \
+			@FP_DECLS@		{
+				static int  (*volatile fp_value_done)(Tcl_DString*)		= value_done;
+				static int  (*volatile fp_open_object)(Tcl_DString*)	= open_object;
+				static void (*volatile fp_open_array)(Tcl_DString*)		= open_array;
+				static int  (*volatile fp_close_container)(Tcl_DString*)	= close_container;
+			} \
+			@VALUE_DONE@	{cond = fp_value_done(&cs);} \
+			@OPEN_OBJECT@	{cond = fp_open_object(&cs);} \
+			@OPEN_ARRAY@	{fp_open_array(&cs);} \
+			@CLOSE@			{cond = fp_close_container(&cs);} \
+		] \
+	]
+
+	# The calls variants' helpers are unused in the inline variant; keep them
+	# (identical code size to compile) but mark them used to keep -Wall quiet.
+	proc cdef {variant olevel} {
+		variable template
+		variable maps
+		set code [string map [dict get $maps $variant] $template]
+		if {$variant eq "inline"} {
+			append code {
+				void _keep_helpers(void) { (void)value_done; (void)open_object; (void)open_array; (void)close_container; }
+			}
+		}
+		list options [list -Wall -Werror -O$olevel] \
+			filter {jitc::re2c -i --case-ranges --conditions --tags --utf8} \
+			code $code
+	}
+}
+
+foreach olevel {0 1 2 3} {
+	bench olevel_calls_compile-O$olevel "Compile time, -O$olevel: inline vs helper calls" -setup [string map [list @O@ $olevel] { #<<<
+		set ::olevel_calls::doc {"foo"}
+	}] -compare [string map [list @O@ $olevel] {
+		inline		{ jitc::capply [::olevel_calls::cdef inline @O@] check $::olevel_calls::doc }
+		calls		{ jitc::capply [::olevel_calls::cdef calls @O@] check $::olevel_calls::doc }
+		calls_fp	{ jitc::capply [::olevel_calls::cdef calls_fp @O@] check $::olevel_calls::doc }
+	}] -result 1
+	#>>>
+	bench olevel_calls_runtime-O$olevel "Run time, -O$olevel: inline vs helper calls" -setup [string map [list @O@ $olevel] { #<<<
+		set ::olevel_calls::doc		[readFile /tmp/items9.json]
+		set ::olevel_calls::inline		[::olevel_calls::cdef inline @O@]
+		set ::olevel_calls::calls		[::olevel_calls::cdef calls @O@]
+		set ::olevel_calls::calls_fp	[::olevel_calls::cdef calls_fp @O@]
+	}] -compare {
+		inline		{ jitc::capply $::olevel_calls::inline check $::olevel_calls::doc }
+		calls		{ jitc::capply $::olevel_calls::calls check $::olevel_calls::doc }
+		calls_fp	{ jitc::capply $::olevel_calls::calls_fp check $::olevel_calls::doc }
+	} -cleanup {
+		unset -nocomplain ::olevel_calls::doc ::olevel_calls::inline ::olevel_calls::calls ::olevel_calls::calls_fp
+	} -result 1
+	#>>>
+}
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4
