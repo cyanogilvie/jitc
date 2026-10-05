@@ -113,6 +113,69 @@ coroutine main eval {
 
 if {![info exists ::coro_done]} {vwait ::coro_done}
 
+# Bound commands get a per-binding Tcl_Obj* slot as their ClientData: NULL at
+# first, kept across calls, released by jitc when the command is deleted.
+set slot_cdef {
+	code {
+		OBJCMD(counter)
+		{
+			Tcl_Obj**		slot = cdata;
+			Tcl_WideInt		n = 0;
+			if (*slot) {
+				if (Tcl_GetWideIntFromObj(interp, *slot, &n) != TCL_OK) return TCL_ERROR;
+				Tcl_DecrRefCount(*slot);
+			}
+			*slot = Tcl_NewWideIntObj(n + 1 + (objc-1)*100);
+			Tcl_IncrRefCount(*slot);
+			Tcl_SetObjResult(interp, *slot);
+			return TCL_OK;
+		}
+
+		// Invoke a command through its classic (non-NR) objProc entry point.
+		OBJCMD(via_objproc)
+		{
+			Tcl_CmdInfo	info;
+			if (!Tcl_GetCommandInfo(interp, Tcl_GetString(objv[1]), &info)) return TCL_ERROR;
+			return info.objProc(info.objClientData, interp, 1, objv+1);
+		}
+	}
+}
+
+test bind-3.1 {cdata slot persists across calls (NR path)} -setup { #<<<
+	jitc::bind test_bind-3.1 $slot_cdef counter
+} -body {
+	list [test_bind-3.1] [test_bind-3.1] [test_bind-3.1]
+} -cleanup {
+	rename test_bind-3.1 {}
+} -result {1 2 3}
+#>>>
+test bind-3.2 {cdata slot is shared by the NR and objProc paths} -setup { #<<<
+	jitc::bind test_bind-3.2 $slot_cdef counter
+} -body {
+	list [test_bind-3.2] [jitc::capply $slot_cdef via_objproc test_bind-3.2] [test_bind-3.2]
+} -cleanup {
+	rename test_bind-3.2 {}
+} -result {1 2 3}
+#>>>
+test bind-3.3 {cdata slot with curry args} -setup { #<<<
+	jitc::bind test_bind-3.3 $slot_cdef counter x
+} -body {
+	list [test_bind-3.3] [test_bind-3.3]
+} -cleanup {
+	rename test_bind-3.3 {}
+} -result {101 202}
+#>>>
+test bind-3.4 {each binding has its own slot, and writing it leaves the binding intact} -setup { #<<<
+	jitc::bind test_bind-3.4a $slot_cdef counter
+	jitc::bind test_bind-3.4b $slot_cdef counter
+} -body {
+	list [test_bind-3.4a] [test_bind-3.4a] [test_bind-3.4b] [test_bind-3.4a] [test_bind-3.4b]
+} -cleanup {
+	rename test_bind-3.4a {}
+	rename test_bind-3.4b {}
+} -result {1 2 1 3 2}
+#>>>
+
 if 0 {
 set cdef {
 	code {

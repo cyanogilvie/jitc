@@ -118,11 +118,17 @@ struct interp_cx {
 };
 
 struct proc_binding {
+	// The bound function's ClientData is &cdata: a per-binding slot it may use to
+	// keep a Tcl_Obj* across calls (released on unbind).  It must stay the first
+	// member so that a binding pointer *is* &binding->cdata: the uncurried command
+	// registers resolved itself as its NR proc with the binding as clientData.
+	Tcl_Obj*		cdata;
 	Tcl_Obj*		cdef;
 	Tcl_Obj*		symbol;
 	Tcl_ObjCmdProc*	resolved;
 	Tcl_Obj*		curryargs;
 };
+static_assert(offsetof(struct proc_binding, cdata) == 0, "cdata must be the first member of struct proc_binding");
 
 int get_r_from_obj(Tcl_Interp* interp, Tcl_Obj* obj, struct jitc_intrep** rPtr);
 

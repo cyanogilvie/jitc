@@ -1481,7 +1481,7 @@ static int _bind_invoke_curried(ClientData cdata, Tcl_Interp* interp, int objc, 
 	for (Tcl_Size i=0; i<cc; i++)	ov[arg++] = cv[i];
 	for (int i=1; i<objc; i++)		ov[arg++] = objv[i];
 
-	return (binding->resolved)(nullptr, interp, oc, ov);
+	return (binding->resolved)(&binding->cdata, interp, oc, ov);
 }
 
 //>>>
@@ -1494,7 +1494,7 @@ static int _bind_invoke_curried_setup(ClientData cdata, Tcl_Interp* interp, int 
 static int _bind_invoke_setup(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //<<<
 {
 	struct proc_binding*	binding = cdata;
-	return Tcl_NRCallObjProc(interp, binding->resolved, cdata, objc, objv);
+	return Tcl_NRCallObjProc(interp, binding->resolved, &binding->cdata, objc, objv);
 }
 
 //>>>
@@ -1502,9 +1502,10 @@ static void _unbind(ClientData cdata) //<<<
 {
 	struct proc_binding*	binding = cdata;
 
-	replace_tclobj(&binding->cdef, nullptr);
-	replace_tclobj(&binding->symbol, nullptr);
-	replace_tclobj(&binding->curryargs, nullptr);
+	replace_tclobj(&binding->cdef,		nullptr);
+	replace_tclobj(&binding->symbol,	nullptr);
+	replace_tclobj(&binding->curryargs,	nullptr);
+	replace_tclobj(&binding->cdata,		nullptr);
 	binding->resolved = nullptr;
 	ckfree(binding);
 	binding = nullptr;
@@ -1520,9 +1521,10 @@ static int bind_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*cons
 	*binding = (struct proc_binding){};
 	defer {
 		if (binding) {
-			replace_tclobj(&binding->cdef, nullptr);
-			replace_tclobj(&binding->symbol, nullptr);
-			replace_tclobj(&binding->curryargs, nullptr);
+			replace_tclobj(&binding->cdef,		nullptr);
+			replace_tclobj(&binding->symbol,	nullptr);
+			replace_tclobj(&binding->curryargs,	nullptr);
+			replace_tclobj(&binding->cdata,		nullptr);
 			ckfree(binding);
 		}
 	}
@@ -1535,6 +1537,8 @@ static int bind_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*cons
 		if (Tcl_NRCreateCommand(interp, Tcl_GetString(objv[A_NAME]), _bind_invoke_curried_setup, _bind_invoke_curried, binding, _unbind) == nullptr)
 			THROW_ERROR("Failed to create command");
 	} else {
+		// The NR path calls resolved directly with the binding as clientData,
+		// which is &binding->cdata (cdata is its first member, see jitcInt.h).
 		if (Tcl_NRCreateCommand(interp, Tcl_GetString(objv[A_NAME]), _bind_invoke_setup, binding->resolved, binding, _unbind) == nullptr)
 			THROW_ERROR("Failed to create command");
 	}
