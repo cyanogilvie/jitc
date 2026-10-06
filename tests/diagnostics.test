@@ -83,6 +83,26 @@ test diagnostics-1.8 {a missing header is named} -body { #<<<
 	brief "#include <no_such_header_xyz.h>\nOBJCMD(f) { return TCL_OK; }"
 } -result {{error cdef 1 {include file 'no_such_header_xyz.h' not found}}}
 #>>>
+test diagnostics-1.10 {tclstuff.h's THROW_PRINTF macros take a format string with or without arguments} -body { #<<<
+	jitc::capply {code {
+		static int a(Tcl_Interp* interp)	{ THROW_PRINTF("no args"); }
+		static int b(Tcl_Interp* interp)	{ THROW_PRINTF("%d arg", 1); }
+		static int c(Tcl_Interp* interp)	{ int code = TCL_OK; THROW_PRINTF_LABEL(finally, code, "no args"); finally: return code; }
+		static int d(Tcl_Interp* interp)	{ int code = TCL_OK; THROW_PRINTF_LABEL(finally, code, "%s", "arg"); finally: return code; }
+		OBJCMD(f)
+		{
+			Tcl_Obj*	res = Tcl_NewListObj(0, NULL);
+			int			(*fs[])(Tcl_Interp*) = {a, b, c, d};
+			for (int i=0; i<4; i++) {
+				fs[i](interp);
+				Tcl_ListObjAppendElement(NULL, res, Tcl_GetObjResult(interp));
+			}
+			Tcl_SetObjResult(interp, res);
+			return TCL_OK;
+		}
+	}} f
+} -result {{no args} {1 arg} {no args} arg}
+#>>>
 test diagnostics-1.9 {an error in the cached preamble (a package's header) names its file on every compile} -setup { #<<<
 	set dir		[::tcltest::makeDirectory diag_fakepkg]
 	::tcltest::makeFile "/* diag_fakepkg.h */\nstatic int fake_x;\nint fake_x;\n" diag_fakepkg.h $dir
