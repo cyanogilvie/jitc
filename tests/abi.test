@@ -81,6 +81,27 @@ test abi-2.1 {structs returned by value from cdef functions, called through func
 	} test
 } -result {21 42 3 1.5}
 #>>>
+test abi-3.1 {all-float/double structs passed to a host variadic function} -body { #<<<
+	jitc::capply {
+		code { //@begin=c@
+			#include <stdio.h>
+			typedef struct { double d; } d1;
+			typedef struct { double a, b; } d2;
+			OBJCMD(test) {
+				char	buf[128];
+				d1		x = {1.5}, y = {-2.25};
+				d2		a = {1, 2}, b = {3, 4}, c = {5, 6}, d = {7, 8};
+				// The d2s fill the 8 FP (aarch64) / XMM (x86-64) argument registers,
+				// then x and y go on the stack: the same order on both
+				snprintf(buf, sizeof(buf), "%g %g %g %g %g %g %g %g %g %g", a, b, c, d, x, y);
+				Tcl_SetObjResult(interp, Tcl_NewStringObj(buf, -1));
+				return TCL_OK;
+			}
+			//@end=c@
+		}
+	} test
+} -result {1 2 3 4 5 6 7 8 1.5 -2.25}
+#>>>
 
 ::tcltest::cleanupTests
 return

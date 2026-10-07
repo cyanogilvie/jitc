@@ -4,7 +4,7 @@ Just In Time C for Tcl
 
 ## SYNOPSIS
 
-**package require jitc** ?0.8.5?
+**package require jitc** ?0.8.6?
 
 **jitc::capply** *cdef* *symbol* ?*arg* …?  
 **jitc::bind** *name* *cdef* *symbol* ?*curryarg* …?  
@@ -628,8 +628,9 @@ and no temporary shared objects or **dlopen**.
 Supported: Linux on x86_64 (glibc, musl) and aarch64 (musl, glibc). cdef
 code follows the host C ABI there, including structs passed or returned
 by value (since 0.8.5: 0.8.0-0.8.4 miscompiled calls to host functions
-returning small structs), with the few exceptions listed in the notes
-below.
+returning small structs; 0.8.6 completes aarch64 all-float/double
+structs and x86-64 packed structs), with the few exceptions listed in
+the notes below.
 
 Not yet supported: macOS and Windows (the libslimcc build refuses them),
 and Linux riscv64 (builds, but the C ABI isn’t followed for structs or
@@ -643,7 +644,7 @@ There are no external dependencies other than Tcl. The libslimcc and MIR
 backends are built as meson subprojects, fetched from their pinned git
 commits during `meson setup` (so the first setup needs network access).
 Build from the release tarball:
-https://github.com/cyanogilvie/jitc/releases/download/v0.8.5/jitc-v0.8.5.tar.gz
+https://github.com/cyanogilvie/jitc/releases/download/v0.8.6/jitc-v0.8.6.tar.gz
 or recursively clone the git repo:
 
     git clone --recurse-submodules https://github.com/cyanogilvie/jitc
