@@ -626,14 +626,15 @@ and no temporary shared objects or **dlopen**.
 ## PLATFORMS
 
 Supported: Linux on x86_64 (glibc, musl) and aarch64 (musl, glibc). cdef
-code follows the host C ABI there, including structs passed or returned by
-value (since 0.8.5: 0.8.0-0.8.4 miscompiled calls to host functions
-returning small structs), with the few exceptions listed in the notes below.
+code follows the host C ABI there, including structs passed or returned
+by value (since 0.8.5: 0.8.0-0.8.4 miscompiled calls to host functions
+returning small structs), with the few exceptions listed in the notes
+below.
 
-Not yet supported: macOS and Windows (the libslimcc build refuses them), and
-Linux riscv64 (builds, but the C ABI isn't followed for structs or
-**va_list**). Remaining gaps on the supported targets, and what porting to
-each of those needs, are tracked in libslimcc's
+Not yet supported: macOS and Windows (the libslimcc build refuses them),
+and Linux riscv64 (builds, but the C ABI isn’t followed for structs or
+**va_list**). Remaining gaps on the supported targets, and what porting
+to each of those needs, are tracked in libslimcc’s
 [notes/mir-backend/platform-support.md](https://github.com/cyanogilvie/slimcc/blob/mir-backend/notes/mir-backend/platform-support.md).
 
 ## BUILDING

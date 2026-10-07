@@ -618,8 +618,7 @@ Not yet supported: macOS and Windows (the libslimcc build refuses them), and
 Linux riscv64 (builds, but the C ABI isn't followed for structs or
 **va_list**). Remaining gaps on the supported targets, and what porting to
 each of those needs, are tracked in libslimcc's
-notes/mir-backend/platform-support.md
-(https://github.com/cyanogilvie/slimcc/blob/mir-backend/notes/mir-backend/platform-support.md).
+[notes/mir-backend/platform-support.md](https://github.com/cyanogilvie/slimcc/blob/mir-backend/notes/mir-backend/platform-support.md).
 
 
 ## BUILDING
