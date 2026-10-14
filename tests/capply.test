@@ -974,6 +974,27 @@ test capply-15.1 {modifying a shared compiled cdef in place duplicates it (segfa
 } -result {1 1 2}
 #>>>
 
+test capply-16.1 {string literals and concatenations bigger than an arena pool (internal error)} -body { #<<<
+	# Over slimcc's 8160 byte arena pool: a single literal used to be an
+	# internal error, and joined literals were leaked by every compile
+	jitc::capply [list code [string map [list \
+		@SINGLE@	[string repeat x 9000] \
+		@A@			[string repeat y 5000] \
+		@B@			[string repeat z 5000] \
+	] {
+		#include <string.h>
+		OBJCMD(lens) {
+			static const char single[] = "@SINGLE@";
+			static const char joined[] = "@A@" "@B@";
+			static const char small[] = "a" "b" "c";
+			Tcl_SetObjResult(interp, Tcl_ObjPrintf("%d %d %c %d %s",
+				(int)strlen(single), (int)strlen(joined), joined[5000], (int)sizeof small, small));
+			return TCL_OK;
+		}
+	}]] lens
+} -result {9000 10000 z 4 abc}
+#>>>
+
 # cleanup
 ::tcltest::cleanupTests
 return
