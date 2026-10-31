@@ -1,6 +1,8 @@
 #include <jitcInt.h>
 #include <tip445.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <limits.h>
 #include <names.h>
 
 TCL_DECLARE_MUTEX(g_pkgdir_mutex)
@@ -11,6 +13,69 @@ static Tcl_Obj* g_pkgdir = nullptr;
 // context struct), so concurrent slimcc_compile() calls are unsafe; this mutex
 // also guards the file-scope link-error longjmp target below.
 TCL_DECLARE_MUTEX(g_compile_mutex)
+
+// The debug source dirs of the live -g cdefs (see debug_write_block). A cdef
+// usually lives as long as its process, and Tcl frees nothing at exit, so its
+// own teardown (jitc_free_backend) only removes the dir of a cdef freed early.
+// The rest go in an exit handler: a process that exits normally removes them,
+// and one that crashes leaves them for gdb to show source from its core.
+TCL_DECLARE_MUTEX(g_debugdirs_mutex)
+static Tcl_HashTable	g_debugdirs;		// path -> nullptr, guarded by g_debugdirs_mutex
+static int				g_debugdirs_inited = 0;
+
+static void remove_debugdir(const char* path) //<<<
+{
+	// Plain POSIX, not Tcl's VFS: this runs from an exit handler
+	DIR*	d = opendir(path);
+	if (d) {
+		struct dirent*	e;
+		while ((e = readdir(d))) {
+			if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+			char	fn[PATH_MAX];
+			if (snprintf(fn, sizeof fn, "%s/%s", path, e->d_name) < (int)sizeof fn)
+				unlink(fn);
+		}
+		closedir(d);
+	}
+	rmdir(path);
+}
+
+//>>>
+static void remove_debugdirs(ClientData cdata) //<<<
+{
+	(void)cdata;
+	Tcl_MutexLock(&g_debugdirs_mutex);	defer { Tcl_MutexUnlock(&g_debugdirs_mutex); };
+	if (!g_debugdirs_inited) return;
+	Tcl_HashSearch	search;
+	for (Tcl_HashEntry* he = Tcl_FirstHashEntry(&g_debugdirs, &search); he; he = Tcl_NextHashEntry(&search))
+		remove_debugdir(Tcl_GetHashKey(&g_debugdirs, he));
+	Tcl_DeleteHashTable(&g_debugdirs);
+	g_debugdirs_inited = 0;
+}
+
+//>>>
+static void debugdir_track(const char* path) //<<<
+{
+	Tcl_MutexLock(&g_debugdirs_mutex);	defer { Tcl_MutexUnlock(&g_debugdirs_mutex); };
+	if (!g_debugdirs_inited) {
+		Tcl_InitHashTable(&g_debugdirs, TCL_STRING_KEYS);
+		Tcl_CreateExitHandler(remove_debugdirs, nullptr);
+		g_debugdirs_inited = 1;
+	}
+	int	isnew;
+	Tcl_CreateHashEntry(&g_debugdirs, path, &isnew);
+}
+
+//>>>
+static void debugdir_untrack(const char* path) //<<<
+{
+	Tcl_MutexLock(&g_debugdirs_mutex);	defer { Tcl_MutexUnlock(&g_debugdirs_mutex); };
+	if (!g_debugdirs_inited) return;
+	Tcl_HashEntry*	he = Tcl_FindHashEntry(&g_debugdirs, path);
+	if (he) Tcl_DeleteHashEntry(he);
+}
+
+//>>>
 
 typedef const char* (cdef_initstubs)(Tcl_Interp* interp, const char* ver);
 typedef int (cdef_init)(Tcl_Interp* interp);
@@ -363,6 +428,7 @@ static void debug_write_block(struct jitc_intrep* r, const char* src, int idx, T
 	if (!r->debugdir) {
 		char tmpl[] = P_tmpdir "/jitc_dbg_XXXXXX";
 		if (!mkdtemp(tmpl)) return;
+		debugdir_track(tmpl);
 		replace_tclobj(&r->debugdir, Tcl_NewStringObj(tmpl, -1));
 		replace_tclobj(&r->debugfiles, Tcl_NewListObj(0, nullptr));
 	}
@@ -523,6 +589,7 @@ static void jitc_free_backend(struct jitc_intrep* r) //<<<
 	}
 	if (r->debugdir) {
 		Tcl_FSRemoveDirectory(r->debugdir, 0, nullptr);
+		debugdir_untrack(Tcl_GetString(r->debugdir));
 		replace_tclobj(&r->debugdir, nullptr);
 	}
 	// dlclose after the code that referenced these libraries is gone.
@@ -1857,6 +1924,11 @@ DLLEXPORT int Jitc_Unload(Tcl_Interp* interp, int flags) //<<<
 		// detaching from the process, so nothing more will compile here.
 		slimcc_shutdown();
 		Tcl_MutexFinalize(&g_compile_mutex);
+
+		// The exit handler mustn't outlive this library: remove the dirs now
+		Tcl_DeleteExitHandler(remove_debugdirs, nullptr);
+		remove_debugdirs(nullptr);
+		Tcl_MutexFinalize(&g_debugdirs_mutex);
 
 		{
 			Tcl_MutexLock(&g_pkgdir_mutex);		defer { Tcl_MutexUnlock(&g_pkgdir_mutex); };

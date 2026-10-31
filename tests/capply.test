@@ -901,6 +901,80 @@ test capply-14.1 {Implicit debug directory handling triggered by "-g" (test unde
 } -result did_foo
 #>>>
 
+# A -g cdef's debug sources (its TU's __FILE__) stay while its process runs, for
+# gdb, and go when the cdef is freed or the process exits normally, but a crash
+# leaves them for inspecting its core.  These run in child processes, loading
+# jitc as the tests do
+set debugsrc_cdef {options {-g} code {
+	OBJCMD(file) {
+		Tcl_SetObjResult(interp, Tcl_NewStringObj(__FILE__, -1));
+		return TCL_OK;
+	}
+}}
+proc in_child script { # Run script in a child tclsh that has jitc loaded: its output, and how it ended <<<
+	set h	[open |[list [info nameofexecutable] 2>@1] r+]
+	puts $h [tcltest::configure -load]
+	puts $h [list set debugsrc_cdef $::debugsrc_cdef]
+	puts $h $script
+	close $h write
+	set out	[read $h]
+	try {
+		close $h
+	} on ok {} {
+		list $out exited
+	} trap CHILDKILLED {} {
+		list $out killed
+	}
+}
+
+#>>>
+test capply-17.1 {A -g cdef's debug sources are there while its process runs, and go when it exits normally} -body { #<<<
+	lassign [in_child {
+		set cdef	[string cat $debugsrc_cdef " "]		;# Its own object, held until exit
+		set fn		[jitc::capply $cdef file]
+		puts [list $fn [file exists $fn]]
+	}] out how
+	lassign [lindex [split [string trim $out] \n] end] fn existed
+	list $how [string match /*/jitc_dbg_*/cdef*.c $fn] $existed [file exists [file dirname $fn]]
+} -cleanup {
+	unset -nocomplain out how fn existed
+} -result {exited 1 1 0}
+#>>>
+test capply-17.2 {A crash leaves its -g cdefs' debug sources} -body { #<<<
+	lassign [in_child {
+		set cdef	[string cat $debugsrc_cdef " "]
+		set fn		[jitc::capply $cdef file]
+		puts [list $fn [file exists $fn]]
+		flush stdout
+		exec kill -KILL [pid]
+	}] out how
+	lassign [lindex [split [string trim $out] \n] end] fn existed
+	list $how $existed [file exists $fn]
+} -cleanup {
+	if {[info exists fn] && [string match /*/jitc_dbg_*/cdef*.c $fn]} {
+		file delete -force [file dirname $fn]
+	}
+	unset -nocomplain out how fn existed
+} -result {killed 1 1}
+#>>>
+test capply-17.3 {A -g cdef freed early takes its debug sources with it} -body { #<<<
+	lassign [in_child {
+		# Its own object, which only the bound command holds
+		jitc::bind dbgfile [string cat $debugsrc_cdef " "] file
+		set fn		[dbgfile]
+		set before	[file exists $fn]
+		rename dbgfile {}
+		puts [list $fn $before [file exists [file dirname $fn]]]
+	}] out how
+	lassign [lindex [split [string trim $out] \n] end] fn before after
+	list $how $before $after
+} -cleanup {
+	unset -nocomplain out how fn before after
+} -result {exited 1 0}
+#>>>
+rename in_child {}
+unset debugsrc_cdef
+
 test tmp-1.1 {} -constraints SIGTRAP -body {
 	file delete -force /tmp/tmpdebug
 	file mkdir /tmp/tmpdebug
