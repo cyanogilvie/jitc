@@ -4,7 +4,7 @@ Just In Time C for Tcl
 
 ## SYNOPSIS
 
-**package require jitc** ?0.8.7?
+**package require jitc** ?0.8.8?
 
 **jitc::capply** *cdef* *symbol* ?*arg* …?  
 **jitc::bind** *name* *cdef* *symbol* ?*curryarg* …?  
@@ -149,8 +149,8 @@ Generate debug information for the *cdef*, as for **-g** in **options**
 (see there). *value* is accepted for compatibility and ignored: copies
 of the code sections, for the debugger to show, are written to a
 temporary directory under **P_tmpdir**, removed when the *cdef* is freed
-(but left behind if the program crashes, so a core file can be examined
-with its source).
+or the process exits normally (but left behind if the program crashes, so
+a core file can be examined with its source).
 
 **options**  
 *value* contains a C compiler style option string. The string is split
@@ -644,7 +644,7 @@ There are no external dependencies other than Tcl. The libslimcc and MIR
 backends are built as meson subprojects, fetched from their pinned git
 commits during `meson setup` (so the first setup needs network access).
 Build from the release tarball:
-https://github.com/cyanogilvie/jitc/releases/download/v0.8.7/jitc-v0.8.7.tar.gz
+https://github.com/cyanogilvie/jitc/releases/download/v0.8.8/jitc-v0.8.8.tar.gz
 or recursively clone the git repo:
 
     git clone --recurse-submodules https://github.com/cyanogilvie/jitc
