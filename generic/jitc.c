@@ -18,10 +18,17 @@ TCL_DECLARE_MUTEX(g_compile_mutex)
 // usually lives as long as its process, and Tcl frees nothing at exit, so its
 // own teardown (jitc_free_backend) only removes the dir of a cdef freed early.
 // The rest go in an exit handler: a process that exits normally removes them,
-// and one that crashes leaves them for gdb to show source from its core.
+// and one that crashes leaves them for gdb to show source from its core. Each
+// is linked into this list from its cdef's intrep (struct debugdir_link), as
+// teabase's instance tracking does, so neither the tracking nor the exit
+// handler allocates or frees anything: the intreps (and their debugdir paths)
+// are still there when the handler runs.
 TCL_DECLARE_MUTEX(g_debugdirs_mutex)
-static Tcl_HashTable	g_debugdirs;		// path -> nullptr, guarded by g_debugdirs_mutex
-static int				g_debugdirs_inited = 0;
+static struct debugdir_link	g_debugdirs_head;	// Sentinels, guarded by g_debugdirs_mutex
+static struct debugdir_link	g_debugdirs_tail;
+static struct debugdir_link	g_debugdirs_head = {.next = &g_debugdirs_tail};
+static struct debugdir_link	g_debugdirs_tail = {.prev = &g_debugdirs_head};
+static int					g_debugdirs_handler = 0;	// The exit handler is registered
 
 static void remove_debugdir(const char* path) //<<<
 {
@@ -45,34 +52,43 @@ static void remove_debugdirs(ClientData cdata) //<<<
 {
 	(void)cdata;
 	Tcl_MutexLock(&g_debugdirs_mutex);	defer { Tcl_MutexUnlock(&g_debugdirs_mutex); };
-	if (!g_debugdirs_inited) return;
-	Tcl_HashSearch	search;
-	for (Tcl_HashEntry* he = Tcl_FirstHashEntry(&g_debugdirs, &search); he; he = Tcl_NextHashEntry(&search))
-		remove_debugdir(Tcl_GetHashKey(&g_debugdirs, he));
-	Tcl_DeleteHashTable(&g_debugdirs);
-	g_debugdirs_inited = 0;
-}
-
-//>>>
-static void debugdir_track(const char* path) //<<<
-{
-	Tcl_MutexLock(&g_debugdirs_mutex);	defer { Tcl_MutexUnlock(&g_debugdirs_mutex); };
-	if (!g_debugdirs_inited) {
-		Tcl_InitHashTable(&g_debugdirs, TCL_STRING_KEYS);
-		Tcl_CreateExitHandler(remove_debugdirs, nullptr);
-		g_debugdirs_inited = 1;
+	while (g_debugdirs_head.next != &g_debugdirs_tail) {
+		struct debugdir_link*	l = g_debugdirs_head.next;
+		remove_debugdir(l->path);
+		g_debugdirs_head.next = l->next;
+		l->next->prev = &g_debugdirs_head;
+		*l = (struct debugdir_link){};		// Off the list: a later teardown of its cdef leaves it be
 	}
-	int	isnew;
-	Tcl_CreateHashEntry(&g_debugdirs, path, &isnew);
+	g_debugdirs_handler = 0;
 }
 
 //>>>
-static void debugdir_untrack(const char* path) //<<<
+static void debugdir_track(struct jitc_intrep* r) //<<<
 {
 	Tcl_MutexLock(&g_debugdirs_mutex);	defer { Tcl_MutexUnlock(&g_debugdirs_mutex); };
-	if (!g_debugdirs_inited) return;
-	Tcl_HashEntry*	he = Tcl_FindHashEntry(&g_debugdirs, path);
-	if (he) Tcl_DeleteHashEntry(he);
+	if (!g_debugdirs_handler) {
+		Tcl_CreateExitHandler(remove_debugdirs, nullptr);
+		g_debugdirs_handler = 1;
+	}
+	struct debugdir_link*	l = &r->debugdir_link;
+	*l = (struct debugdir_link){
+		.path	= Tcl_GetString(r->debugdir),
+		.prev	= g_debugdirs_tail.prev,
+		.next	= &g_debugdirs_tail,
+	};
+	l->prev->next = l;
+	l->next->prev = l;
+}
+
+//>>>
+static void debugdir_untrack(struct jitc_intrep* r) //<<<
+{
+	Tcl_MutexLock(&g_debugdirs_mutex);	defer { Tcl_MutexUnlock(&g_debugdirs_mutex); };
+	struct debugdir_link*	l = &r->debugdir_link;
+	if (!l->next) return;
+	l->prev->next = l->next;
+	l->next->prev = l->prev;
+	*l = (struct debugdir_link){};
 }
 
 //>>>
@@ -140,6 +156,7 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //<<<
 	replace_tclobj(&r->exported_headers, nullptr);
 	replace_tclobj(&r->used, nullptr);
 
+	debugdir_untrack(r);	// jitc_free_backend has, but the exit handler's list mustn't keep freed memory
 	ckfree(r);
 	r = nullptr;
 }
@@ -428,8 +445,8 @@ static void debug_write_block(struct jitc_intrep* r, const char* src, int idx, T
 	if (!r->debugdir) {
 		char tmpl[] = P_tmpdir "/jitc_dbg_XXXXXX";
 		if (!mkdtemp(tmpl)) return;
-		debugdir_track(tmpl);
 		replace_tclobj(&r->debugdir, Tcl_NewStringObj(tmpl, -1));
+		debugdir_track(r);
 		replace_tclobj(&r->debugfiles, Tcl_NewListObj(0, nullptr));
 	}
 
@@ -588,8 +605,8 @@ static void jitc_free_backend(struct jitc_intrep* r) //<<<
 		replace_tclobj(&r->debugfiles, nullptr);
 	}
 	if (r->debugdir) {
+		debugdir_untrack(r);
 		Tcl_FSRemoveDirectory(r->debugdir, 0, nullptr);
-		debugdir_untrack(Tcl_GetString(r->debugdir));
 		replace_tclobj(&r->debugdir, nullptr);
 	}
 	// dlclose after the code that referenced these libraries is gone.

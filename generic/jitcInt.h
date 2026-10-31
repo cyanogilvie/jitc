@@ -64,6 +64,15 @@
 // When the cdef requests debug (a `debug` part or -g in options) the JIT'd
 // functions' DWARF object is registered against MIR's GDB-JIT descriptor bound
 // to ctx (see above), so MIR_finish() unregisters and frees it at teardown.
+// A -g cdef's debug source dir, on the list of the live ones that jitc's exit
+// handler removes (jitc.c).  In the cdef's intrep, so tracking it allocates
+// nothing: next == nullptr when it isn't on the list
+struct debugdir_link {
+	struct debugdir_link*	next;
+	struct debugdir_link*	prev;
+	const char*				path;		// Borrowed: the intrep's debugdir's string rep
+};
+
 struct jitc_intrep {
 	Tcl_Obj*				symbols;			// dict: symbol name -> code/data address (Tcl_WideInt)
 	Tcl_Obj*				cdef;
@@ -76,6 +85,7 @@ struct jitc_intrep {
 	int						opt_level;			// MIR codegen optimization level (-O<n>); -1 = use jitc's default (O1)
 	int						debug;				// cdef requested debug symbols (a `debug` part or -g in options)
 	Tcl_Obj*				debugdir;			// temp dir holding per-block source files for gdb (debug only)
+	struct debugdir_link	debugdir_link;		// debugdir on the exit handler's list
 	Tcl_Obj*				debugfiles;			// list of those source file paths (unlinked on teardown)
 	void**					dlhandles;			// Libraries dlopen()'d so this cdef's code can resolve their symbols
 	int						n_dlhandles;
