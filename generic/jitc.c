@@ -6,6 +6,12 @@
 #include <names.h>
 
 TCL_DECLARE_MUTEX(g_pkgdir_mutex)
+// The default codegen mode: lazy, unless JITC_EAGER_CODEGEN is set in the
+// environment (for running a test suite eagerly). Read once, when jitc first
+// loads, rather than per compile: getenv isn't safe against another thread
+// changing the environment (Tcl's ::env writes call setenv), and compiles run
+// in any thread.
+static int g_default_lazy = 1;
 static Tcl_Obj* g_pkgdir = nullptr;
 
 // Serializes the whole compile pipeline. libslimcc keeps global compiler state
@@ -101,6 +107,7 @@ static void free_jitc_internal_rep(Tcl_Obj* obj);
 static void dup_jitc_internal_rep(Tcl_Obj* src, Tcl_Obj* dup);
 static void update_jitc_string_rep(Tcl_Obj* obj);
 static void jitc_free_backend(struct jitc_intrep* r);
+static int jitc_ensure_generated(Tcl_Interp* interp, struct jitc_intrep* r, void* addr);
 
 // GDB JIT integration lives in MIR now (mir-debug-gdb): a `-g` cdef's DWARF
 // object is built by libslimcc and registered via MIR_debug_gdb_register(ctx,...)
@@ -136,6 +143,27 @@ static void free_jitc_internal_rep(Tcl_Obj* obj) //<<<
 			if (TCL_OK == Tcl_DictObjGet(r->interp, r->symbols, releasename, &releasesymboladdr) && releasesymboladdr) {
 				cdef_release*	release = nullptr;
 				void*			addr = jitc_get_symbol(r, "release");
+				// A codegen failure can't be returned from here: skip the release,
+				// and report it as a background error (or on stderr, if the interp
+				// is going away), leaving whatever the interp was doing undisturbed.
+				if (Tcl_InterpDeleted(r->interp)) {
+					Tcl_Obj*	errmsg = nullptr;	defer { replace_tclobj(&errmsg, nullptr); };
+					Tcl_InterpState	state = Tcl_SaveInterpState(r->interp, TCL_OK);
+					if (TCL_OK != jitc_ensure_generated(r->interp, r, addr)) {
+						addr = nullptr;
+						replace_tclobj(&errmsg, Tcl_GetObjResult(r->interp));
+					}
+					Tcl_RestoreInterpState(r->interp, state);
+					if (errmsg) fprintf(stderr, "jitc: skipping release: %s\n", Tcl_GetString(errmsg));
+				} else {
+					Tcl_InterpState	state = Tcl_SaveInterpState(r->interp, TCL_OK);
+					if (TCL_OK != jitc_ensure_generated(r->interp, r, addr)) {
+						addr = nullptr;
+						Tcl_AddErrorInfo(r->interp, "\n    (generating the code of a cdef's release function, skipped)");
+						Tcl_BackgroundException(r->interp, TCL_ERROR);
+					}
+					Tcl_RestoreInterpState(r->interp, state);
+				}
 				memcpy(&release, &addr, sizeof release);
 				if (release) (release)(r->interp);
 			}
@@ -232,10 +260,13 @@ static void* import_resolver(const char* name) //<<<
 
 // MIR raises link/codegen errors (duplicate definitions, malformed modules
 // migrated in, ...) through a context error function whose default aborts the
-// process. Route them into the compile-error path instead. Only touched while
-// holding g_compile_mutex, so the file-scope longjmp target is safe.
-static jmp_buf		g_link_jmp;
-static Tcl_Obj**	g_link_errors = nullptr;	// where the active compile collects MIR diagnostics
+// process. Route them into the compile-error path instead: whoever runs MIR
+// code that can fail (the link, and generating a function jitc is about to hand
+// out) points tl_link_jmp at a setjmp target for the duration. Thread-local,
+// since lazy code generation runs in the cdef's own thread, outside
+// g_compile_mutex.
+static thread_local jmp_buf*	tl_link_jmp = nullptr;
+static thread_local Tcl_Obj**	tl_link_errors = nullptr;	// where the active guard collects MIR diagnostics
 
 // Precompiled-preamble (header) cache. Compiling a tcl-mode cdef otherwise
 // re-tokenizes the whole tcl.h closure (~12k lines) every time, which dominates
@@ -286,6 +317,13 @@ static void jitc_pch_cache_cleanup(void) //<<<
 	g_pch_cache_inited = 0;
 } //>>>
 
+// MIR's default allocator (libc), restated so the context's MIR_alloc can
+// also carry the intrep in user_data.
+static void* jitc_mir_malloc(size_t size, void* ud)								{ (void)ud; return malloc(size); }
+static void* jitc_mir_calloc(size_t n, size_t size, void* ud)					{ (void)ud; return calloc(n, size); }
+static void* jitc_mir_realloc(void* p, size_t old, size_t size, void* ud)		{ (void)ud; (void)old; return realloc(p, size); }
+static void  jitc_mir_free(void* p, void* ud)									{ (void)ud; free(p); }
+
 static void MIR_NO_RETURN link_error_func(MIR_error_type_t error_type, const char* format, ...) //<<<
 {
 	char	buf[1024];
@@ -294,13 +332,21 @@ static void MIR_NO_RETURN link_error_func(MIR_error_type_t error_type, const cha
 	vsnprintf(buf, sizeof buf, format, ap);
 	va_end(ap);
 
-	if (g_link_errors) {
-		if (*g_link_errors == nullptr)
-			replace_tclobj(g_link_errors, Tcl_ObjPrintf("MIR error %d: %s", (int)error_type, buf));
+	// Unguarded: a function first called from JIT code (or through a function
+	// pointer) failed to generate, with JIT frames above us that can't be
+	// unwound. The only errors MIR's code generator raises are allocation
+	// failures and ABI shapes slimcc never emits, so this is out-of-memory or a
+	// compiler bug, both of which abort the process under eager codegen as well.
+	if (!tl_link_jmp)
+		Tcl_Panic("jitc: lazy code generation failed (MIR error %d): %s", (int)error_type, buf);
+
+	if (tl_link_errors) {
+		if (*tl_link_errors == nullptr)
+			replace_tclobj(tl_link_errors, Tcl_ObjPrintf("MIR error %d: %s", (int)error_type, buf));
 		else
-			Tcl_AppendStringsToObj(*g_link_errors, "\nMIR error: ", buf, nullptr);
+			Tcl_AppendStringsToObj(*tl_link_errors, "\nMIR error: ", buf, nullptr);
 	}
-	longjmp(g_link_jmp, 1);
+	longjmp(*tl_link_jmp, 1);
 }
 
 //>>>
@@ -320,12 +366,17 @@ void* jitc_get_symbol(struct jitc_intrep* r, const char* name) //<<<
 //>>>
 // Walk every item of every module loaded into the cdef's context and record
 // name -> address for each defined function and named data/bss object, the
-// analog of tcc_list_symbols(). Addresses are final after MIR_link() with the
-// eager gen interface (item->addr is the callable code / loaded data); a func
-// whose addr wasn't filled is generated on demand.
+// analog of tcc_list_symbols(). A function's address is its thunk (item->addr),
+// final after MIR_link(): it jumps to the generated code, or under lazy codegen
+// to the generator first. Lazily generated functions are also indexed by that
+// address in r->ungenerated, for jitc_ensure_generated.
 static void build_symbols_dict(struct jitc_intrep* r) //<<<
 {
 	replace_tclobj(&r->symbols, Tcl_NewDictObj());
+	if (r->lazy && !r->ungenerated_inited) {
+		Tcl_InitHashTable(&r->ungenerated, TCL_ONE_WORD_KEYS);
+		r->ungenerated_inited = 1;
+	}
 
 	for (
 		MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(r->ctx));
@@ -342,6 +393,10 @@ static void build_symbols_dict(struct jitc_intrep* r) //<<<
 				case MIR_func_item:
 					name = it->u.func->name;
 					if (!addr) addr = MIR_gen(r->ctx, it);
+					if (r->lazy && !it->u.func->machine_code) {
+						int	isnew;
+						Tcl_SetHashValue(Tcl_CreateHashEntry(&r->ungenerated, addr, &isnew), it);
+					}
 					break;
 				case MIR_data_item:	name = it->u.data->name;	break;
 				case MIR_bss_item:	name = it->u.bss->name;		break;
@@ -359,13 +414,41 @@ static void build_symbols_dict(struct jitc_intrep* r) //<<<
 }
 
 //>>>
-// Build an ELF symbol object over every generated function (and named data) in
-// the cdef's context and register it with any attached debugger via the GDB
-// JIT interface. Function-granularity only — MIR emits no line info, so this
-// restores named frames / `break funcname` / labeled disas but not stepping.
-// Best-effort: if the object can't be built the frames just stay anonymous.
-// Runs after build_symbols_dict, so every function is already generated
-// (machine_code/code_len populated); the MIR_gen here is purely defensive.
+// The debug symbol for one generated function: its code (not the thunk), the
+// source-line map slimcc's codegen stamped on it, and the MIR func (for its
+// locals' frame slots and unwind info).
+static slimcc_jitsym func_jitsym(MIR_item_t it) //<<<
+{
+	MIR_func_t	f = it->u.func;
+	return (slimcc_jitsym){ .name = f->name, .addr = f->machine_code, .size = f->code_len, .is_func = 1,
+		.line_map = f->line_map, .line_map_len = f->line_map_len, .mir_func = f };
+}
+
+//>>>
+// Build a debug object (ELF + DWARF, from the cdef's slimcc debug state) over
+// the given functions and register it with any attached debugger via the GDB
+// JIT interface. Bound to r->ctx, so MIR_finish() (in jitc_free_backend)
+// unregisters and frees it when the code is gone. Best-effort: if the object
+// can't be built the frames just stay anonymous.
+static void register_debug_object(struct jitc_intrep* r, const slimcc_jitsym* syms, int n) //<<<
+{
+	if (n == 0 || !r->dbgstate) return;
+
+	void*	buf   = nullptr;
+	size_t	bufsz = 0;
+	char*	err   = nullptr;
+	if (slimcc_debug_state_obj(r->dbgstate, syms, n, &buf, &bufsz, &err) == 0)
+		MIR_debug_gdb_register(r->ctx, buf, bufsz);	// takes ownership of buf
+	else if (err)
+		free(err);
+}
+
+//>>>
+// Eager codegen (-fno-lazy-codegen): one debug object over every function in
+// the cdef's context, all generated by now. Functions only: the debug object
+// anchors all symbols to one .text span (see slimcc_debug_obj), and MIR keeps a
+// context's data far from its code, which would balloon that span. Named frames
+// are the point anyway; data symbols add little without DWARF types.
 static void register_debug_symbols(struct jitc_intrep* r) //<<<
 {
 	int				cap = 0, n = 0;
@@ -379,57 +462,126 @@ static void register_debug_symbols(struct jitc_intrep* r) //<<<
 			MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items);
 			it; it = DLIST_NEXT(MIR_item_t, it)
 		) {
-			const char*	name    = nullptr;
-			const void*	addr    = nullptr;
-			size_t		size    = 0;
-			int			is_func = 0;
-			const MIR_line_map_t*	line_map     = nullptr;
-			size_t					line_map_len = 0;
-
-			// Functions only: the debug object anchors all symbols to one
-			// .text span (see slimcc_debug_obj), and MIR keeps a context's
-			// data far from its code, which would balloon that span. Named
-			// frames are the point anyway; data symbols add little without
-			// DWARF types.
-			switch (it->item_type) {
-				case MIR_func_item:
-					if (!it->u.func->machine_code) MIR_gen(r->ctx, it);
-					name         = it->u.func->name;
-					addr         = it->u.func->machine_code;	// the executing code, not the thunk
-					size         = it->u.func->code_len;
-					is_func      = 1;
-					line_map     = it->u.func->line_map;		// source lines -> code offsets (DWARF)
-					line_map_len = it->u.func->line_map_len;
-					break;
-				default: continue;
-			}
-			if (!name || !addr) continue;
+			if (it->item_type != MIR_func_item) continue;
+			if (!it->u.func->machine_code) MIR_gen(r->ctx, it);
+			if (!it->u.func->name || !it->u.func->machine_code) continue;
 
 			if (n == cap) {
 				cap = cap ? cap*2 : 32;
 				syms = ckrealloc(syms, sizeof(*syms) * cap);
 			}
-			syms[n++] = (slimcc_jitsym){ .name = name, .addr = addr, .size = size, .is_func = is_func,
-				.line_map = line_map, .line_map_len = line_map_len,
-				.mir_func = (it->item_type == MIR_func_item) ? it->u.func : nullptr };
+			syms[n++] = func_jitsym(it);
 		}
 	}
 
-	// slimcc_debug_obj reads slimcc's accumulated debug source-file table (the
-	// line maps' file ids index it), so clear it afterwards for the next cdef.
-	defer { slimcc_debug_reset(); };
+	register_debug_object(r, syms, n);
+}
 
-	if (n == 0) return;
+//>>>
+// Whitebox (testmode builds): JITC_TEST_FAIL_GEN=<function> makes generating
+// that function fail, as MIR would.
+static void test_inject_gen_failure(MIR_context_t ctx, MIR_item_t it) //<<<
+{
+#if TESTMODE
+	const char*	fail = getenv("JITC_TEST_FAIL_GEN");
+	if (fail && strcmp(fail, it->u.func->name) == 0)
+		MIR_get_error_func(ctx)(MIR_alloc_error, "injected failure generating %s", it->u.func->name);
+#else
+	(void)ctx; (void)it;
+#endif
+}
 
-	void*	buf   = nullptr;
-	size_t	bufsz = 0;
-	char*	err   = nullptr;
-	if (slimcc_debug_obj(syms, n, &buf, &bufsz, &err) == 0)
-		// Ownership of buf transfers to MIR; bound to r->ctx, so MIR_finish()
-		// (in jitc_free_backend) unregisters and frees it when the code is gone.
-		MIR_debug_gdb_register(r->ctx, buf, bufsz);
-	else if (err)
-		free(err);
+//>>>
+// MIR_link's interface callback for eager codegen (-fno-lazy-codegen):
+// MIR_set_gen_interface, behind the testmode failure injection.
+static void set_eager_gen_interface(MIR_context_t ctx, MIR_item_t it) //<<<
+{
+	if (it) test_inject_gen_failure(ctx, it);
+	MIR_set_gen_interface(ctx, it);
+}
+
+//>>>
+// Generate a function's machine code if it hasn't been yet, which redirects its
+// thunk to that code, and for a -g cdef register the function's debug object.
+// Errors go to the context's error function (link_error_func): a longjmp to
+// the caller's guard, or a panic if there is none.
+static void* gen_func(struct jitc_intrep* r, MIR_item_t it) //<<<
+{
+	if (!it->u.func->machine_code) {
+		if (r->gen_failed)
+			Tcl_Panic("jitc: \"%s\" called after code generation failed for its cdef", it->u.func->name);
+		test_inject_gen_failure(r->ctx, it);
+		MIR_gen(r->ctx, it);
+		if (r->debug) {
+			const slimcc_jitsym	sym = func_jitsym(it);
+			register_debug_object(r, &sym, 1);
+		}
+	}
+	if (r->ungenerated_inited) {
+		Tcl_HashEntry*	he = Tcl_FindHashEntry(&r->ungenerated, it->addr);
+		if (he) Tcl_DeleteHashEntry(he);
+	}
+	return it->u.func->machine_code;
+}
+
+//>>>
+// Lazy codegen: every function's thunk starts out pointing at a MIR wrapper
+// that calls this with the function's item (with the call's arguments saved),
+// then jumps to the code it returns, which the thunk also points at from then
+// on. Runs in the calling thread. The context's allocator carries the intrep.
+static void* lazy_gen_hook(MIR_context_t ctx, MIR_item_t it) //<<<
+{
+	return gen_func(MIR_get_alloc(ctx)->user_data, it);
+}
+
+//>>>
+// MIR_link's interface callback for lazy codegen (cf. MIR_set_lazy_gen_interface,
+// which generates the same way but gives no hook to register debug objects).
+static void set_lazy_gen_interface(MIR_context_t ctx, MIR_item_t it) //<<<
+{
+	if (it == nullptr) return;	// end of the link: nothing to finish
+	_MIR_redirect_thunk(ctx, it->addr, _MIR_get_wrapper(ctx, it, (void*)lazy_gen_hook));
+}
+
+//>>>
+// Before handing out an address jitc's caller will call (or a sibling cdef
+// will link against), make sure a function there is generated, so a codegen
+// failure surfaces here as a Tcl error rather than as a panic from the lazy
+// hook at the first call. A no-op for data, and for code already generated.
+static int jitc_ensure_generated(Tcl_Interp* interp, struct jitc_intrep* r, void* addr) //<<<
+{
+	if (!r->ungenerated_inited || r->ungenerated.numEntries == 0) return TCL_OK;
+	Tcl_HashEntry*	he = Tcl_FindHashEntry(&r->ungenerated, addr);
+	if (!he) return TCL_OK;
+	MIR_item_t		it = Tcl_GetHashValue(he);
+
+	if (r->gen_failed) {
+		if (interp) {
+			Tcl_SetErrorCode(interp, "JITC", "CODEGEN", nullptr);
+			Tcl_SetObjResult(interp, Tcl_ObjPrintf("cannot generate \"%s\": code generation failed earlier for its cdef", it->u.func->name));
+		}
+		return TCL_ERROR;
+	}
+
+	Tcl_Obj*		errors = nullptr;	defer { replace_tclobj(&errors, nullptr); };
+	jmp_buf			jb;
+	jmp_buf*const	outer_jmp = tl_link_jmp;
+	Tcl_Obj**const	outer_errors = tl_link_errors;
+	defer { tl_link_jmp = outer_jmp; tl_link_errors = outer_errors; };
+
+	tl_link_jmp = &jb;
+	tl_link_errors = &errors;
+	if (setjmp(jb)) {
+		r->gen_failed = 1;	// MIR's codegen state was abandoned mid-function
+		if (interp) {
+			Tcl_SetErrorCode(interp, "JITC", "CODEGEN", nullptr);
+			Tcl_SetObjResult(interp, Tcl_ObjPrintf("code generation failed for \"%s\": %s",
+				it->u.func->name, errors ? Tcl_GetString(errors) : "unknown error"));
+		}
+		return TCL_ERROR;
+	}
+	gen_func(r, it);
+	return TCL_OK;
 }
 
 //>>>
@@ -522,8 +674,10 @@ static void collect_diag(void* cdata, const slimcc_diag* d) //<<<
 // frame; only the unmodified parameters are live across the setjmp.
 static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods, Tcl_Obj** errors, Tcl_Obj* diags) //<<<
 {
-	g_link_errors = errors;
-	if (setjmp(g_link_jmp)) { g_link_errors = nullptr; replace_tclobj(&g_missing_symbols, nullptr); return TCL_ERROR; }
+	jmp_buf	jb;
+	tl_link_jmp = &jb;
+	tl_link_errors = errors;
+	if (setjmp(jb)) { tl_link_jmp = nullptr; tl_link_errors = nullptr; replace_tclobj(&g_missing_symbols, nullptr); return TCL_ERROR; }
 
 	for (int i=0; i<nmods; i++)
 		MIR_load_module(r->ctx, mods[i]);
@@ -557,7 +711,12 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 	r->gen_inited = 1;
 	MIR_gen_set_optimize_level(r->ctx, opt_level);
 	replace_tclobj(&g_missing_symbols, nullptr);
-	MIR_link(r->ctx, MIR_set_gen_interface, import_resolver);
+	// Lazy (the default): MIR_link loads, inlines and simplifies everything as
+	// before, but each function's machine code is generated at its first call
+	// (see lazy_gen_hook), so a cdef pays only for the functions it uses.
+	// Calls through a thunk cost one direct jump either way; eager codegen
+	// additionally patches calls between generated functions to be direct.
+	MIR_link(r->ctx, r->lazy ? set_lazy_gen_interface : set_eager_gen_interface, import_resolver);
 	if (g_missing_symbols) {
 		Tcl_Obj**	sv;
 		Tcl_Size	sc;
@@ -572,16 +731,19 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 			Tcl_ListObjAppendElement(nullptr, diags, Tcl_NewListObj(5, ov));
 		}
 		replace_tclobj(&g_missing_symbols, nullptr);
-		g_link_errors = nullptr;
+		tl_link_jmp = nullptr;
+		tl_link_errors = nullptr;
 		return TCL_ERROR;
 	}
 
 	build_symbols_dict(r);
 
-	if (r->debug)
+	// Lazy: each function's debug object is registered as it's generated.
+	if (r->debug && !r->lazy)
 		register_debug_symbols(r);
 
-	g_link_errors = nullptr;
+	tl_link_jmp = nullptr;
+	tl_link_errors = nullptr;
 	return TCL_OK;
 }
 
@@ -593,9 +755,17 @@ static void jitc_free_backend(struct jitc_intrep* r) //<<<
 {
 	if (r->ctx) {
 		if (r->gen_inited) MIR_gen_finish(r->ctx);
-		MIR_finish(r->ctx);	// also unregisters this cdef's GDB-JIT debug object (bound to ctx)
+		MIR_finish(r->ctx);	// also unregisters this cdef's GDB-JIT debug objects (bound to ctx)
 		r->ctx = nullptr;
 		r->gen_inited = 0;
+	}
+	if (r->ungenerated_inited) {
+		Tcl_DeleteHashTable(&r->ungenerated);
+		r->ungenerated_inited = 0;
+	}
+	if (r->dbgstate) {
+		slimcc_debug_state_free(r->dbgstate);
+		r->dbgstate = nullptr;
 	}
 	// Remove the debug source temp files + their dir (gdb no longer needs them).
 	if (r->debugfiles) {
@@ -726,9 +896,11 @@ static int slurp_file(Tcl_Interp* interp, Tcl_Obj* path, Tcl_Obj** out) //<<<
 // options string: the first two feed slimcc's preprocessor, -W flags go to
 // warn_list (slimcc's -W<name> / -Wno-<name>; see compile()), -O<n> sets the
 // MIR codegen optimization level (*opt_level, last one wins), and -g (any -g*
-// form) enables GDB JIT-interface debug symbols (*debug). Everything else
-// (linker flags, -std ...) has no equivalent and is silently ignored.
-static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* inc_list, Tcl_Obj* def_list, Tcl_Obj* warn_list, int* opt_level, int* debug) //<<<
+// form) enables GDB JIT-interface debug symbols (*debug), and
+// -f[no-]lazy-codegen picks when functions' machine code is generated (*lazy:
+// at their first call, or all at link). Everything else (linker flags, -std
+// ...) has no equivalent and is silently ignored.
+static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* inc_list, Tcl_Obj* def_list, Tcl_Obj* warn_list, int* opt_level, int* debug, int* lazy) //<<<
 {
 	Tcl_Obj*	toks = nullptr;	defer { replace_tclobj(&toks, nullptr); };
 	Tcl_Obj**	tv; Tcl_Size tc;
@@ -756,6 +928,10 @@ static int parse_options_string(Tcl_Interp* interp, const char* opts, Tcl_Obj* i
 			} else if (a[1] == '\0' && *a >= '0' && *a <= '9') {
 				*opt_level = *a - '0';
 			}
+		} else if (strcmp(t, "-flazy-codegen") == 0) {
+			*lazy = 1;
+		} else if (strcmp(t, "-fno-lazy-codegen") == 0) {
+			*lazy = 0;
 		} else if (strncmp(t, "-g", 2) == 0) {
 			// Any -g form (-g, -ggdb, -gdwarf-N, ...) requests debug. MIR has no
 			// line/type info, so all variants reduce to function-granularity
@@ -780,6 +956,7 @@ struct gathered_sources {
 	int			mode;				// enum jitc_mode
 	int			opt_level;			// MIR codegen -O<n>; -1 = MIR's default
 	int			debug;				// GDB JIT-interface debug symbols requested
+	int			lazy;				// generate each function's code at its first call
 	Tcl_Obj*	preamble;			// assembled #include preamble (string obj)
 	Tcl_Obj*	inc_list;			// -I include search paths
 	Tcl_Obj*	def_list;			// -D defines ("NAME" or "NAME=VALUE")
@@ -868,6 +1045,9 @@ static int gather_sources(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l
 	Tcl_Size	i;
 	int			opt_level = -1;	// MIR codegen -O<n>; -1 = MIR's default (set via options -O<n>)
 	int			debug = 0;		// GDB JIT-interface debug symbols (a `debug` part or -g in options)
+	// Lazy codegen unless options say -fno-lazy-codegen, or JITC_EAGER_CODEGEN
+	// was set in the environment when jitc loaded (see g_default_lazy).
+	int			lazy = g_default_lazy;
 
 	// Accumulated compiler inputs. These belong to the caller via *gs, so use
 	// the gs fields directly — no defer here; free_gathered_sources() cleans up.
@@ -1092,7 +1272,7 @@ static int gather_sources(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l
 				break;
 
 			case PART_OPTIONS:
-				TEST_OK(parse_options_string(interp, Tcl_GetString(v), inc_list, def_list, gs->warn_list, &opt_level, &debug));
+				TEST_OK(parse_options_string(interp, Tcl_GetString(v), inc_list, def_list, gs->warn_list, &opt_level, &debug, &lazy));
 				break;
 
 			case PART_INCLUDE_PATH:
@@ -1192,6 +1372,7 @@ static int gather_sources(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l
 	gs->mode      = mode;
 	gs->opt_level = opt_level;
 	gs->debug     = debug;
+	gs->lazy      = lazy;
 	replace_tclobj(&gs->preamble, Tcl_NewStringObj(Tcl_DStringValue(&preamble), Tcl_DStringLength(&preamble)));
 
 	return TCL_OK;
@@ -1247,10 +1428,20 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 
 	// --- Everything is gathered; now the serialized compile/link/codegen. ---
 	Tcl_MutexLock(&g_compile_mutex);
-	defer { g_link_errors = nullptr; Tcl_MutexUnlock(&g_compile_mutex); };
+	defer { tl_link_jmp = nullptr; tl_link_errors = nullptr; Tcl_MutexUnlock(&g_compile_mutex); };
+
+	// A -g compile records debug info in libslimcc's globals: they're handed to
+	// the intrep below on success, and must not leak into the next compile
+	// otherwise. (Declared after the unlock's defer, so this runs first.)
+	defer { if (debug) slimcc_debug_reset(); };
 
 	r = ckalloc(sizeof *r);
-	*r = (struct jitc_intrep){ .interp = interp, .ctx = MIR_init(), .opt_level = gs.opt_level, .debug = debug };
+	*r = (struct jitc_intrep){ .interp = interp, .opt_level = gs.opt_level, .debug = debug, .lazy = gs.lazy };
+	// The context's allocator is the default one plus a way back to the intrep
+	// (MIR_get_alloc(ctx)->user_data), for lazy_gen_hook.
+	r->alloc = (struct MIR_alloc){ .malloc = jitc_mir_malloc, .calloc = jitc_mir_calloc,
+		.realloc = jitc_mir_realloc, .free = jitc_mir_free, .user_data = r };
+	r->ctx = MIR_init2(&r->alloc, nullptr);
 	slimcc_register_helpers(r->ctx);
 	MIR_set_error_func(r->ctx, link_error_func);
 
@@ -1398,6 +1589,10 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 			dlopen_library(r, Tcl_GetString(lv[j]), libpath_list);
 	}
 
+	// The compile's debug info, kept for the per-function debug objects lazy
+	// codegen registers (and for the eager one, registered in jitc_finish_link).
+	if (debug) r->dbgstate = slimcc_debug_take();
+
 	if (TCL_OK != jitc_finish_link(r, mods, nmods, &compile_errors, dc.list))
 		goto compile_error;
 
@@ -1408,6 +1603,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	{
 		cdef_initstubs*	initstubs = nullptr;
 		void*			a = jitc_get_symbol(r, "_initstubs");
+		TEST_OK(jitc_ensure_generated(interp, r, a));
 		memcpy(&initstubs, &a, sizeof initstubs);
 		if (initstubs)
 			if (nullptr == (initstubs)(interp, Tcl_GetString(l->tclver)))
@@ -1417,6 +1613,7 @@ int compile(Tcl_Interp* interp, Tcl_Obj* cdef, struct interp_cx* l, struct jitc_
 	{
 		cdef_init*	init = nullptr;
 		void*		a = jitc_get_symbol(r, "init");
+		TEST_OK(jitc_ensure_generated(interp, r, a));
 		memcpy(&init, &a, sizeof init);
 		if (init) TEST_OK((init)(interp));
 	}
@@ -1564,6 +1761,7 @@ int Jitc_GetSymbolFromObj(Tcl_Interp* interp, Tcl_Obj* cdef, Tcl_Obj* symbol, vo
 		Tcl_SetObjResult(interp, Tcl_ObjPrintf("cannot find symbol \"%s\"", symstr));
 		return TCL_ERROR;
 	}
+	TEST_OK(jitc_ensure_generated(interp, r, *val));
 
 	return TCL_OK;
 }
@@ -1871,6 +2069,7 @@ DLLEXPORT int Jitc_Init(Tcl_Interp* interp) //<<<
 		if (!g_pkgdir) {
 			TEST_OK(Tcl_EvalEx(interp, "file dirname [file normalize [info script]]", -1, 0));
 
+			g_default_lazy = getenv("JITC_EAGER_CODEGEN") == nullptr;
 			replace_tclobj(&g_pkgdir, Tcl_DuplicateObj(Tcl_GetObjResult(interp)));
 			// Paranoia: force our copy to be an unshared pure string
 			Tcl_GetString(g_pkgdir);

@@ -9,7 +9,7 @@
 # local checkout for iteration).
 [wrap-git]
 url = https://github.com/cyanogilvie/mir.git
-revision = b7bfe024b792482f095fab7764892e98aa8e6651
+revision = 257dea2c4ebb5fdca39b453726d8efedc1fc831d
 depth = 1
 
 [provide]

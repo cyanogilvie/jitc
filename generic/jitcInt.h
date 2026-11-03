@@ -89,6 +89,12 @@ struct jitc_intrep {
 	Tcl_Obj*				debugfiles;			// list of those source file paths (unlinked on teardown)
 	void**					dlhandles;			// Libraries dlopen()'d so this cdef's code can resolve their symbols
 	int						n_dlhandles;
+	struct MIR_alloc		alloc;				// ctx's allocator, user_data = this intrep (how lazy_gen_hook finds it)
+	int						lazy;				// functions are generated on first call (the default; -fno-lazy-codegen: at link)
+	int						gen_failed;			// a lazy MIR_gen failed: ctx's codegen state can't be trusted any more
+	Tcl_HashTable			ungenerated;		// lazy: thunk address -> MIR_item_t, for functions not yet generated
+	int						ungenerated_inited;
+	struct slimcc_debug_state*	dbgstate;		// -g + lazy: the cdef's debug types/files/locals, for per-function objects
 };
 
 // Look up a defined symbol's address in a compiled cdef. Returns NULL if the

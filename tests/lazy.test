@@ -1,0 +1,142 @@
+if {[lsearch [namespace children] ::tcltest] == -1} {
+	package require tcltest
+	namespace import ::tcltest::*
+}
+
+::tcltest::loadTestedCommands
+package require jitc
+
+# Lazy code generation (the default): a function's machine code is generated at
+# its first call.  -fno-lazy-codegen generates everything at link time.  The
+# lazy tests say -flazy-codegen, since JITC_EAGER_CODEGEN in the environment
+# changes the default (for running the whole suite eagerly).
+
+# Calls into lazily generated code by every route: from Tcl, JIT -> JIT (direct
+# and through a function pointer), and repeated (after the thunk is redirected)
+set routes_code {//@begin=c@
+	static int twice(int x) { return 2*x; }
+	static int thrice(int x) { return 3*x; }
+	int (*pick(int which))(int) { return which ? thrice : twice; }
+	OBJCMD(routes) {
+		int	(*f)(int) = pick(1);
+		int	acc = 0;
+		for (int i=0; i<3; i++) acc += twice(i) + f(i);
+		Tcl_SetObjResult(interp, Tcl_NewIntObj(acc));
+		return TCL_OK;
+	}
+//@end=c@}
+
+test lazy-1.1 {Lazily generated functions, called by every route} -body { #<<<
+	set cdef	[list options -flazy-codegen code $routes_code]
+	list [jitc::capply $cdef routes] [jitc::capply $cdef routes]
+} -cleanup {
+	unset -nocomplain cdef
+} -result {15 15}
+#>>>
+test lazy-1.2 {-fno-lazy-codegen: everything generated at link} -body { #<<<
+	jitc::capply [list options {-fno-lazy-codegen} code $routes_code] routes
+} -result 15
+#>>>
+test lazy-1.3 {-g with lazy codegen: functions get their debug objects as they're generated} -body { #<<<
+	jitc::capply [list options {-flazy-codegen -g -O2} code $routes_code] routes
+} -result 15
+#>>>
+
+# Whitebox: in a testmode build, JITC_TEST_FAIL_GEN=<function> makes generating
+# that function fail, as MIR would (out of memory, say)
+proc with_failing_gen {func script} { #<<<
+	set ::env(JITC_TEST_FAIL_GEN)	$func
+	try {
+		uplevel 1 $script
+	} finally {
+		unset -nocomplain ::env(JITC_TEST_FAIL_GEN)
+	}
+}
+
+#>>>
+tcltest::testConstraint failgen [expr {[catch {
+	with_failing_gen probe {
+		jitc::capply {options -flazy-codegen code {OBJCMD(probe) {return TCL_OK;}}} probe
+	}
+}]}]
+
+test lazy-2.1 {A codegen failure for a function jitc hands out is a Tcl error} -constraints failgen -body { #<<<
+	with_failing_gen routes {
+		set cdef	[list options -flazy-codegen code "$routes_code /* 2.1 */"]
+		list [catch {jitc::capply $cdef routes} r o] $r [dict get $o -errorcode]
+	}
+} -cleanup {
+	unset -nocomplain cdef r o
+} -result {1 {code generation failed for "routes": MIR error 3: injected failure generating routes} {JITC CODEGEN}}
+#>>>
+test lazy-2.2 {After a codegen failure, the cdef refuses to hand out more code} -constraints failgen -body { #<<<
+	set cdef	[list options -flazy-codegen code "$routes_code\nOBJCMD(other) {return TCL_OK;} /* 2.2 */"]
+	with_failing_gen routes {
+		catch {jitc::capply $cdef routes}
+	}
+	list [catch {jitc::capply $cdef other} r o] $r [dict get $o -errorcode]
+} -cleanup {
+	unset -nocomplain cdef r o
+} -result {1 {cannot generate "other": code generation failed earlier for its cdef} {JITC CODEGEN}}
+#>>>
+test lazy-2.3 {-fno-lazy-codegen: a codegen failure is a compile error} -constraints failgen -body { #<<<
+	with_failing_gen routes {
+		catch {jitc::capply [list options {-fno-lazy-codegen} code "$routes_code /* 2.3 */"] routes} r
+	}
+	list [string match *injected* $r]
+} -cleanup {
+	unset -nocomplain r
+} -result 1
+#>>>
+test lazy-2.4 {A codegen failure for release is a background error, and release is skipped} -constraints failgen -setup { #<<<
+	set bgerrors	{}
+	set old_bgerror	[interp bgerror {}]
+	interp bgerror {} {apply {{msg opts} {lappend ::bgerrors $msg}}}
+} -body { #<<<
+	# Built at runtime: a constant [string cat] compiles to a shared literal,
+	# which would outlive the unset below
+	set code	{
+		RELEASE { Tcl_SetVar(interp, "::released", "yes", TCL_GLOBAL_ONLY); }
+		OBJCMD(foo) {
+			Tcl_SetObjResult(interp, Tcl_NewStringObj("foo", -1));
+			return TCL_OK;
+		}
+	}
+	set cdef	[list options -flazy-codegen code $code]
+	set ::released	no
+	set res		[jitc::capply $cdef foo]
+	with_failing_gen release {
+		unset cdef			;# frees the cdef: runs (tries to) its release
+		set during	[list $res [info exists r]]
+	}
+	update
+	list $during $::released $bgerrors
+} -cleanup {
+	interp bgerror {} $old_bgerror
+	unset -nocomplain code cdef res during bgerrors old_bgerror ::released
+} -result {{foo 0} no {{code generation failed for "release": MIR error 3: injected failure generating release}}}
+#>>>
+test lazy-2.5 {A codegen failure under JIT frames panics} -constraints failgen -body { #<<<
+	# thrice is first called from routes (JIT code, through a function pointer,
+	# so it isn't inlined), past jitc's guard
+	set h	[open |[list [info nameofexecutable] 2>@1] r+]
+	puts $h [tcltest::configure -load]
+	puts $h [list set routes_code $routes_code]
+	puts $h {
+		set ::env(JITC_TEST_FAIL_GEN) thrice
+		jitc::capply [list options -flazy-codegen code $routes_code] routes
+	}
+	close $h write
+	set out	[read $h]
+	set how	[expr {[catch {close $h}] ? "died" : "exited"}]
+	list $how [string match {*jitc: lazy code generation failed (MIR error 3): injected failure generating thrice*} $out]
+} -cleanup {
+	unset -nocomplain h out how
+} -result {died 1}
+#>>>
+
+# cleanup
+::tcltest::cleanupTests
+return
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

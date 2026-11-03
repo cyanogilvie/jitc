@@ -151,8 +151,9 @@ applied in sequence.  *part* must be one of:
 :   Generate debug information for the *cdef*, as for **-g** in **options** (see
     there).  *value* is accepted for compatibility and ignored: copies of the code
     sections, for the debugger to show, are written to a temporary directory under
-    **P_tmpdir**, removed when the *cdef* is freed (but left behind if the program
-    crashes, so a core file can be examined with its source).
+    **P_tmpdir**, removed when the *cdef* is freed or the process exits normally (but
+    left behind if the program crashes, so a core file can be examined with its
+    source).
 
 **options**
 :   *value* contains a C compiler style option string.  The string is split into a
@@ -180,6 +181,9 @@ applied in sequence.  *part* must be one of:
 
     * **-Wno-**\ *name* — turn off a warning (see **COMPILE ERRORS**); **-W**\ *name*
       turns it back on.
+    * **-fno-lazy-codegen** — generate the machine code for every function when the
+      *cdef* is compiled, rather than for each function at its first call (the
+      default, **-flazy-codegen**; see **PERFORMANCE**).
 
     All other options (**-std**, linker options, **-U**, &c.) have no libslimcc
     equivalent and are silently ignored.
@@ -532,6 +536,26 @@ per distinct *cdef* value, not per call.  Keep *cdef* values in variables or nam
 globals rather than rebuilding them per call, so that the cached compile survives.  The
 **tcl** mode preamble (tcl.h and the headers it pulls in) is preprocessed once and cached,
 so even a small *cdef* compiles in a couple of milliseconds.
+
+A function's machine code is generated when it's first called, rather than when the
+*cdef* is compiled: the compile parses the C and links the result, and code generation,
+the larger part of the work, happens only for the functions actually used.  A *cdef*
+with many functions of which a given program uses a few compiles several times faster
+this way; pgwire's row decoding accelerators, over 100 functions of which a typical query
+uses a handful, compile in 15 ms rather than 62 ms on x86_64.  Once generated, a
+function runs exactly as it would have otherwise; calls to it from other functions in
+the *cdef* go through one extra jump (about 2% in a benchmark doing nothing but
+calls).  The function **jitc::capply**, **jitc::bind** or a **use** of the *cdef*
+resolves is generated before it's handed out, so a failure to generate it is reported
+as a Tcl error (error code **JITC CODEGEN**), and one in the *cdef*'s **release** as a
+background error.  The functions those call are generated at their own first call,
+from compiled code, where a failure can't be reported; code generation fails only when
+memory runs out or on a compiler bug, and either aborts the process.  With **-g**, each
+function's debug information is registered with gdb as the function is generated, so
+**break** on a function's name only works once it has run.  **-fno-lazy-codegen**
+generates everything up front instead, for a *cdef* that is going to use all its code
+anyway, or for predictable first-call latency; setting **JITC_EAGER_CODEGEN** in the
+environment before jitc loads makes that the default.
 
 The optimization level trades compile time for run time.  The table below gives timings
 for an re2c-generated lexer: **jitclib::json_check**'s JSON validator, checking a 3.4 MB
