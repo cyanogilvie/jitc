@@ -606,7 +606,11 @@ static void jitc_free_backend(struct jitc_intrep* r) //<<<
 	}
 	if (r->debugdir) {
 		debugdir_untrack(r);
-		Tcl_FSRemoveDirectory(r->debugdir, 0, nullptr);
+		// errorPtr is required: Tcl stores the failing path through it (as at
+		// exit, when remove_debugdirs got here first and the dir is gone)
+		Tcl_Obj*	rmerr = nullptr;
+		if (TCL_OK != Tcl_FSRemoveDirectory(r->debugdir, 0, &rmerr))
+			replace_tclobj(&rmerr, nullptr);	// drop the ref Tcl gave us
 		replace_tclobj(&r->debugdir, nullptr);
 	}
 	// dlclose after the code that referenced these libraries is gone.
