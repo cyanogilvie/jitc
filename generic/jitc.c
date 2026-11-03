@@ -711,11 +711,15 @@ static int jitc_finish_link(struct jitc_intrep* r, MIR_module_t* mods, int nmods
 	r->gen_inited = 1;
 	MIR_gen_set_optimize_level(r->ctx, opt_level);
 	replace_tclobj(&g_missing_symbols, nullptr);
-	// Lazy (the default): MIR_link loads, inlines and simplifies everything as
-	// before, but each function's machine code is generated at its first call
+	// Lazy (the default): MIR_link loads and simplifies everything as before,
+	// but each function's machine code is generated (and calls inlined into
+	// it) at its first call
 	// (see lazy_gen_hook), so a cdef pays only for the functions it uses.
 	// Calls through a thunk cost one direct jump either way; eager codegen
 	// additionally patches calls between generated functions to be direct.
+	// With lazy codegen, inlining is deferred too: done by the generator as it
+	// generates each function, so functions never called don't pay for it.
+	if (r->lazy) MIR_set_deferred_inlining(r->ctx, 1);
 	MIR_link(r->ctx, r->lazy ? set_lazy_gen_interface : set_eager_gen_interface, import_resolver);
 	if (g_missing_symbols) {
 		Tcl_Obj**	sv;
@@ -1947,6 +1951,31 @@ static int symbols_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*c
 }
 
 //>>>
+// For jitc::dump mir: inline (apply) or un-inline (!apply) the calls in each
+// of the cdef's functions whose inlining was deferred to codegen, on a working
+// copy of its insns, as the generator does.
+static void for_deferred_inlines(struct jitc_intrep* r, int apply) //<<<
+{
+	for (
+		MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(r->ctx));
+		m; m = DLIST_NEXT(MIR_module_t, m)
+	) {
+		for (
+			MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items);
+			it; it = DLIST_NEXT(MIR_item_t, it)
+		) {
+			if (it->item_type != MIR_func_item || !it->u.func->inlines_deferred_p) continue;
+			if (apply) {
+				_MIR_duplicate_func_insns(r->ctx, it);
+				_MIR_process_deferred_inlines(r->ctx, it);
+			} else {
+				_MIR_restore_func_insns(r->ctx, it);
+			}
+		}
+	}
+}
+
+//>>>
 static int dump_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //<<<
 {
 	struct interp_cx*	l = cdata;
@@ -1961,9 +1990,12 @@ static int dump_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*cons
 
 	switch (what) {
 		case DUMP_MIR: { //<<<
-			// Textual MIR of the modules loaded in the cdef's context. This is the
-			// source-level IR slimcc emitted (MIR_gen inlines/optimizes on copies at
-			// codegen, leaving the loaded items intact), captured via MIR_output.
+			// Textual MIR of the modules loaded in the cdef's context, as linked:
+			// the IR slimcc emitted, simplified and with calls inlined (MIR_gen
+			// optimizes on copies at codegen, leaving the loaded items intact),
+			// captured via MIR_output. Under lazy codegen MIR_link leaves the
+			// inlining to the generator, so do it here the same way, on working
+			// copies of the functions that are restored afterwards.
 			struct jitc_intrep*	r = nullptr;
 			TEST_OK(get_r_from_obj(interp, objv[A_CDEF], &r));
 
@@ -1975,7 +2007,9 @@ static int dump_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*cons
 
 			// MIR context state isn't concurrency-safe; serialize with compiles.
 			Tcl_MutexLock(&g_compile_mutex);
+			for_deferred_inlines(r, 1);
 			MIR_output(r->ctx, f);
+			for_deferred_inlines(r, 0);
 			Tcl_MutexUnlock(&g_compile_mutex);
 
 			fclose(f); f = nullptr;	// finalizes buf/buflen

@@ -547,27 +547,29 @@ couple of milliseconds.
 
 A function’s machine code is generated when it’s first called, rather
 than when the *cdef* is compiled: the compile parses the C and links the
-result, and code generation, the larger part of the work, happens only
-for the functions actually used. A *cdef* with many functions of which a
-given program uses a few compiles several times faster this way;
-pgwire’s row decoding accelerators, over 100 functions of which a
-typical query uses a handful, compile in 15 ms rather than 62 ms on
-x86_64. Once generated, a function runs exactly as it would have
-otherwise; calls to it from other functions in the *cdef* go through one
-extra jump (about 2% in a benchmark doing nothing but calls). The
-function **jitc::capply**, **jitc::bind** or a **use** of the *cdef*
-resolves is generated before it’s handed out, so a failure to generate
-it is reported as a Tcl error (error code **JITC CODEGEN**), and one in
-the *cdef*’s **release** as a background error. The functions those call
-are generated at their own first call, from compiled code, where a
-failure can’t be reported; code generation fails only when memory runs
-out or on a compiler bug, and either aborts the process. With **-g**,
-each function’s debug information is registered with gdb as the function
-is generated, so **break** on a function’s name only works once it has
-run. **-fno-lazy-codegen** generates everything up front instead, for a
-*cdef* that is going to use all its code anyway, or for predictable
-first-call latency; setting **JITC_EAGER_CODEGEN** in the environment
-before jitc loads makes that the default.
+result, and code generation (with the inlining of calls into each
+function), the larger part of the work, happens only for the functions
+actually used. A *cdef* with many functions of which a given program
+uses a few compiles several times faster this way; pgwire’s row decoding
+accelerators, over 100 functions of which a typical query uses a
+handful, compile in 12 ms rather than 60 ms on x86_64, and in 35 ms
+rather than 136 ms on an AWS t4g (Graviton2). Once generated, a function
+runs exactly as it would have otherwise; calls to it from other
+functions in the *cdef* go through one extra jump (up to 2% in a
+benchmark doing nothing but calls, on x86_64; none measurable on
+aarch64). The function **jitc::capply**, **jitc::bind** or a **use** of
+the *cdef* resolves is generated before it’s handed out, so a failure to
+generate it is reported as a Tcl error (error code **JITC CODEGEN**),
+and one in the *cdef*’s **release** as a background error. The functions
+those call are generated at their own first call, from compiled code,
+where a failure can’t be reported; code generation fails only when
+memory runs out or on a compiler bug, and either aborts the process.
+With **-g**, each function’s debug information is registered with gdb as
+the function is generated, so **break** on a function’s name only works
+once it has run. **-fno-lazy-codegen** generates everything up front
+instead, for a *cdef* that is going to use all its code anyway, or for
+predictable first-call latency; setting **JITC_EAGER_CODEGEN** in the
+environment before jitc loads makes that the default.
 
 The optimization level trades compile time for run time. The table below
 gives timings for an re2c-generated lexer: **jitclib::json_check**’s
